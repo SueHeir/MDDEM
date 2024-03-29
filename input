@@ -1,0 +1,9 @@
+processors        1 2 1
+domain            0.0 0.5 0.0 0.5 0.0 0.25
+periodic          p p p
+gravity           0.0 -9.8 0.0
+
+
+# randomparticleinsert 
+
+run               100

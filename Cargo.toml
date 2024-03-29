@@ -1,0 +1,13 @@
+[package]
+name = "MDDEM"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.scripts]
+mpirun = "mpiexec -n 2 ./target/release/MDDEM input"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+mpi = { version = "0.7.0", features = ["user-operations", "derive"] }
+nalgebra = "0.32.4"
