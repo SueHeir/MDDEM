@@ -1,41 +1,44 @@
+use scheduler::{ScheduleSet::*, Scheduler};
+use verlet::Verlet;
+
 mod atom;
 mod comm;
 mod domain;
 mod fix;
 mod input;
+mod scheduler;
 mod verlet;
 
 pub struct MDDEM {
-    input: input::Input,
-    comm: comm::Comm,
-    domain: domain::Domain,
-    fixes: fix::Fixes,
-    verlet: verlet::Verlet,
+    pub scheduler: scheduler::Scheduler,
 }
 
 impl MDDEM {
     pub fn new(args: Vec<String>) -> Self {
-        MDDEM {
-            input: input::Input::new(args),
-            comm: comm::Comm::new(),
-            domain: domain::Domain::new(),
-            fixes: fix::Fixes::new(),
-            verlet: verlet::Verlet::new(),
-        }
+        let scheduler = Scheduler::default();
+        let mut mddem = MDDEM {
+            scheduler: scheduler,
+        };
+
+        mddem.scheduler.add_resource(input::Input::new(args));
+
+        comm::comm_app(&mut mddem.scheduler);
+        domain::domain_app(&mut mddem.scheduler);
+
+        atom::atom_app(&mut mddem.scheduler);
+
+        verlet::verlet_app(&mut mddem.scheduler);
+
+        mddem.scheduler.organize_systems();
+        return mddem;
     }
 
     pub fn setup(&mut self) {
-        self.comm.input(&self.input.commands);
-
-        self.domain.input(&self.input.commands, &self.comm);
-
-        self.fixes.input(&self.input.commands, &self.comm);
-
-        self.verlet.input(&self.input.commands, &self.comm);
+        self.scheduler.setup();
+        // self.fixes.input(&self.input.commands, &self.comm);
     }
 
     pub fn run(&mut self) {
-        self.verlet
-            .run(&mut self.comm, &mut self.domain, &mut self.fixes);
+        verlet::run(&mut self.scheduler);
     }
 }

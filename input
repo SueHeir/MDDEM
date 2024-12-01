@@ -1,9 +1,9 @@
-processors        1 2 1
-domain            0.0 0.5 0.0 0.5 0.0 0.25
+processors        2 1 1
+domain            0.0 0.5 0.0 0.5 0.0 0.5
 periodic          p p p
 gravity           0.0 -9.8 0.0
 
 
-# randomparticleinsert 
-
-run               100
+randomparticleinsert 160 0.001 2500 8.7e9 0.3
+randomparticlevelocity 50.0
+run               1000000

@@ -1,24 +1,138 @@
-use nalgebra::{UnitQuaternion, Vector3};
+use std::{
+    f64::consts::PI,
+    ops::{Index, IndexMut},
+};
 
-use super::comm::Comm;
+use super::{
+    comm::Comm,
+    domain::Domain,
+    input::Input,
+    scheduler::{Res, ResMut, ScheduleSet::*, Scheduler},
+};
+use mpi::traits::{CommunicatorCollectives, Equivalence};
+use nalgebra::{Quaternion, UnitQuaternion, Vector3};
+use rand::{thread_rng, Rng};
 
-struct Atom {
-    natoms: u64,
-    nlocal: u32,
-    nghost: u32,
+#[derive(Equivalence, Debug, Clone, Copy)]
+pub struct Vector3f64MPI {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
 
-    tag: Vec<u32>,
+impl Index<&'_ usize> for Vector3f64MPI {
+    type Output = f64;
+    fn index(&self, s: &usize) -> &f64 {
+        match s {
+            0 => &self.x,
+            1 => &self.y,
+            2 => &self.y,
+            _ => panic!("unknown field: {}", s),
+        }
+    }
+}
 
-    pos: Vec<Vector3<f64>>,
-    quaterion: Vec<UnitQuaternion<f64>>,
-    omega: Vec<Vector3<f64>>,
-    angular_momentum: Vec<Vector3<f64>>,
-    torque: Vec<Vector3<f64>>,
+impl IndexMut<&'_ usize> for Vector3f64MPI {
+    fn index_mut(&mut self, s: &usize) -> &mut f64 {
+        match s {
+            0 => &mut self.x,
+            1 => &mut self.y,
+            2 => &mut self.y,
+            _ => panic!("unknown field: {}", s),
+        }
+    }
+}
 
-    radius: Vec<f64>,
-    rmass: Vec<f64>,
-    denisty: Vec<f64>,
-    mass: Vec<f64>,
+impl Vector3f64MPI {
+    fn new(vec: Vector3<f64>) -> Vector3f64MPI {
+        Vector3f64MPI {
+            x: vec.x,
+            y: vec.y,
+            z: vec.z,
+        }
+    }
+
+    fn to_vector3(self) -> Vector3<f64> {
+        let vec = Vector3::new(self.x, self.y, self.z);
+        vec
+    }
+}
+
+#[derive(Equivalence, Debug, Clone, Copy)]
+pub struct Quaternionf64MPI {
+    i: f64,
+    j: f64,
+    k: f64,
+    w: f64,
+}
+
+impl Quaternionf64MPI {
+    fn new(vec: UnitQuaternion<f64>) -> Quaternionf64MPI {
+        Quaternionf64MPI {
+            i: vec.i,
+            j: vec.j,
+            k: vec.k,
+            w: vec.w,
+        }
+    }
+
+    fn to_quat(self) -> UnitQuaternion<f64> {
+        let vec = UnitQuaternion::from_quaternion(Quaternion::new(self.w, self.i, self.j, self.k));
+        vec
+    }
+}
+
+pub fn atom_app(scheduler: &mut Scheduler) {
+    scheduler.add_resource(Atom::new());
+    scheduler.add_setup_system(read_input, Setup);
+    scheduler.add_setup_system(calculate_delta_time, PreInitalIntegration);
+    // scheduler.add_update_system(print_all_atom_position, PreExchange);
+    scheduler.add_update_system(remove_ghost_atoms, PreFinalIntegration);
+}
+
+pub(crate) struct Atom {
+    pub natoms: u64,
+    pub nlocal: u32,
+    pub nghost: u32,
+
+    pub dt: f64,
+
+    pub tag: Vec<u32>,
+
+    pub pos: Vec<Vector3<f64>>,
+    pub velocity: Vec<Vector3<f64>>,
+    pub quaterion: Vec<UnitQuaternion<f64>>,
+    pub omega: Vec<Vector3<f64>>,
+    pub angular_momentum: Vec<Vector3<f64>>,
+    pub torque: Vec<Vector3<f64>>,
+    pub force: Vec<Vector3<f64>>,
+
+    pub radius: Vec<f64>,
+    pub mass: Vec<f64>,
+    pub density: Vec<f64>,
+
+    pub youngs_mod: Vec<f64>,
+    pub poisson_ratio: Vec<f64>,
+}
+
+#[derive(Equivalence, Debug, Clone, Copy)]
+pub(crate) struct AtomMPI {
+    pub tag: u32,
+
+    pub pos: Vector3f64MPI,
+    pub velocity: Vector3f64MPI,
+    pub quaterion: Quaternionf64MPI,
+    pub omega: Vector3f64MPI,
+    pub angular_momentum: Vector3f64MPI,
+    pub torque: Vector3f64MPI,
+    pub force: Vector3f64MPI,
+
+    pub radius: f64,
+    pub mass: f64,
+    pub density: f64,
+
+    pub youngs_mod: f64,
+    pub poisson_ratio: f64,
 }
 
 impl Atom {
@@ -27,71 +141,269 @@ impl Atom {
             natoms: 0,
             nlocal: 0,
             nghost: 0,
+            dt: 1.0,
             tag: Vec::new(),
             pos: Vec::new(),
+            velocity: Vec::new(),
             quaterion: Vec::new(),
             omega: Vec::new(),
             angular_momentum: Vec::new(),
             torque: Vec::new(),
+            force: Vec::new(),
             radius: Vec::new(),
-            rmass: Vec::new(),
-            denisty: Vec::new(),
             mass: Vec::new(),
+            density: Vec::new(),
+            youngs_mod: Vec::new(),
+            poisson_ratio: Vec::new(),
         }
     }
 
-    pub fn input(&mut self, commands: &Vec<String>, comm: &Comm) {
-        for c in commands.iter() {
-            let values = c.split_whitespace().collect::<Vec<&str>>();
+    pub fn get_max_tag(&self) -> u32 {
+        let mut max_tag = 0;
+        for t in &self.tag {
+            max_tag = max_tag.max(*t);
+        }
+        return max_tag;
+    }
 
-            if values.len() > 0 {
-                match values[0] {
-                    "randomparticleinsert" => {
-                        if comm.rank == 0 {
-                            println!("Atom: {}", c);
+    pub fn get_atom_mpi(&mut self, i: usize) -> AtomMPI {
+        let atom_mpi = AtomMPI {
+            tag: self.tag.remove(i),
+            pos: Vector3f64MPI::new(self.pos.remove(i)),
+            velocity: Vector3f64MPI::new(self.velocity.remove(i)),
+            quaterion: Quaternionf64MPI::new(self.quaterion.remove(i)),
+            omega: Vector3f64MPI::new(self.omega.remove(i)),
+            angular_momentum: Vector3f64MPI::new(self.angular_momentum.remove(i)),
+            torque: Vector3f64MPI::new(self.torque.remove(i)),
+            force: Vector3f64MPI::new(self.force.remove(i)),
+            radius: self.radius.remove(i),
+            mass: self.mass.remove(i),
+            density: self.density.remove(i),
+            youngs_mod: self.youngs_mod.remove(i),
+            poisson_ratio: self.poisson_ratio.remove(i),
+        };
+        return atom_mpi;
+    }
+
+    pub fn copy_atom_mpi(&mut self, i: usize) -> AtomMPI {
+        let atom_mpi = AtomMPI {
+            tag: self.tag[i].clone(),
+            pos: Vector3f64MPI::new(self.pos[i].clone()),
+            velocity: Vector3f64MPI::new(self.velocity[i].clone()),
+            quaterion: Quaternionf64MPI::new(self.quaterion[i].clone()),
+            omega: Vector3f64MPI::new(self.omega[i].clone()),
+            angular_momentum: Vector3f64MPI::new(self.angular_momentum[i].clone()),
+            torque: Vector3f64MPI::new(self.torque[i].clone()),
+            force: Vector3f64MPI::new(self.force[i].clone()),
+            radius: self.radius[i].clone(),
+            mass: self.mass[i].clone(),
+            density: self.density[i].clone(),
+            youngs_mod: self.youngs_mod[i].clone(),
+            poisson_ratio: self.poisson_ratio[i].clone(),
+        };
+        return atom_mpi;
+    }
+
+    pub fn add_atom_from_atom_mpi(&mut self, atom: AtomMPI) {
+        self.tag.push(atom.tag);
+        self.pos.push(atom.pos.to_vector3());
+        self.velocity.push(atom.velocity.to_vector3());
+        self.quaterion.push(atom.quaterion.to_quat());
+        self.omega.push(atom.omega.to_vector3());
+        self.angular_momentum
+            .push(atom.angular_momentum.to_vector3());
+        self.torque.push(atom.torque.to_vector3());
+        self.force.push(atom.force.to_vector3());
+        self.radius.push(atom.radius);
+        self.mass.push(atom.mass);
+        self.density.push(atom.density);
+        self.youngs_mod.push(atom.youngs_mod);
+        self.poisson_ratio.push(atom.poisson_ratio);
+    }
+
+    pub fn delete(&mut self, i: usize) {
+        self.tag.remove(i);
+        self.pos.remove(i);
+        self.velocity.remove(i);
+        self.quaterion.remove(i);
+        self.omega.remove(i);
+        self.angular_momentum.remove(i);
+        self.torque.remove(i);
+        self.force.remove(i);
+        self.radius.remove(i);
+        self.mass.remove(i);
+        self.density.remove(i);
+        self.youngs_mod.remove(i);
+        self.poisson_ratio.remove(i);
+    }
+
+    // pub fn get_atom_buff(&mut self, i: usize)-> Vec<f64> {
+    //     let mut buff = Vec::new();
+    //     buff.push(self.tag.remove(i) as f64);
+
+    //     let pos = self.pos.remove(i);
+    //     buff.push(pos.x);
+    //     buff.push(pos.y);
+    //     buff.push(pos.z);
+
+    //     let vel = self.velocity.remove(i);
+    //     buff.push(vel.x);
+    //     buff.push(vel.y);
+    //     buff.push(vel.z);
+
+    //     let quat = self.quaterion.remove(i);
+    //     buff.push(quat.w);
+    //     buff.push(quat.i);
+    //     buff.push(quat.j);
+    //     buff.push(quat.k);
+
+    //     let omega = self.omega.remove(i);
+    //     buff.push(omega.x);
+    //     buff.push(omega.y);
+    //     buff.push(omega.z);
+
+    //     let angular_momentum = self.angular_momentum.remove(i);
+    //     buff.push(angular_momentum.x);
+    //     buff.push(angular_momentum.y);
+    //     buff.push(angular_momentum.z);
+
+    //     let torque = self.torque.remove(i);
+    //     buff.push(torque.x);
+    //     buff.push(torque.y);
+    //     buff.push(torque.z);
+
+    //     let force = self.force.remove(i);
+    //     buff.push(force.x);
+    //     buff.push(force.y);
+    //     buff.push(force.z);
+
+    //     buff.push(self.radius.remove(i));
+    //     buff.push(self.mass.remove(i));
+    //     buff.push(self.density.remove(i));
+    //     buff.push(self.youngs_mod.remove(i));
+    //     buff.push(self.poisson_ratio.remove(i));
+
+    //     return buff;
+
+    // }
+
+    // pub fn add_atom_from_buff(&mut self, mut buff: Vec<f64>) -> Vec<f64> {
+    //     self.tag.push(buff.remove(0) as u32);
+    //     self.pos.push(Vector3::new(buff.remove(0),buff.remove(0),buff.remove(0)));
+    //     self.velocity.push(Vector3::new(buff.remove(0),buff.remove(0),buff.remove(0)));
+    //     self.quaterion.push(UnitQuaternion::from_quaternion(Quaternion::new(buff.remove(0),buff.remove(0),buff.remove(0),buff.remove(0))));
+    //     self.omega.push(Vector3::new(buff.remove(0),buff.remove(0),buff.remove(0)));
+    //     self.angular_momentum.push(Vector3::new(buff.remove(0),buff.remove(0),buff.remove(0)));
+    //     self.torque.push(Vector3::new(buff.remove(0),buff.remove(0),buff.remove(0)));
+    //     self.force.push(Vector3::new(buff.remove(0),buff.remove(0),buff.remove(0)));
+    //     self.radius.push(buff.remove(0));
+    //     self.mass.push(buff.remove(0));
+    //     self.density.push(buff.remove(0));
+    //     self.youngs_mod.push(buff.remove(0));
+    //     self.poisson_ratio.push(buff.remove(0));
+
+    //     return buff;
+    // }
+}
+
+pub fn read_input(input: Res<Input>, comm: Res<Comm>, domain: Res<Domain>, mut atom: ResMut<Atom>) {
+    let commands = &input.commands;
+    let mut rng = thread_rng();
+    for c in commands.iter() {
+        let values = c.split_whitespace().collect::<Vec<&str>>();
+
+        if values.len() > 0 {
+            match values[0] {
+                "randomparticleinsert" => {
+                    //TODO Make a parallelized version of generating particles
+                    if comm.rank == 0 {
+                        println!("Atom: {}", c);
+
+                        let particles_to_add: u32 = values[1].parse::<u32>().unwrap();
+                        let radius: f64 = values[2].parse::<f64>().unwrap();
+                        let density: f64 = values[3].parse::<f64>().unwrap();
+
+                        let youngs_mod: f64 = values[4].parse::<f64>().unwrap();
+                        let poisson_ratio: f64 = values[5].parse::<f64>().unwrap();
+                        let mut max_tag = atom.get_max_tag();
+
+                        for _i in 0..particles_to_add {
+                            let x =
+                                rng.gen_range(domain.boundaries_low[0]..domain.boundaries_high[0]);
+                            let y =
+                                rng.gen_range(domain.boundaries_low[1]..domain.boundaries_high[1]);
+                            let z =
+                                rng.gen_range(domain.boundaries_low[2]..domain.boundaries_high[2]);
+                            let pos = Vector3::<f64>::new(x, y, z);
+
+                            atom.natoms += 1;
+                            atom.nlocal += 1;
+                            atom.tag.push(max_tag);
+                            max_tag += 1;
+                            atom.pos.push(pos);
+                            atom.velocity.push(Vector3::<f64>::zeros());
+                            atom.quaterion.push(UnitQuaternion::identity());
+                            atom.omega.push(Vector3::<f64>::zeros());
+                            atom.angular_momentum.push(Vector3::<f64>::zeros());
+                            atom.torque.push(Vector3::<f64>::zeros());
+                            atom.force.push(Vector3::<f64>::zeros());
+                            atom.radius.push(radius);
+                            atom.mass.push(density * 4.0 / 3.0 * PI * radius.powi(3));
+                            atom.density.push(density);
+                            atom.youngs_mod.push(youngs_mod);
+                            atom.poisson_ratio.push(poisson_ratio);
                         }
-
-                        if values.len() != 7 {
-                            if comm.rank == 0 {
-                                println!("Domain: Please fill out domain command with x_low x_high y_low y_high z_low z_high");
-                            }
-                            exit(1);
-                        }
-
-                        self.boundaries_low.x = values[1].parse::<f64>().unwrap();
-                        self.boundaries_low.y = values[3].parse::<f64>().unwrap();
-                        self.boundaries_low.z = values[5].parse::<f64>().unwrap();
-
-                        self.boundaries_high.x = values[2].parse::<f64>().unwrap();
-                        self.boundaries_high.y = values[4].parse::<f64>().unwrap();
-                        self.boundaries_high.z = values[6].parse::<f64>().unwrap();
                     }
-
-                    "perodic" => {
-                        if comm.rank == 0 {
-                            println!("Domain: {}", c);
-                        }
-
-                        if values.len() != 4 {
-                            if comm.rank == 0 {
-                                println!("Domain: Please fill out periodic command as perodic    p p p  or perodic    n n n");
-                            }
-                            exit(1);
-                        }
-                        if values[1] == "p" {
-                            self.is_periodic.x = true;
-                        }
-                        if values[2] == "p" {
-                            self.is_periodic.y = true;
-                        }
-                        if values[3] == "p" {
-                            self.is_periodic.z = true;
-                        }
-                    }
-
-                    _ => {}
                 }
+
+                "randomparticlevelocity" => {
+                    let rand_vel: f64 = values[1].parse::<f64>().unwrap();
+
+                    for v in &mut atom.velocity {
+                        v.x = rng.gen_range(-rand_vel..rand_vel);
+                        v.y = rng.gen_range(-rand_vel..rand_vel);
+                        v.z = rng.gen_range(-rand_vel..rand_vel);
+                    }
+                }
+
+                _ => {}
             }
         }
+    }
+}
+
+fn calculate_delta_time(comm: Res<Comm>, mut atoms: ResMut<Atom>) {
+    //Checks each particles Size for the smallest delta time the simulation should use
+    let mut dt: f64 = 0.001;
+    for i in 0..atoms.radius.len() {
+        let g = atoms.youngs_mod[i] / (2.0 * (1.0 + atoms.poisson_ratio[i]));
+        let alpha = 0.1631 * atoms.poisson_ratio[i] + 0.876605;
+        let delta = PI * atoms.radius[i] / alpha * (atoms.density[i] / g).sqrt();
+        dt = delta.min(dt);
+    }
+
+    let u = vec![dt; comm.size as usize];
+    let mut v = vec![0.0; comm.size as usize];
+
+    comm.world.all_to_all_into(&u[..], &mut v[..]);
+
+    dt = v.into_iter().reduce(f64::min).unwrap();
+
+    println!("Useing {} for delta time", dt * 0.3);
+    atoms.dt = dt * 0.3;
+}
+
+fn print_all_atom_position(comm: Res<Comm>, atoms: Res<Atom>) {
+    for i in 0..atoms.radius.len() {
+        println!(
+            "{0} pos: {1:?} vel: {2:?}",
+            comm.rank, atoms.pos[i], atoms.velocity[i]
+        );
+    }
+}
+
+fn remove_ghost_atoms(mut atoms: ResMut<Atom>) {
+    for i in (atoms.nlocal..(atoms.nlocal + atoms.nghost)).rev() {
+        atoms.delete(i as usize);
     }
 }

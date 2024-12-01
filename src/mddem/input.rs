@@ -16,8 +16,6 @@ impl Input {
         }
     }
 
-    pub fn setup(&self) {}
-
     fn read_input_file(filename: &String) -> Vec<String> {
         let filenamestring: String = filename.clone();
         let file = match File::open(filename) {

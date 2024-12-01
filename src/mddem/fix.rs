@@ -1,6 +1,9 @@
 use std::any::Any;
 
-use super::comm::Comm;
+use super::{
+    comm::Comm,
+    scheduler::{self, Scheduler},
+};
 
 mod gravity;
 
@@ -9,7 +12,7 @@ pub struct Fixes {
 }
 
 impl Fixes {
-    pub fn new() -> Self {
+    pub fn new(scheduler: Scheduler) -> Self {
         Fixes {
             boxed_fixes: Vec::new(),
         }

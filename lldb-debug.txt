@@ -1,0 +1,2 @@
+target create "./target/release/MDDEM"
+run ./input
