@@ -224,7 +224,7 @@ impl Scheduler {
     }
     pub fn run(&mut self) {
         for (system, _set) in self.update_systems.iter_mut() {
-            println!("{:?}:", _set);
+            // println!("{:?}:", _set);
             system.run(&mut self.resources);
         }
     }

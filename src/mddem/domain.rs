@@ -129,10 +129,10 @@ pub(crate) fn read_input(input: Res<Input>, comm: Res<Comm>, mut domain: ResMut<
 pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>) {
     for i in (0..atoms.radius.len()).rev() {
         if domain.is_periodic.x {
-            if atoms.pos[i].x < domain.boundaries_low.x {
+            while atoms.pos[i].x < domain.boundaries_low.x {
                 atoms.pos[i].x += domain.size.x
             }
-            if atoms.pos[i].x >= domain.boundaries_high.x {
+            while atoms.pos[i].x >= domain.boundaries_high.x {
                 atoms.pos[i].x -= domain.size.x
             }
         } else {
@@ -145,10 +145,10 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>) {
             }
         }
         if domain.is_periodic.y {
-            if atoms.pos[i].y < domain.boundaries_low.y {
+            while atoms.pos[i].y < domain.boundaries_low.y {
                 atoms.pos[i].y += domain.size.y
             }
-            if atoms.pos[i].y >= domain.boundaries_high.y {
+            while atoms.pos[i].y >= domain.boundaries_high.y {
                 atoms.pos[i].y -= domain.size.y
             }
         } else {
@@ -161,10 +161,10 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>) {
             }
         }
         if domain.is_periodic.z {
-            if atoms.pos[i].z < domain.boundaries_low.z {
+            while atoms.pos[i].z < domain.boundaries_low.z {
                 atoms.pos[i].z += domain.size.z
             }
-            if atoms.pos[i].z >= domain.boundaries_high.z {
+            while atoms.pos[i].z >= domain.boundaries_high.z {
                 atoms.pos[i].z -= domain.size.z
             }
         } else {

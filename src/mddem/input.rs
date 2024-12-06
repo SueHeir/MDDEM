@@ -4,14 +4,14 @@ use std::{
 };
 
 pub struct Input {
-    filename: String,
+    _filename: String,
     pub commands: Vec<String>,
 }
 
 impl Input {
     pub fn new(args: Vec<String>) -> Self {
         Input {
-            filename: args[1].clone(),
+            _filename: args[1].clone(),
             commands: Self::read_input_file(&args[1]),
         }
     }

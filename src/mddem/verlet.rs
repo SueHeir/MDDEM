@@ -10,12 +10,13 @@ use super::{
 pub fn verlet_app(scheduler: &mut Scheduler) {
     scheduler.add_resource(Verlet::new());
     scheduler.add_setup_system(read_input, Setup);
+    scheduler.add_update_system(update_cycle, PreInitalIntegration);
     scheduler.add_update_system(inital_integration, InitalIntegration);
     scheduler.add_update_system(final_integration, FinalIntegration);
 }
 
 pub struct Verlet {
-    cycle_count: u32,
+    pub cycle_count: u32,
     cycle_remaining: u32,
 }
 impl Verlet {
@@ -38,14 +39,18 @@ pub fn read_input(input: Res<Input>, comm: Res<Comm>, mut verlet: ResMut<Verlet>
                     if comm.rank == 0 {
                         println!("Verlet: {}", c);
                     }
-                    verlet.cycle_count = values[1].parse::<u32>().unwrap();
-                    verlet.cycle_remaining = verlet.cycle_count;
+                    verlet.cycle_count = 0;
+                    verlet.cycle_remaining = values[1].parse::<u32>().unwrap();
                 }
 
                 _ => {}
             }
         }
     }
+}
+
+pub fn update_cycle(mut verlet: ResMut<Verlet>) {
+    verlet.cycle_count += 1
 }
 
 pub fn inital_integration(mut atoms: ResMut<Atom>) {
