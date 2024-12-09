@@ -58,8 +58,8 @@ impl Comm {
 }
 
 
-pub fn read_input(input: Res<Input>, mut comm: ResMut<Comm>) {
-    let commands = &input.commands;
+pub fn read_input(input: Res<Input>, scheduler_manager: Res<SchedulerManager>, mut comm: ResMut<Comm>) {
+    let commands = &input.current_commands[scheduler_manager.index];
     for c in commands.iter() {
         let values = c.split_whitespace().collect::<Vec<&str>>();
 

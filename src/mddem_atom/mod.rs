@@ -378,8 +378,8 @@ impl Atom {
     // }
 }
 
-pub fn read_input(input: Res<Input>, comm: Res<Comm>, domain: Res<Domain>, mut atom: ResMut<Atom>) {
-    let commands = &input.commands;
+pub fn read_input(input: Res<Input>, scheduler_manager: Res<SchedulerManager>, comm: Res<Comm>, domain: Res<Domain>, mut atom: ResMut<Atom>) {
+    let commands = &input.current_commands[scheduler_manager.index];
     let mut rng = thread_rng();
     for c in commands.iter() {
         let values = c.split_whitespace().collect::<Vec<&str>>();

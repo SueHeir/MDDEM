@@ -8,4 +8,5 @@ gravity           0.0 -9.8 0.0
 randomparticleinsert    150 0.001 2500 8.7e9 0.3
 randomparticlevelocity  0.05
 dampening               0.95
-run                     1000000
+run                     20000
+run                     20000

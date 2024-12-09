@@ -22,7 +22,7 @@ use mddem_communication::CommincationPlugin;
 use mddem_neighbor::NeighborPlugin;
 use mddem_atom::AtomPlugin;
 use mddem_force::ForcePlugin;
-use mddem_verlet::VeletPlugin;
+use mddem_verlet::VerletPlugin;
 use mddem_print::PrintPlugin;
 
 
@@ -35,7 +35,7 @@ fn main() {
         .add_plugins(NeighborPlugin)
         .add_plugins(AtomPlugin)
         .add_plugins(ForcePlugin)
-        .add_plugins(VeletPlugin)
+        .add_plugins(VerletPlugin)
         .add_plugins(PrintPlugin)
         .start();
 

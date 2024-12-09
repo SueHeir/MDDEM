@@ -21,14 +21,36 @@ impl Plugin for InputPlugin {
 
 pub struct Input {
     _filename: String,
-    pub commands: Vec<String>,
+    pub all_commands: Vec<String>,
+    pub current_commands: Vec<Vec<String>>,
+
 }
 
 impl Input {
     pub fn new(args: Vec<String>) -> Self {
+        let all_commands = Self::read_input_file(&args[1]);
+
+        let mut current_commands: Vec<Vec<String>> = Vec::new();
+
+        current_commands.push(Vec::new());
+        let mut index = 0;
+        for line in &all_commands {
+            current_commands[index].push(line.clone());
+
+            if line.contains("run") {
+                index += 1;
+                current_commands.push(Vec::new());
+            }
+        }
+
+        println!("{:?}", current_commands);
+        println!("{:?}", all_commands);
+
+
         Input {
             _filename: args[1].clone(),
-            commands: Self::read_input_file(&args[1]),
+            all_commands,
+            current_commands,
         }
     }
 

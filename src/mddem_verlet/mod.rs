@@ -3,9 +3,9 @@ use mddem_scheduler::prelude::*;
 
 use crate::{mddem_atom::Atom, mddem_communication::Comm, mddem_input::Input};
 
-pub struct VeletPlugin;
+pub struct VerletPlugin;
 
-impl Plugin for VeletPlugin {
+impl Plugin for VerletPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(Verlet::new())
             .add_setup_system(read_input, ScheduleSet::Setup)
@@ -16,7 +16,6 @@ impl Plugin for VeletPlugin {
 }
 
 pub struct Verlet {
-    current_run_index: usize,
     pub total_cycle: usize,
     pub cycle_count: Vec<u32>,
     cycle_remaining: Vec<u32>,
@@ -24,7 +23,6 @@ pub struct Verlet {
 impl Verlet {
     pub fn new() -> Self {
         Verlet {
-            current_run_index: 0,
             total_cycle: 0,
             cycle_count: Vec::new(),
             cycle_remaining: Vec::new(),
@@ -32,8 +30,14 @@ impl Verlet {
     }
 }
 
-pub fn read_input(input: Res<Input>, comm: Res<Comm>, mut verlet: ResMut<Verlet>) {
-    let commands = &input.commands;
+pub fn read_input(input: Res<Input>, scheduler_manager: Res<SchedulerManager>, comm: Res<Comm>, mut verlet: ResMut<Verlet>) {
+    
+    // Only run this input reader once because we go through all commands
+    if scheduler_manager.index != 0 {
+        return;
+    }
+
+    let commands = &input.all_commands;
     for c in commands.iter() {
         let values = c.split_whitespace().collect::<Vec<&str>>();
 
@@ -54,23 +58,20 @@ pub fn read_input(input: Res<Input>, comm: Res<Comm>, mut verlet: ResMut<Verlet>
 }
 
 pub fn update_cycle(mut verlet: ResMut<Verlet>, mut scheudler_manager: ResMut<SchedulerManager>) {
-    let index = verlet.current_run_index;
+    let index = scheudler_manager.index;
     verlet.cycle_count[index] += 1;
     verlet.total_cycle += 1;
 
     if verlet.cycle_count[index] == verlet.cycle_remaining[index] {
-        verlet.current_run_index += 1;
-
+        scheudler_manager.index += 1;
         scheudler_manager.state = SchedulerState::Setup;
-        if verlet.current_run_index == verlet.cycle_count.len() {
+        
+        if scheudler_manager.index == verlet.cycle_count.len() {
             scheudler_manager.state = SchedulerState::End;
+            
         
         }
     }
-
-    
-
-
 }
 
 pub fn inital_integration(mut atoms: ResMut<Atom>) {
