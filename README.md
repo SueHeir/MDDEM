@@ -48,19 +48,42 @@ pub enum ScheduleSet {
 }
 ```
 
-Functions and structs are registered to the scheduler as follows
+Functions and structs are registered to the scheduler with a Plugin. Plugins' build function is called when the plugin is added to the application.
 
 ```rust
-pub fn comm_app(scheduler: &mut Scheduler) {
-    scheduler.add_resource(Comm::new());
-    scheduler.add_setup_system(read_input, Setup);
-    scheduler.add_setup_system(setup, PreNeighbor);
+pub struct CommincationPlugin;
 
-    scheduler.add_update_system(exchange, Exchange);
-    scheduler.add_update_system(borders, PreNeighbor);
-    scheduler.add_update_system(reverse_send_force, PostForce);
+impl Plugin for CommincationPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_resource(Comm::new())
+            .add_setup_system(read_input, ScheduleSet::Setup)
+            .add_setup_system(setup, ScheduleSet::PreNeighbor)
+            .add_update_system(exchange, ScheduleSet::Exchange)
+            .add_update_system(borders, ScheduleSet::PreNeighbor)
+            .add_update_system(reverse_send_force, ScheduleSet::PostForce);
+    }
 }
 ```
+
+Currently this project is not set up to be a library but will be in the future (Probably when I add it to cargo). For now the main function composes a runnable version of the codebase through adding all the required plugins.
+```rust
+fn main() {
+    App::new()
+        .add_plugins(InputPlugin)
+        .add_plugins(DomainPlugin)
+        .add_plugins(CommincationPlugin)
+        .add_plugins(NeighborPlugin)
+        .add_plugins(AtomPlugin)
+        .add_plugins(ForcePlugin)
+        .add_plugins(VeletPlugin)
+        .add_plugins(PrintPlugin)
+        .start();
+
+}
+```
+
+
+
 
 
 ## Future Goals
