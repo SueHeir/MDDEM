@@ -87,8 +87,8 @@ fn main() {
 
 
 ## Future Goals
-- Modularity through a plugin manager
-  - Everything should be a plugin that can be easily removed similar to that of [bevy](https://github.com/bevyengine/bevy).
+- Modularity through a plugin manager (partially done)
+  - Everything should be a plugin that can be easily removed similar to that of [bevy](https://github.com/bevyengine/bevy). (Done)
   - A specific type of simulation will require someone to build their own version of MDDEM, using either internal or external plugins, with the plugins of their choice (That is why it can be both a MD and DEM codebase)
     - This should be as easy as it is to start a new bevy project: add MDDEM to your .toml file, add your LEBC plugin to your .toml file, and compose your MDDEM to use the function that you need.
     - This will lead to simpler code written as one function doesn't need to handle every kind of DEM or MD simulation there is.
