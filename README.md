@@ -84,16 +84,22 @@ fn main() {
 
 
 
-
+## TODO
+- Addable and Removable systems during setup
+- "Component" setup for Atoms
+  - Position, force and velocity should be one componenet so integration systems don't need changed if other aspects of atom changes
+  - Should allow for attaching different data to atom i.e. youngs' mod for dem simulations or ??? for md simulations
+- Check that each function used has all the required accompanying functions
+- MPI forward and reverse communcation for any unknown struct
+  - This should allow them to be reused for any type of communication
 
 ## Future Goals
 - Modularity through a plugin manager (partially done)
-  - Everything should be a plugin that can be easily removed similar to that of [bevy](https://github.com/bevyengine/bevy). (Done)
+  - Everything should be a plugin that can be easily removed similar to that of [bevy](https://github.com/bevyengine/bevy).
   - A specific type of simulation will require someone to build their own version of MDDEM, using either internal or external plugins, with the plugins of their choice (That is why it can be both a MD and DEM codebase)
     - This should be as easy as it is to start a new bevy project: add MDDEM to your .toml file, add your LEBC plugin to your .toml file, and compose your MDDEM to use the function that you need.
     - This will lead to simpler code written as one function doesn't need to handle every kind of DEM or MD simulation there is.
   - Some function calls (like a modified LEBC borders function) will also require different accompanying functions. There should be a compile-time check that each function used has all the required accompanying functions
-  - Although the plugin manager and scheduler will end up similar to bevy, the goal is not to become an ECS based codebase as I believe this will complicate many things unnecessarily.
 - A real world application for both a DEM project and MD project
   - DEM example will most likely be some form of LEBC implimented for single spheres
   - MD example is not yet determined
