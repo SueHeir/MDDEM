@@ -1,7 +1,14 @@
 [package]
 name = "MDDEM"
 version = "0.1.0"
+license = "MIT OR Apache-2.0"
 edition = "2021"
+
+
+[workspace]
+members = [
+  "crates/*",
+]
 
 [package.metadata.scripts]
 mpirun = "mpiexec -n 4 ./target/release/MDDEM input"
@@ -9,6 +16,16 @@ mpirun = "mpiexec -n 4 ./target/release/MDDEM input"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+#Internal
+mddem_scheduler = { path = "./crates/mddem_scheduler"}
+mddem_app = { path = "./crates/mddem_app"}
+#External
+
+
+
 mpi = { version = "0.8.0", features = ["user-operations", "derive"] }
 nalgebra = "0.33.2"
 rand = "*"
+
+
+

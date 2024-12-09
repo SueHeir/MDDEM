@@ -1,10 +1,18 @@
 
 
-use super::{
-    atom::Atom, neighbor::Neighbor, scheduler::{Res, ResMut, ScheduleSet::*, Scheduler}
-};
+use mddem_app::prelude::*;
+use mddem_scheduler::prelude::*;
 
+use crate::{mddem_atom::Atom, mddem_neighbor::Neighbor};
 
+pub struct ForcePlugin;
+
+impl Plugin for ForcePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_resource(Force::new())
+            .add_update_system(hertz_normal_force, ScheduleSet::Force);
+    }
+}
 
 pub struct Force {
     pub _skin_fraction: f64,
@@ -20,13 +28,6 @@ impl Force {
 }
 
 
-pub fn force_app(scheduler: &mut Scheduler) {
-    scheduler.add_resource(Force::new());
-    //scheduler.add_setup_system(read_input, Setup);
-    scheduler.add_update_system(hertz_normal_force, Force);
-
-
-}
 
 // pub fn read_input(input: Res<Input>, comm: Res<Comm>,) {
 //     let commands = &input.commands;

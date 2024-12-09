@@ -1,7 +1,23 @@
 use std::{
     fs::File,
     io::{BufRead, BufReader},
+    env,
 };
+
+use mddem_app::prelude::*;
+
+
+pub struct InputPlugin;
+
+impl Plugin for InputPlugin {
+    fn build(&self, app: &mut App) {
+        let args: Vec<String> = env::args().collect();
+        app.add_resource(Input::new(args));
+    }
+}
+
+
+
 
 pub struct Input {
     _filename: String,
@@ -29,8 +45,11 @@ impl Input {
         println!("Opened File: {}", filenamestring);
 
         let buf = BufReader::new(file);
-        buf.lines()
+        let args = buf.lines()
             .map(|l| l.expect("Could not parse line"))
-            .collect()
+            .collect();
+
+        println!("Finished reading File");
+        return args;
     }
 }

@@ -1,25 +1,29 @@
 
 use std::{fs::File, io::Write};
 
-use super::{
-    atom::Atom, comm::Comm, scheduler::{Res, ResMut, ScheduleSet::*, Scheduler}, verlet::Verlet
-};
+use mddem_app::prelude::*;
+use mddem_scheduler::prelude::*;
 
-pub fn print_app(scheduler: &mut Scheduler) {
-    scheduler.add_update_system(print_vtp, PostFinalIntegration);
-    scheduler.add_update_system(print_cycle_count, PostFinalIntegration);
+use crate::{mddem_atom::Atom, mddem_communication::Comm, mddem_verlet::Verlet};
+
+pub struct PrintPlugin;
+
+impl Plugin for PrintPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_update_system(print_vtp, ScheduleSet::PostFinalIntegration)
+            .add_update_system(print_cycle_count, ScheduleSet::PostFinalIntegration);
+    }
 }
 
 
+
 pub fn print_vtp(atoms: Res<Atom>, verlet: Res<Verlet>, comm: Res<Comm>) {
-    let count = verlet.cycle_count;
+    let count = verlet.total_cycle;
     let rank = comm.rank;
 
     if count % 2000 != 0 {
         return
     }
-
-    
     let filename = format!("./vtp/{}CYCLE_{}RANK.vtp", count, rank);
     let mut file = File::create(filename).unwrap();
 
@@ -117,11 +121,11 @@ pub fn print_vtp(atoms: Res<Atom>, verlet: Res<Verlet>, comm: Res<Comm>) {
 
 
 pub fn print_cycle_count(verlet: Res<Verlet>, comm: Res<Comm>) { 
-    if verlet.cycle_count % 10000 != 0 {
+    if verlet.total_cycle % 10000 != 0 {
         return
     }
     if comm.rank == 0 {
-        println!("Cycle: {}", verlet.cycle_count)
+        println!("Cycle: {}", verlet.total_cycle)
     }
     
 }

@@ -6,6 +6,8 @@ version = 3
 name = "MDDEM"
 version = "0.1.0"
 dependencies = [
+ "mddem_app",
+ "mddem_scheduler",
  "mpi",
  "nalgebra",
  "rand",
@@ -131,6 +133,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef8ae57c4978a2acd8b869ce6b9ca1dfe817bff704c220209fdef2c0b75a01b9"
 
 [[package]]
+name = "downcast-rs"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
+
+[[package]]
 name = "either"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -249,6 +257,18 @@ dependencies = [
  "autocfg",
  "rawpointer",
 ]
+
+[[package]]
+name = "mddem_app"
+version = "0.1.0"
+dependencies = [
+ "downcast-rs",
+ "mddem_scheduler",
+]
+
+[[package]]
+name = "mddem_scheduler"
+version = "0.1.0"
 
 [[package]]
 name = "memchr"

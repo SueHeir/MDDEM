@@ -1,19 +1,22 @@
 use std::process::exit;
 
 use nalgebra::Vector3;
+use mddem_app::prelude::*;
+use mddem_scheduler::prelude::*;
 
-use super::{
-    atom::Atom,
-    comm::Comm,
-    input::Input,
-    scheduler::{Res, ResMut, ScheduleSet::*, Scheduler},
-};
+use crate::{mddem_atom::Atom, mddem_communication::Comm, mddem_input::Input};
 
-pub fn domain_app(scheduler: &mut Scheduler) {
-    scheduler.add_resource(Domain::new());
-    scheduler.add_setup_system(read_input, Setup);
-    scheduler.add_update_system(pbc, PreExchange);
+pub struct DomainPlugin;
+
+impl Plugin for DomainPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_resource(Domain::new())
+            .add_setup_system(read_input, ScheduleSet::Setup)
+            .add_update_system(pbc, ScheduleSet::PreExchange);
+    }
 }
+
+
 
 pub struct Domain {
     pub boundaries_low: Vector3<f64>,
@@ -41,6 +44,9 @@ impl Domain {
         }
     }
 }
+
+
+
 
 pub(crate) fn read_input(input: Res<Input>, comm: Res<Comm>, mut domain: ResMut<Domain>) {
     let commands = &input.commands;

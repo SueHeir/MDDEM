@@ -4,6 +4,7 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
+use std::process::exit;
 
 macro_rules! impl_system {
     (
@@ -218,15 +219,53 @@ impl Scheduler {
 
     pub fn setup(&mut self) {
         for (system, _set) in self.setup_systems.iter_mut() {
-            // println!("{:?}:", _set);
+            // println!("setup {:?}:", _set);
             system.run(&mut self.resources);
         }
     }
     pub fn run(&mut self) {
         for (system, _set) in self.update_systems.iter_mut() {
-            // println!("{:?}:", _set);
+            // println!("run {:?}:", _set);
             system.run(&mut self.resources);
         }
+    }
+
+    pub fn start(&mut self) {
+        self.add_scheduler_manager();
+        let mut schedule_state = SchedulerState::Setup;
+        while !matches!(schedule_state, SchedulerState::End) {
+            
+            if matches!(schedule_state, SchedulerState::Setup) {
+                self.organize_systems();
+                self.setup();
+                self.organize_systems(); //In the future we will be able to add or remove systems during setup!
+                
+                let mut binding = self
+                .resources
+                .get(&TypeId::of::<SchedulerManager>())
+                .unwrap()
+                .borrow_mut();
+                let scheduler_manager = binding.downcast_mut::<SchedulerManager>().unwrap();
+                scheduler_manager.state = SchedulerState::Run;
+            }
+
+            if matches!(schedule_state, SchedulerState::Run) {
+                self.run();
+            }
+
+
+            //get Data from scheduleManager
+            
+            let mut binding = self
+                .resources
+                .get(&TypeId::of::<SchedulerManager>())
+                .unwrap()
+                .borrow_mut();
+            let scheduler_manager = binding.downcast_mut::<SchedulerManager>().unwrap();
+            schedule_state = scheduler_manager.state.clone();
+            
+        }
+        
     }
 
     pub fn add_setup_system<I, S: System + 'static>(
@@ -247,6 +286,10 @@ impl Scheduler {
             .push((Box::new(system.into_system()), schedule_set));
     }
 
+    pub fn add_scheduler_manager(&mut self){
+        self.add_resource(SchedulerManager::new());
+    }
+
     pub fn add_resource<R: 'static>(&mut self, res: R) {
         self.resources
             .insert(TypeId::of::<R>(), RefCell::new(Box::new(res)));
@@ -254,3 +297,34 @@ impl Scheduler {
 }
 // ANCHOR_END: SchedulerImpl
 // ANCHOR_END: All
+
+
+#[derive(Debug, Clone, Copy)]
+pub enum SchedulerState {
+    Setup,
+    Run,
+    End,
+}
+
+pub struct SchedulerManager {
+    pub state: SchedulerState,
+    pub index: usize,
+}
+
+impl SchedulerManager {
+    pub fn new() -> Self {
+        SchedulerManager { state: SchedulerState::Setup, index: 0 }
+    }
+}
+
+
+pub mod prelude {
+    pub use crate::{
+        Scheduler,
+        ScheduleSet,
+        SchedulerManager,
+        SchedulerState,
+        Res,
+        ResMut,
+    };
+}

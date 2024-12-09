@@ -1,22 +1,23 @@
-use mpi::traits::*;
-use nalgebra::Vector3;
+
 use std::process::exit;
 
-use super::{
-    atom::{Atom, AtomMPI, ForceMPI},
-    domain::Domain,
-    input::Input,
-    scheduler::{Res, ResMut, ScheduleSet::*, Scheduler},
-};
+use mddem_app::prelude::*;
+use mddem_scheduler::prelude::*;
+use mpi::traits::{Communicator, CommunicatorCollectives, Destination, Source};
+use nalgebra::Vector3;
+use crate::{mddem_atom::{Atom, AtomMPI, ForceMPI}, mddem_domain::Domain, mddem_input::Input};
 
-pub fn comm_app(scheduler: &mut Scheduler) {
-    scheduler.add_resource(Comm::new());
-    scheduler.add_setup_system(read_input, Setup);
-    scheduler.add_setup_system(setup, PreNeighbor);
+pub struct CommincationPlugin;
 
-    scheduler.add_update_system(exchange, Exchange);
-    scheduler.add_update_system(borders, PreNeighbor);
-    scheduler.add_update_system(reverse_send_force, PostForce);
+impl Plugin for CommincationPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_resource(Comm::new())
+            .add_setup_system(read_input, ScheduleSet::Setup)
+            .add_setup_system(setup, ScheduleSet::PreNeighbor)
+            .add_update_system(exchange, ScheduleSet::Exchange)
+            .add_update_system(borders, ScheduleSet::PreNeighbor)
+            .add_update_system(reverse_send_force, ScheduleSet::PostForce);
+    }
 }
 
 pub struct Comm {
@@ -55,6 +56,7 @@ impl Comm {
         }
     }
 }
+
 
 pub fn read_input(input: Res<Input>, mut comm: ResMut<Comm>) {
     let commands = &input.commands;
@@ -502,16 +504,15 @@ pub fn borders(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>, domain: Res<Doma
 
 
 
-pub fn reverse_send_force(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>) {
+pub fn reverse_send_force(comm: Res<Comm>, mut atoms: ResMut<Atom>) {
     let mut send_buff: Vec<ForceMPI> = Vec::new();
 
-    let mut send_position = atoms.radius.len() as i32;
     let mut recieve_position = atoms.radius.len() as i32;
 
     // println!("{:?}",comm.recieve_amount);
 
     // println!("ghosts {} {}", atoms.nghost, (comm.recieve_amount[0].iter().sum::<i32>() + comm.recieve_amount[1].iter().sum::<i32>()));
-    let mut total_got = 0;
+    let mut _total_got: i32 = 0;
    
     
     // println!("{:?}", atoms.origin_index);
@@ -529,7 +530,7 @@ pub fn reverse_send_force(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>) {
                 if from_proc < comm.rank {
                     //Send
                     if from_proc != -1 {
-                        for i in ((recieve_position - comm.recieve_amount[swap][dim])..recieve_position) {
+                        for i in (recieve_position - comm.recieve_amount[swap][dim])..recieve_position {
                            send_buff.push(atoms.get_force_data(i as usize));
                         }
                         
@@ -543,7 +544,7 @@ pub fn reverse_send_force(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>) {
 
 
                         for atom in msg {
-                            total_got += 1;
+                            _total_got += 1;
                             atoms.apply_force_data(atom, comm.rank, swap as i32, dim as i32);
                         }
                     }
@@ -551,7 +552,7 @@ pub fn reverse_send_force(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>) {
                 //Send Second, Recieve First
                 } else {
 
-                    for i in ((recieve_position - comm.recieve_amount[swap][dim])..recieve_position) {
+                    for i in (recieve_position - comm.recieve_amount[swap][dim])..recieve_position {
                         send_buff.push(atoms.get_force_data(i as usize));
                     }
 
@@ -565,7 +566,7 @@ pub fn reverse_send_force(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>) {
 
                         for atom in msg {
                             atoms.apply_force_data(atom, comm.rank, swap as i32, dim as i32);
-                            total_got += 1;
+                            _total_got += 1;
                         }
                     
                         //Send
@@ -577,7 +578,7 @@ pub fn reverse_send_force(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>) {
             } else {
                 //Send
                 if from_proc != -1 {
-                    for i in ((recieve_position - comm.recieve_amount[swap][dim])..recieve_position) {
+                    for i in (recieve_position - comm.recieve_amount[swap][dim])..recieve_position {
                         send_buff.push(atoms.get_force_data(i as usize));
                     }
                     if from_proc != comm.rank {
@@ -585,7 +586,7 @@ pub fn reverse_send_force(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>) {
                     } else {
                         let msg = send_buff.clone();
                         for atom in msg {
-                            total_got += 1;
+                            _total_got += 1;
                             atoms.apply_force_data(atom, comm.rank, swap as i32, dim as i32);
                         }
                     }
@@ -596,7 +597,7 @@ pub fn reverse_send_force(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>) {
                         .process_at_rank(to_proc)
                         .receive_vec::<ForceMPI>();
                     for atom in msg {
-                        total_got += 1;
+                        _total_got += 1;
                         atoms.apply_force_data(atom, comm.rank, swap as i32, dim as i32);
                     }
                 }
@@ -620,6 +621,4 @@ pub fn reverse_send_force(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>) {
 
     comm.world.barrier();
 }
-
-
 

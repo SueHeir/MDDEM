@@ -3,12 +3,30 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-use super::{
-    comm::Comm, domain::Domain, force::Force, input::Input, scheduler::{Res, ResMut, ScheduleSet::*, Scheduler}
-};
+use mddem_app::prelude::*;
+use mddem_scheduler::prelude::*;
+use crate::{mddem_communication::Comm, mddem_domain::Domain, mddem_input::Input};
+
 use mpi::traits::{CommunicatorCollectives, Equivalence};
 use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 use rand::{thread_rng, Rng};
+
+
+
+
+
+
+pub struct AtomPlugin;
+
+impl Plugin for AtomPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_resource(Atom::new())
+            .add_setup_system(read_input, ScheduleSet::Setup)
+            .add_setup_system(calculate_delta_time, ScheduleSet::PreInitalIntegration)
+            .add_update_system(remove_ghost_atoms, ScheduleSet::PostInitalIntegration)
+            .add_update_system(zero_all_forces, ScheduleSet::PostInitalIntegration);
+    }
+}
 
 #[derive(Equivalence, Debug, Clone, Copy)]
 pub struct Vector3f64MPI {
@@ -79,16 +97,6 @@ impl Quaternionf64MPI {
     }
 }
 
-pub fn atom_app(scheduler: &mut Scheduler) {
-    scheduler.add_resource(Atom::new());
-    scheduler.add_setup_system(read_input, Setup);
-    scheduler.add_setup_system(calculate_delta_time, PreInitalIntegration);
-
-    scheduler.add_update_system(remove_ghost_atoms, PostInitalIntegration);
-    scheduler.add_update_system(zero_all_forces, PostInitalIntegration);
-    // scheduler.add_update_system(print_all_atom_position, PreExchange);
-    
-}
 
 pub(crate) struct Atom {
     pub natoms: u64,
@@ -267,8 +275,8 @@ impl Atom {
         force_mpi
     }
 
-    pub fn apply_force_data(&mut self, force_mpi: ForceMPI, rank: i32, swap: i32,
-    dim: i32) {
+    pub fn apply_force_data(&mut self, force_mpi: ForceMPI, _rank: i32, _swap: i32,
+    _dim: i32) {
         let i = force_mpi.origin_index as usize;
         if force_mpi.tag != self.tag[i] {
             // println!("apply force wrong tag");

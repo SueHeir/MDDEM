@@ -1,15 +1,25 @@
-use std::{collections::HashMap, hash::Hash};
+use std::collections::HashMap;
 
-use nalgebra::Vector3;
+use mddem_app::prelude::*;
+use mddem_scheduler::prelude::*;
 
-use super::{
-    atom::{Atom, AtomMPI}, comm::Comm, domain::Domain, input::Input, scheduler::{Res, ResMut, ScheduleSet::*, Scheduler}
-};
+use crate::{mddem_atom::Atom, mddem_communication::Comm, mddem_input::Input};
+
+
+pub struct NeighborPlugin;
+
+impl Plugin for NeighborPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_resource(Neighbor::new())
+            .add_setup_system(read_input, ScheduleSet::Setup)
+            .add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
+    }
+}
 
 
 
 pub struct NeighborData {
-    pub distance: f64,
+    pub _distance: f64,
 }
 
 pub struct Neighbor {
@@ -28,13 +38,6 @@ impl Neighbor {
 }
 
 
-pub fn neighbor_app(scheduler: &mut Scheduler) {
-    scheduler.add_resource(Neighbor::new());
-    scheduler.add_setup_system(read_input, Setup);
-    scheduler.add_update_system(brute_force_neighbor_list, Neighbor);
-
-
-}
 
 pub fn read_input(input: Res<Input>, mut neighbor: ResMut<Neighbor>, comm: Res<Comm>,) {
     let commands = &input.commands;
@@ -45,7 +48,7 @@ pub fn read_input(input: Res<Input>, mut neighbor: ResMut<Neighbor>, comm: Res<C
             match values[0] {
                 "neighbor" => {
                     if comm.rank == 0 {
-                        println!("Comm: {}", c);
+                        println!("Neighbor: {}", c);
                     }
 
                     neighbor.skin_fraction = values[1].parse::<f64>().unwrap();
@@ -83,7 +86,7 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
 
             if distance < (r1 + r2)*neighbor.skin_fraction {
 
-                neighbor.neighbor_list_map.insert((i,j), NeighborData { distance });
+                neighbor.neighbor_list_map.insert((i,j), NeighborData { _distance: distance });
             }
         }
     }

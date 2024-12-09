@@ -1,0 +1,11 @@
+[package]
+name = "mddem_app"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+mddem_scheduler = { path = "../mddem_scheduler"}
+downcast-rs = "1.2.0"
+
+
