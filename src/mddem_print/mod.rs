@@ -1,5 +1,5 @@
 
-use std::{fs::File, io::Write};
+use std::{fs::{self, File}, io::Write};
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
@@ -25,6 +25,11 @@ pub fn print_vtp(atoms: Res<Atom>, verlet: Res<Verlet>, comm: Res<Comm>) {
         return
     }
     let filename = format!("./vtp/{}CYCLE_{}RANK.vtp", count, rank);
+
+    let result = fs::create_dir_all("./vtp");
+    if let Err(_error) = result {
+        println!("Could not create file directory ./vtp")
+    }
     let mut file = File::create(filename).unwrap();
 
     // Write a &str in the file (ignoring the result).

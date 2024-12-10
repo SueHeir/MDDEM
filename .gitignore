@@ -1,2 +1,4 @@
 /target
 /vtp
+.gitignore
+/src/.gitignore
