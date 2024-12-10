@@ -53,6 +53,14 @@ impl DemAtom {
 }
 
 impl AtomAdded for DemAtom {
+
+    fn delete(&mut self, i: usize) {
+        self.radius.remove(i);
+        self.density.remove(i);
+        self.youngs_mod.remove(i);
+        self.poisson_ratio.remove(i);
+    }
+
     fn get_mpi(&mut self, i: usize) -> Vec<f64> {
         let mut buff = Vec::new();
 

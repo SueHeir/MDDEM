@@ -128,6 +128,7 @@ pub struct ForceMPI {
 
 
 pub trait AtomAdded: Any {
+    fn delete(&mut self, i: usize);
     fn get_mpi(&mut self, i: usize) -> Vec<f64>;
     fn copy_mpi(&mut self, i: usize) -> Vec<f64>;
     fn set_mpi(&mut self, buff: Vec<f64>) -> Vec<f64>;
@@ -180,9 +181,6 @@ impl Atom {
             nghost: 0,
 
             dt: 1.0,
-            // dt: 1.0,
-            // restitution_coefficient: 1.0,
-            // beta: 1.0,
             tag: Vec::new(),
             origin_index: Vec::new(),
             is_ghost: Vec::new(),
@@ -195,14 +193,7 @@ impl Atom {
             torque: Vec::new(),
             force: Vec::new(),
             skin: Vec::new(),
-
-            
-            // radius: Vec::new(),
             mass: Vec::new(),
-            // density: Vec::new(),
-            // youngs_mod: Vec::new(),
-            // poisson_ratio: Vec::new(),
-
             added: HashMap::new(),
         }
     }
@@ -214,75 +205,6 @@ impl Atom {
         }
         return max_tag;
     }
-
-    // pub fn get_atom_mpi(&mut self, i: usize) -> AtomMPI {
-    //     let atom_mpi = AtomMPI {
-    //         tag: self.tag.remove(i),
-    //         origin_index: 0,
-    //         pos: Vector3f64MPI::new(self.pos.remove(i)),
-    //         velocity: Vector3f64MPI::new(self.velocity.remove(i)),
-    //         quaterion: Quaternionf64MPI::new(self.quaterion.remove(i)),
-    //         omega: Vector3f64MPI::new(self.omega.remove(i)),
-    //         angular_momentum: Vector3f64MPI::new(self.angular_momentum.remove(i)),
-    //         torque: Vector3f64MPI::new(self.torque.remove(i)),
-    //         force: Vector3f64MPI::new(self.force.remove(i)),
-    //         skin: self.skin.remove(i),
-    //         // radius: self.radius.remove(i),
-    //         mass: self.mass.remove(i),
-    //         // density: self.density.remove(i),
-    //         // youngs_mod: self.youngs_mod.remove(i),
-    //         // poisson_ratio: self.poisson_ratio.remove(i),
-    //     };
-
-    //     self.origin_index.remove(i);
-    //     self.is_collision.remove(i);
-    //     self.is_ghost.remove(i);
-    //     return atom_mpi;
-    // }
-
-    // pub fn copy_atom_mpi(&mut self, i: usize) -> AtomMPI {
-    //     let atom_mpi = AtomMPI {
-    //         tag: self.tag[i].clone(),
-    //         origin_index: i as u32,
-    //         pos: Vector3f64MPI::new(self.pos[i].clone()),
-    //         velocity: Vector3f64MPI::new(self.velocity[i].clone()),
-    //         quaterion: Quaternionf64MPI::new(self.quaterion[i].clone()),
-    //         omega: Vector3f64MPI::new(self.omega[i].clone()),
-    //         angular_momentum: Vector3f64MPI::new(self.angular_momentum[i].clone()),
-    //         torque: Vector3f64MPI::new(self.torque[i].clone()),
-    //         force: Vector3f64MPI::new(self.force[i].clone()),
-    //         // radius: self.radius[i].clone(),
-    //         skin: self.skin[i].clone(),
-    //         mass: self.mass[i].clone(),
-    //         // density: self.density[i].clone(),
-    //         // youngs_mod: self.youngs_mod[i].clone(),
-    //         // poisson_ratio: self.poisson_ratio[i].clone(),
-    //     };
-    //     return atom_mpi;
-    // }
-
-    // pub fn add_atom_from_atom_mpi(&mut self, atom: AtomMPI, is_ghost: bool) {
-    //     self.tag.push(atom.tag);
-    //     self.origin_index.push(atom.origin_index as i32);
-    //     self.pos.push(atom.pos.to_vector3());
-    //     self.velocity.push(atom.velocity.to_vector3());
-    //     self.quaterion.push(atom.quaterion.to_quat());
-    //     self.omega.push(atom.omega.to_vector3());
-    //     self.angular_momentum
-    //         .push(atom.angular_momentum.to_vector3());
-    //     self.torque.push(atom.torque.to_vector3());
-    //     self.force.push(atom.force.to_vector3());
-    //     self.skin.push(atom.skin);
-    //     // self.radius.push(atom.radius);
-    //     self.mass.push(atom.mass);
-    //     // self.density.push(atom.density);
-    //     // self.youngs_mod.push(atom.youngs_mod);
-    //     // self.poisson_ratio.push(atom.poisson_ratio);
-        
-    //     self.is_collision.push(false);
-    //     self.is_ghost.push(is_ghost);
-
-    // }
 
     //gets data from ghost to reverse send force data back to real particle
     pub fn get_force_data(&mut self, i: usize) -> ForceMPI {
@@ -325,13 +247,15 @@ impl Atom {
         self.torque.remove(i);
         self.force.remove(i);
         self.skin.remove(i);
-        // self.radius.remove(i);
         self.mass.remove(i);
-        // self.density.remove(i);
-        // self.youngs_mod.remove(i);
-        // self.poisson_ratio.remove(i);
         self.is_collision.remove(i);
         self.is_ghost.remove(i);
+
+        for (_type_id, ref_cell) in &self.added {
+            let mut atom_added_binder = ref_cell.borrow_mut();
+            let atom_added = atom_added_binder.as_mut();
+            atom_added.delete(i);
+        }
     }
 
     pub fn get_atom_buff(&mut self, i: usize)-> Vec<f64> {
