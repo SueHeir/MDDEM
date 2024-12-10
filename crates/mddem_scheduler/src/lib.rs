@@ -146,6 +146,13 @@ pub enum ScheduleSet {
     PostFinalIntegration,
 }
 
+#[derive(Debug)]
+pub enum ScheduleSetupSet {
+    PreSetup,
+    Setup,
+    PostSetup,
+}
+
 pub fn set_to_value(schedule_set: &ScheduleSet) -> u32 {
     match schedule_set {
         ScheduleSet::Setup => 0,
@@ -162,6 +169,14 @@ pub fn set_to_value(schedule_set: &ScheduleSet) -> u32 {
         ScheduleSet::PreFinalIntegration => 11,
         ScheduleSet::FinalIntegration => 12,
         ScheduleSet::PostFinalIntegration => 13,
+    }
+}
+
+pub fn setup_set_to_value(schedule_set: &ScheduleSetupSet) -> u32 {
+    match schedule_set {
+        ScheduleSetupSet::PreSetup => 0,
+        ScheduleSetupSet::Setup => 0,
+        ScheduleSetupSet::PostSetup => 0,
     }
 }
 
@@ -203,7 +218,7 @@ type StoredSystem = Box<dyn System>;
 // ANCHOR: Scheduler
 #[derive(Default)]
 pub struct Scheduler {
-    setup_systems: Vec<(StoredSystem, ScheduleSet)>,
+    setup_systems: Vec<(StoredSystem, ScheduleSetupSet)>,
     update_systems: Vec<(StoredSystem, ScheduleSet)>,
     pub resources: HashMap<TypeId, RefCell<Box<dyn Any>>>,
 }
@@ -212,7 +227,7 @@ pub struct Scheduler {
 // ANCHOR: SchedulerImpl
 impl Scheduler {
     pub fn organize_systems(&mut self) {
-        self.setup_systems.sort_by_key(|(_, f)| set_to_value(f));
+        self.setup_systems.sort_by_key(|(_, f)| setup_set_to_value(f));
         self.update_systems.sort_by_key(|(_, f)| set_to_value(f));
     }
 
@@ -270,7 +285,7 @@ impl Scheduler {
     pub fn add_setup_system<I, S: System + 'static>(
         &mut self,
         system: impl IntoSystem<I, System = S>,
-        schedule_set: ScheduleSet,
+        schedule_set: ScheduleSetupSet,
     ) {
         self.setup_systems
             .push((Box::new(system.into_system()), schedule_set));
@@ -328,6 +343,7 @@ pub mod prelude {
     pub use crate::{
         Scheduler,
         ScheduleSet,
+        ScheduleSetupSet,
         SchedulerManager,
         SchedulerState,
         Res,

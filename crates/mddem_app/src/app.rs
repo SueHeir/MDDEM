@@ -1,6 +1,6 @@
 use std::{any::{Any, TypeId}, cell::{RefCell, RefMut}, collections::HashMap};
 
-use mddem_scheduler::{IntoSystem, ScheduleSet, System};
+use mddem_scheduler::{IntoSystem, ScheduleSet, ScheduleSetupSet, System};
 
 use crate::{Plugin, Plugins, SubApp, SubApps};
 
@@ -112,7 +112,7 @@ impl App {
      pub fn add_setup_system<I, S: System + 'static>(
          &mut self,
          system: impl IntoSystem<I, System = S>,
-         schedule_set: ScheduleSet,
+         schedule_set: ScheduleSetupSet,
      ) -> &mut Self{
          self.sub_apps.main.add_setup_system(system, schedule_set);
          self

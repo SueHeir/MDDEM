@@ -11,7 +11,7 @@ pub struct DomainPlugin;
 impl Plugin for DomainPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(Domain::new())
-            .add_setup_system(read_input, ScheduleSet::Setup)
+            .add_setup_system(read_input, ScheduleSetupSet::Setup)
             .add_update_system(pbc, ScheduleSet::PreExchange);
     }
 }

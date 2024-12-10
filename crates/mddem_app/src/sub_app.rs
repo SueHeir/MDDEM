@@ -2,7 +2,7 @@ use std::{any::{Any, TypeId}, cell::{RefCell, RefMut}, collections::{HashMap, Ha
 
 use crate::Plugin;
 
-use mddem_scheduler::{IntoSystem, ScheduleSet, Scheduler, System};
+use mddem_scheduler::{IntoSystem, ScheduleSet, ScheduleSetupSet, Scheduler, System};
 
 pub struct SubApp {
     pub(crate) scheduler: Scheduler,
@@ -60,7 +60,7 @@ impl SubApp {
     pub fn add_setup_system<I, S: System + 'static>(
         &mut self,
         system: impl IntoSystem<I, System = S>,
-        schedule_set: ScheduleSet,
+        schedule_set: ScheduleSetupSet,
     ) {
         self.scheduler.add_setup_system(system, schedule_set);
     }

@@ -12,8 +12,8 @@ pub struct CommincationPlugin;
 impl Plugin for CommincationPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(Comm::new())
-            .add_setup_system(read_input, ScheduleSet::Setup)
-            .add_setup_system(setup, ScheduleSet::PreNeighbor)
+            .add_setup_system(read_input, ScheduleSetupSet::PreSetup)
+            .add_setup_system(setup, ScheduleSetupSet::PostSetup)
             .add_update_system(exchange, ScheduleSet::Exchange)
             .add_update_system(borders, ScheduleSet::PreNeighbor)
             .add_update_system(reverse_send_force, ScheduleSet::PostForce);

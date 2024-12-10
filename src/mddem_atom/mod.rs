@@ -21,7 +21,7 @@ pub struct AtomPlugin;
 impl Plugin for AtomPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(Atom::new())
-            .add_setup_system(read_input, ScheduleSet::Setup)
+            .add_setup_system(read_input, ScheduleSetupSet::Setup)
             // .add_setup_system(calculate_delta_time, ScheduleSet::PreInitalIntegration)
             .add_update_system(remove_ghost_atoms, ScheduleSet::PostInitalIntegration)
             .add_update_system(zero_all_forces, ScheduleSet::PostInitalIntegration);

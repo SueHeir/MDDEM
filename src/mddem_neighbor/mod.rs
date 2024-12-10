@@ -11,7 +11,7 @@ pub struct NeighborPlugin;
 impl Plugin for NeighborPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(Neighbor::new())
-            .add_setup_system(read_input, ScheduleSet::Setup)
+            .add_setup_system(read_input, ScheduleSetupSet::Setup)
             .add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
     }
 }

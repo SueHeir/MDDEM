@@ -8,7 +8,7 @@ pub struct VerletPlugin;
 impl Plugin for VerletPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(Verlet::new())
-            .add_setup_system(read_input, ScheduleSet::Setup)
+            .add_setup_system(read_input, ScheduleSetupSet::Setup)
             .add_update_system(update_cycle, ScheduleSet::PostFinalIntegration)
             .add_update_system(inital_integration, ScheduleSet::InitalIntegration)
             .add_update_system(final_integration, ScheduleSet::FinalIntegration);

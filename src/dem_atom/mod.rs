@@ -22,8 +22,8 @@ impl Plugin for DemAtomPlugin {
             panic!("You need the atom resource to use DemAtomPlugin");
         }
 
-        app.add_setup_system(read_input, ScheduleSet::Setup)
-            .add_setup_system(calculate_delta_time, ScheduleSet::PreInitalIntegration);
+        app.add_setup_system(read_input, ScheduleSetupSet::Setup)
+            .add_setup_system(calculate_delta_time, ScheduleSetupSet::PostSetup);
     }
 }
 
