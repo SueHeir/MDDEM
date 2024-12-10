@@ -85,7 +85,7 @@ The Atom plugin does not need added here because DemAtomPlugin adds it.  Atom co
 
 
 ## TODO
-- Adding plugins in the wrong order can break it, this needs fixed
+- Adding plugins in the wrong order can break it, this needs fixed (I believe this is fixed)
 - Addable and Removable systems during setup
 - Check that each function used has all the required accompanying functions
 - MPI forward and reverse communcation for any unknown struct
