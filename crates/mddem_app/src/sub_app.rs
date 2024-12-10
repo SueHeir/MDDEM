@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::{any::{Any, TypeId}, cell::{RefCell, RefMut}, collections::{HashMap, HashSet}};
 
 use crate::Plugin;
 
@@ -75,6 +75,10 @@ impl SubApp {
 
     pub fn add_resource<R: 'static>(&mut self, res: R) { 
         self.scheduler.add_resource(res);
+    }
+
+    pub fn get_mut_resource(&mut self, res: TypeId) -> Option<&RefCell<Box<dyn Any>>> {
+        self.scheduler.get_mut_resource(res)
     }
 
 }

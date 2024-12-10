@@ -43,9 +43,6 @@ impl Input {
             }
         }
 
-        println!("{:?}", current_commands);
-        println!("{:?}", all_commands);
-
 
         Input {
             _filename: args[1].clone(),

@@ -1,9 +1,11 @@
 
 
+use std::any::TypeId;
+
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 
-use crate::{mddem_atom::Atom, mddem_neighbor::Neighbor};
+use crate::{dem_atom::DemAtom, mddem_atom::Atom, mddem_neighbor::Neighbor};
 
 pub struct ForcePlugin;
 
@@ -64,8 +66,33 @@ pub fn hertz_normal_force(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>) {
         let p2 = atoms.pos[j];
         let v1 = atoms.velocity[i];
         let v2 = atoms.velocity[j];
-        let r1 = atoms.radius[i];
-        let r2 = atoms.radius[j];
+
+        let mut r1 = 0.0;
+        let mut r2 = 0.0;
+        let mut beta = 0.0;
+
+        let mut poisson_ratio1 = 0.0;
+        let mut poisson_ratio2 = 0.0;
+        let mut youngs_mod1 = 0.0;
+        let mut youngs_mod2 = 0.0;
+
+
+        if let Some(dem_atoms_option) = atoms.added.get(&TypeId::of::<DemAtom>()) {
+            let mut dem_atom_binder = dem_atoms_option.borrow_mut();
+            let dem_atom = dem_atom_binder.downcast_mut::<DemAtom>().unwrap();
+
+            r1 = dem_atom.radius[i];
+            r2 = dem_atom.radius[j];
+            beta = dem_atom.beta;
+            poisson_ratio1 = dem_atom.poisson_ratio[i];
+            poisson_ratio2 = dem_atom.poisson_ratio[j];
+
+            youngs_mod1 = dem_atom.youngs_mod[i];
+            youngs_mod2 = dem_atom.youngs_mod[j];
+        }
+
+        
+        
 
         
 
@@ -79,20 +106,25 @@ pub fn hertz_normal_force(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>) {
 
         if distance < r1 + r2 { 
 
+            
+
             atoms.is_collision[i] = true;
             atoms.is_collision[j] = true;
 
             let normalized_delta = position_difference / distance;
             // println!("pos dif {} dis {}", position_difference, distance);
-            let distance_delta = (atoms.radius[i] + atoms.radius[j]) - distance;
+            let distance_delta = (r1 + r2) - distance;
+            // if distance_delta > 0.000001 {
+            //     println!("{}", distance_delta)
+            // }
 
-            let effective_radius = 1.0 / (1.0 / atoms.radius[i] + 1.0 / atoms.radius[j]);
+            let effective_radius = 1.0 / (1.0 / r1 + 1.0 / r2);
 
             let effective_youngs = 1.0
-                / ((1.0 - atoms.poisson_ratio[i] * atoms.poisson_ratio[i])
-                    / atoms.youngs_mod[i]
-                    + (1.0 - atoms.poisson_ratio[j] * atoms.poisson_ratio[j])
-                        / atoms.youngs_mod[j]);
+                / ((1.0 - poisson_ratio1 * poisson_ratio2)
+                    / youngs_mod1
+                    + (1.0 - poisson_ratio1 * poisson_ratio2)
+                        / youngs_mod2);
             let normal_force = 4.0 / 3.0
                 * effective_youngs
                 * effective_radius.sqrt()
@@ -113,7 +145,7 @@ pub fn hertz_normal_force(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>) {
             // println!("{} {} {} {}", atoms.beta, contact_stiffness, reduced_mass, v_r_n);
             let dissipation_force = 2.0
                 * 0.91287092917
-                * atoms.beta
+                * beta
                 * (contact_stiffness * reduced_mass).sqrt()
                 * v_r_n.norm()
                 * v_r_n.dot(&normalized_delta).signum();

@@ -25,6 +25,7 @@ mddem_app = { path = "./crates/mddem_app"}
 
 mpi = { version = "0.8.0", features = ["user-operations", "derive"] }
 nalgebra = "0.33.2"
+downcast = "0.11"
 rand = "*"
 
 

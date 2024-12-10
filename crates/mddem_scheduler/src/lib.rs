@@ -4,7 +4,6 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
-use std::process::exit;
 
 macro_rules! impl_system {
     (
@@ -294,6 +293,13 @@ impl Scheduler {
         self.resources
             .insert(TypeId::of::<R>(), RefCell::new(Box::new(res)));
     }
+    pub fn get_mut_resource(&mut self, res: TypeId) -> Option<&RefCell<Box<dyn Any>>>{
+        let binding: Option<&RefCell<Box<dyn Any>>> = self
+                .resources
+                .get(&res);
+        return binding;
+    }
+    
 }
 // ANCHOR_END: SchedulerImpl
 // ANCHOR_END: All

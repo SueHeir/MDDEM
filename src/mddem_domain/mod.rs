@@ -133,7 +133,7 @@ pub(crate) fn read_input(input: Res<Input>, scheduler_manager: Res<SchedulerMana
 }
 
 pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>) {
-    for i in (0..atoms.radius.len()).rev() {
+    for i in (0..atoms.pos.len()).rev() {
         if domain.is_periodic.x {
             while atoms.pos[i].x < domain.boundaries_low.x {
                 atoms.pos[i].x += domain.size.x

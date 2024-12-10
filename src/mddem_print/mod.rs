@@ -33,7 +33,7 @@ pub fn print_vtp(atoms: Res<Atom>, verlet: Res<Verlet>, comm: Res<Comm>) {
     write!(
         &mut file,
         "<Piece NumberOfPoints=\"{}\">\n",
-        atoms.radius.len()
+        atoms.pos.len()
     )
     .unwrap();
 
@@ -44,7 +44,7 @@ pub fn print_vtp(atoms: Res<Atom>, verlet: Res<Verlet>, comm: Res<Comm>) {
         "<DataArray type=\"Float32\" NumberOfComponents=\"3\" format=\"ascii\">"
     )
     .unwrap();
-    for i in 0..atoms.radius.len() {
+    for i in 0..atoms.pos.len() {
         writeln!(
             &mut file,
             "{} {} {}",
@@ -61,8 +61,8 @@ pub fn print_vtp(atoms: Res<Atom>, verlet: Res<Verlet>, comm: Res<Comm>) {
         "<DataArray type=\"Float32\" Name=\"Radius\" format=\"ascii\">\n"
     )
     .unwrap();
-    for i in 0..atoms.radius.len() {
-        writeln!(&mut file, "{}", atoms.radius[i]).unwrap();
+    for i in 0..atoms.pos.len() {
+        writeln!(&mut file, "{}", atoms.skin[i]).unwrap();
     }
 
     write!(&mut file, "</DataArray>").unwrap();
@@ -73,7 +73,7 @@ pub fn print_vtp(atoms: Res<Atom>, verlet: Res<Verlet>, comm: Res<Comm>) {
         "<DataArray type=\"Float32\" Name=\"Vel_Mag\" format=\"ascii\">\n"
     )
     .unwrap();
-    for i in 0..atoms.radius.len() {
+    for i in 0..atoms.pos.len() {
         writeln!(&mut file, "{}", atoms.velocity[i].norm()).unwrap();
     }
 
@@ -85,7 +85,7 @@ pub fn print_vtp(atoms: Res<Atom>, verlet: Res<Verlet>, comm: Res<Comm>) {
         "<DataArray type=\"Int32\" Name=\"IsGhost\" format=\"ascii\">\n"
     )
     .unwrap();
-    for i in 0..atoms.radius.len() {
+    for i in 0..atoms.pos.len() {
         let mut is_ghost = 0;
         if i >= atoms.nlocal.try_into().unwrap() {
             is_ghost = 1
@@ -101,7 +101,7 @@ pub fn print_vtp(atoms: Res<Atom>, verlet: Res<Verlet>, comm: Res<Comm>) {
         "<DataArray type=\"Int32\" Name=\"IsCollision\" format=\"ascii\">\n"
     )
     .unwrap();
-    for i in 0..atoms.radius.len() {
+    for i in 0..atoms.pos.len() {
         let mut is_collision = 0;
         if atoms.is_collision[i] {
             is_collision = 1

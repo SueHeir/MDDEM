@@ -70,16 +70,16 @@ pub fn read_input(input: Res<Input>, scheduler_manager: Res<SchedulerManager>, m
 pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor>) {
     neighbor.neighbor_list_map.clear();
 
-    for i in 0..atoms.radius.len() {
-        for j in (i+1)..atoms.radius.len() {
+    for i in 0..atoms.pos.len() {
+        for j in (i+1)..atoms.pos.len() {
             if atoms.tag[i] == atoms.tag[j] {
                 continue;
             }
 
             let p1 = atoms.pos[i];
             let p2 = atoms.pos[j];
-            let r1 = atoms.radius[i];
-            let r2 = atoms.radius[j];
+            let r1 = atoms.skin[i];
+            let r2 = atoms.skin[j];
 
             let position_difference = p2 - p1;
             let distance = position_difference.norm();

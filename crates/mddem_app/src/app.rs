@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{any::{Any, TypeId}, cell::{RefCell, RefMut}, collections::HashMap};
 
 use mddem_scheduler::{IntoSystem, ScheduleSet, System};
 
@@ -130,6 +130,10 @@ impl App {
      pub fn add_resource<R: 'static>(&mut self, res: R) -> &mut Self { 
          self.sub_apps.main.add_resource(res);
          self
+     }
+
+     pub fn get_mut_resource(&mut self, res: TypeId) -> Option<&RefCell<Box<dyn Any>>> {
+        self.sub_apps.main.get_mut_resource(res)
      }
 
     pub fn start(&mut self) {
