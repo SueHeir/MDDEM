@@ -68,27 +68,25 @@ impl Plugin for CommincationPlugin {
 Currently this project is not set up to be a library but will be in the future (Probably when I add it to cargo). For now the main function composes a runnable version of the codebase through adding all the required plugins.
 ```rust
 fn main() {
-    App::new()
+   App::new()
         .add_plugins(InputPlugin)
-        .add_plugins(DomainPlugin)
         .add_plugins(CommincationPlugin)
+        .add_plugins(DomainPlugin)
         .add_plugins(NeighborPlugin)
-        .add_plugins(AtomPlugin)
+        .add_plugins(DemAtomPlugin)
         .add_plugins(ForcePlugin)
-        .add_plugins(VeletPlugin)
+        .add_plugins(VerletPlugin)
         .add_plugins(PrintPlugin)
         .start();
 
 }
 ```
-
+The Atom plugin does not need added here because DemAtomPlugin adds it.  Atom contains an added value which holds of vector of pointers to additionally added data to use throughout the simulation. For example, the young's modulus of each atom is stored in the DemAtom struct held by atom's added value. All structs added to atom have the AtomAdded trait which defines functions to get and recieve buffers for mpi communication.
 
 
 ## TODO
+- Adding plugins in the wrong order can break it, this needs fixed
 - Addable and Removable systems during setup
-- "Component" setup for Atoms
-  - Position, force and velocity should be one componenet so integration systems don't need changed if other aspects of atom changes
-  - Should allow for attaching different data to atom i.e. youngs' mod for dem simulations or ??? for md simulations
 - Check that each function used has all the required accompanying functions
 - MPI forward and reverse communcation for any unknown struct
   - This should allow them to be reused for any type of communication
