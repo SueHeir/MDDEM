@@ -68,19 +68,20 @@ impl Plugin for CommincationPlugin {
 Currently this project is not set up to be a library but will be in the future (Probably when I add it to cargo). For now the main function composes a runnable version of the codebase through adding all the required plugins.
 ```rust
 fn main() {
-   App::new()
+    App::new()
         .add_plugins(InputPlugin)
         .add_plugins(CommincationPlugin)
         .add_plugins(DomainPlugin)
-        .add_plugins(NeighborPlugin)
+        .add_plugins(NeighborPlugin { brute_force: true })
         .add_plugins(DemAtomPlugin)
         .add_plugins(ForcePlugin)
         .add_plugins(VerletPlugin)
         .add_plugins(PrintPlugin)
         .start();
-
 }
 ```
+The Neighbor plugin's setting of brute_force should be left on true for now, atom bins are not working properly right now
+
 The Atom plugin does not need added here because DemAtomPlugin adds it.  Atom contains an added value which holds of vector of pointers to additionally added data to use throughout the simulation. For example, the young's modulus of each atom is stored in the DemAtom struct held by atom's added value. All structs added to atom have the AtomAdded trait which defines functions to get and recieve buffers for mpi communication.
 
 
