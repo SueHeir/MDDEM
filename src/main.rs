@@ -34,11 +34,10 @@ fn main() {
         .add_plugins(InputPlugin)
         .add_plugins(CommincationPlugin)
         .add_plugins(DomainPlugin)
-        .add_plugins(NeighborPlugin)
+        .add_plugins(NeighborPlugin { brute_force: true })
         .add_plugins(DemAtomPlugin)
         .add_plugins(ForcePlugin)
         .add_plugins(VerletPlugin)
         .add_plugins(PrintPlugin)
         .start();
-
 }

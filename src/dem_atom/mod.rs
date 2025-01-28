@@ -1,5 +1,4 @@
 use std::{any::TypeId, cell::RefCell, f64::consts::PI};
-use  downcast::{downcast, Any};
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
@@ -94,7 +93,7 @@ impl AtomAdded for DemAtom {
 }
 
 
-pub fn read_input(input: Res<Input>, scheduler_manager: Res<SchedulerManager>, comm: Res<Comm>, mut atoms: ResMut<Atom>) {
+pub fn read_input(input: Res<Input>, scheduler_manager: Res<SchedulerManager>, comm: Res<Comm>, atoms: Res<Atom>) {
     let commands = &input.current_commands[scheduler_manager.index];
     for c in commands.iter() {
         let values = c.split_whitespace().collect::<Vec<&str>>();

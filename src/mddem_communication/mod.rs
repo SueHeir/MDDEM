@@ -5,15 +5,15 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use mpi::traits::{Communicator, CommunicatorCollectives, Destination, Source};
 use nalgebra::Vector3;
-use crate::{mddem_atom::{Atom, AtomAdded, AtomMPI, ForceMPI}, mddem_domain::Domain, mddem_input::Input};
+use crate::{mddem_atom::{Atom, ForceMPI}, mddem_domain::Domain, mddem_input::Input};
 
 pub struct CommincationPlugin;
 
 impl Plugin for CommincationPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(Comm::new())
-            .add_setup_system(read_input, ScheduleSetupSet::PreSetup)
-            .add_setup_system(setup, ScheduleSetupSet::PostSetup)
+            .add_setup_system(read_input, ScheduleSetupSet::PreSetup) // Needs to be called before Domain
+            .add_setup_system(setup, ScheduleSetupSet::PostSetup)// Needs to be called after Domain
             .add_update_system(exchange, ScheduleSet::Exchange)
             .add_update_system(borders, ScheduleSet::PreNeighbor)
             .add_update_system(reverse_send_force, ScheduleSet::PostForce);

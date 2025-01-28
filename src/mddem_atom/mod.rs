@@ -97,25 +97,25 @@ impl Quaternionf64MPI {
 }
 
 
-#[derive(Equivalence, Debug, Clone, Copy)]
-pub struct AtomMPI {
-    pub tag: u32,
-    pub origin_index: u32,
-    pub pos: Vector3f64MPI,
-    pub velocity: Vector3f64MPI,
-    pub quaterion: Quaternionf64MPI,
-    pub omega: Vector3f64MPI,
-    pub angular_momentum: Vector3f64MPI,
-    pub torque: Vector3f64MPI,
-    pub force: Vector3f64MPI,
-    pub skin: f64,
-    // pub radius: f64,
-    pub mass: f64,
-    // pub density: f64,
+// #[derive(Equivalence, Debug, Clone, Copy)]
+// pub struct AtomMPI {
+//     pub tag: u32,
+//     pub origin_index: u32,
+//     pub pos: Vector3f64MPI,
+//     pub velocity: Vector3f64MPI,
+//     pub quaterion: Quaternionf64MPI,
+//     pub omega: Vector3f64MPI,
+//     pub angular_momentum: Vector3f64MPI,
+//     pub torque: Vector3f64MPI,
+//     pub force: Vector3f64MPI,
+//     pub skin: f64,
+//     // pub radius: f64,
+//     pub mass: f64,
+//     // pub density: f64,
 
-    // pub youngs_mod: f64,
-    // pub poisson_ratio: f64,
-}
+//     // pub youngs_mod: f64,
+//     // pub poisson_ratio: f64,
+// }
 
 
 #[derive(Equivalence, Debug, Clone, Copy)]
@@ -150,6 +150,7 @@ pub struct Atom {
     pub tag: Vec<u32>,
     pub origin_index: Vec<i32>,
     pub is_ghost: Vec<bool>,
+    pub has_ghost: Vec<bool>,
     pub is_collision: Vec<bool>,
 
     pub pos: Vec<Vector3<f64>>,
@@ -184,6 +185,7 @@ impl Atom {
             tag: Vec::new(),
             origin_index: Vec::new(),
             is_ghost: Vec::new(),
+            has_ghost: Vec::new(),
             is_collision: Vec::new(),
             pos: Vec::new(),
             velocity: Vec::new(),
@@ -250,6 +252,7 @@ impl Atom {
         self.mass.remove(i);
         self.is_collision.remove(i);
         self.is_ghost.remove(i);
+        self.has_ghost.remove(i);
 
         for (_type_id, ref_cell) in &self.added {
             let mut atom_added_binder = ref_cell.borrow_mut();
@@ -312,6 +315,7 @@ impl Atom {
         }
 
         self.is_ghost.remove(i);
+        self.has_ghost.remove(i);
   
 
         return buff;
@@ -325,6 +329,8 @@ impl Atom {
         buff.push(self.skin[i].clone());
 
         let pos = self.pos[i].clone() + change_pos;
+
+
         buff.push(pos.x);
         buff.push(pos.y);
         buff.push(pos.z);
@@ -370,6 +376,9 @@ impl Atom {
         }
 
 
+        self.has_ghost[i] = true;
+
+
         return buff;
 
     }
@@ -389,6 +398,7 @@ impl Atom {
 
         self.is_collision.push(buff.remove(0) == 0.0);
         self.is_ghost.push(is_ghost);
+        self.has_ghost.push(false);
 
 
         return buff;
@@ -446,6 +456,7 @@ pub fn read_input(input: Res<Input>, scheduler_manager: Res<SchedulerManager>, c
                                 atom.skin.push(radius);
                                 atom.is_collision.push(false);
                                 atom.is_ghost.push(false);
+                                atom.has_ghost.push(false);
                                 max_tag += 1;
                                 atom.pos.push(pos);
                                 atom.velocity.push(Vector3::<f64>::zeros());
@@ -534,6 +545,7 @@ fn remove_ghost_atoms(mut atoms: ResMut<Atom>) {
 fn zero_all_forces(mut atoms: ResMut<Atom>) {
     for i in 0..atoms.pos.len() {
         atoms.is_collision[i] = false;
+        atoms.has_ghost[i] = false;
         atoms.force[i] = Vector3::zeros();
         atoms.torque[i] = Vector3::zeros();
     }

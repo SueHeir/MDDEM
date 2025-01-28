@@ -11,7 +11,7 @@ pub struct DomainPlugin;
 impl Plugin for DomainPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(Domain::new())
-            .add_setup_system(read_input, ScheduleSetupSet::Setup)
+            .add_setup_system(read_input, ScheduleSetupSet::Setup)// Needs to be called after Comm and before Neighbor
             .add_update_system(pbc, ScheduleSet::PreExchange);
     }
 }
@@ -111,7 +111,7 @@ pub(crate) fn read_input(input: Res<Input>, scheduler_manager: Res<SchedulerMana
 
                     if values.len() != 4 {
                         if comm.rank == 0 {
-                            println!("Domain: Please fill out periodic command as perodic    p p p  or perodic    n n n");
+                            println!("Domain: Please fill out periodic command as periodic    p p p  or periodic    n n n");
                         }
                         exit(1);
                     }

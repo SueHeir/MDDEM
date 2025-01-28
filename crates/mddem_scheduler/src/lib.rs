@@ -175,8 +175,8 @@ pub fn set_to_value(schedule_set: &ScheduleSet) -> u32 {
 pub fn setup_set_to_value(schedule_set: &ScheduleSetupSet) -> u32 {
     match schedule_set {
         ScheduleSetupSet::PreSetup => 0,
-        ScheduleSetupSet::Setup => 0,
-        ScheduleSetupSet::PostSetup => 0,
+        ScheduleSetupSet::Setup => 1,
+        ScheduleSetupSet::PostSetup => 2,
     }
 }
 

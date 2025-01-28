@@ -1,6 +1,6 @@
 
 
-use std::any::TypeId;
+use std::{any::TypeId};
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
@@ -59,9 +59,15 @@ impl Force {
 
 
 pub fn hertz_normal_force(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>) {
-    for ((i_index,j_index), _neighbor) in &neighbor.neighbor_list_map {
+    for ((i_index,j_index), neighbor) in &neighbor.neighbor_list_map {
         let i = *i_index;
         let j = *j_index;
+
+        let mut force_fraction = 1.0;
+        if neighbor.add_half_force {
+            force_fraction = 0.5;
+        }
+
         let p1 = atoms.pos[i];
         let p2 = atoms.pos[j];
         let v1 = atoms.velocity[i];
@@ -151,8 +157,8 @@ pub fn hertz_normal_force(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>) {
                 * v_r_n.dot(&normalized_delta).signum();
 
             // println!("{} {}", normal_force, dissipation_force);
-            atoms.force[i] -= (normal_force - dissipation_force) * normalized_delta;
-            atoms.force[j] += (normal_force - dissipation_force) * normalized_delta;
+            atoms.force[i] -= (normal_force - dissipation_force) * normalized_delta * force_fraction;
+            atoms.force[j] += (normal_force - dissipation_force) * normalized_delta * force_fraction;
         }
     }
 }
