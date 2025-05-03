@@ -112,6 +112,15 @@ pub fn hertz_normal_force(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>) {
 
         if distance < r1 + r2 { 
 
+            if distance/(r1 +r2) < 0.95 {
+                println!("large overlap");
+                println!("isGhost: {} {}", atoms.is_ghost[i], atoms.is_ghost[j]);
+                println!("hasGhost: {} {}", atoms.has_ghost[i], atoms.has_ghost[j]);
+                println!("pos: {} {}", atoms.pos[i], atoms.pos[j]);
+                panic!()
+
+            }
+
             
 
             atoms.is_collision[i] = true;
@@ -159,6 +168,8 @@ pub fn hertz_normal_force(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>) {
             // println!("{} {}", normal_force, dissipation_force);
             atoms.force[i] -= (normal_force - dissipation_force) * normalized_delta * force_fraction;
             atoms.force[j] += (normal_force - dissipation_force) * normalized_delta * force_fraction;
+        
+            
         }
     }
 }

@@ -6,6 +6,16 @@ Currently this is a minimal running project with a LAMMPS or LIGGGHTS style MPI 
 for the simple simulation of a perodic box of spheres contacting each other with a hertz normal force. The input script below runs such simulation where the path to the input script is taken
 as the first argument while running MDDEM.
 
+
+## First Test: Homogeneous Cooling Simulation
+
+Haff's law in a homogeneous cooling state says this graph should approach a slope of -2, Seems to have a less dissipation than expected. 
+
+might be something wrong with dissipative forces, 
+might be something wrong with ghost-atom forces,
+
+[<img src="data/GranularTemp.png">]
+
 ```
 processors        2 2 1
 neighbor          1.1

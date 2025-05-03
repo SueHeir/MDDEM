@@ -179,8 +179,8 @@ fn calculate_delta_time(comm: Res<Comm>, mut atoms: ResMut<Atom>) {
         dt = v.into_iter().reduce(f64::min).unwrap();  
     }
 
-    println!("Useing {} for delta time", dt * 0.3);
-    atoms.dt = dt * 0.3;
+    println!("Useing {} for delta time", dt * 0.9);
+    atoms.dt = dt * 0.9;
 
    
     

@@ -32,6 +32,8 @@ impl Input {
 
         let mut current_commands: Vec<Vec<String>> = Vec::new();
 
+
+        //Divide all commands into groups ending in the run command, allows for reconfiguration of anything between each run
         current_commands.push(Vec::new());
         let mut index = 0;
         for line in &all_commands {

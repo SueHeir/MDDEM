@@ -69,7 +69,6 @@ pub fn update_cycle(mut verlet: ResMut<Verlet>, mut scheudler_manager: ResMut<Sc
         if scheudler_manager.index == verlet.cycle_count.len() {
             scheudler_manager.state = SchedulerState::End;
             
-        
         }
     }
 }

@@ -341,7 +341,7 @@ pub fn borders(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>, domain: Res<Doma
                         for i in 0..atoms.pos.len() {
                             if swap == 0 {
                                 // println!("{} {} {}", atoms.pos.len(),domain.sub_domain_low.len(),atoms.skin.len());
-                                if atoms.pos[i][dim] < domain.sub_domain_low[dim] + atoms.skin[i] {
+                                if atoms.pos[i][dim] < domain.sub_domain_low[dim] + atoms.skin[i] * 2.0 {
                                     let mut change_pos = Vector3::new(0.0,0.0,0.0);
                                     change_pos[dim] += comm.periodic_swap[swap][dim] * domain.size[dim];
                                     send_buff.append(&mut atoms.clone_atom_buff(i, change_pos));
@@ -355,7 +355,7 @@ pub fn borders(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>, domain: Res<Doma
 
                                 }
                             } else {
-                                if atoms.pos[i][dim] >= domain.sub_domain_high[dim] - atoms.skin[i] {
+                                if atoms.pos[i][dim] >= domain.sub_domain_high[dim] - atoms.skin[i] * 2.0 {
                                     let mut change_pos = Vector3::new(0.0,0.0,0.0);
                                     change_pos[dim] += comm.periodic_swap[swap][dim] * domain.size[dim];
                                     send_buff.append(&mut atoms.clone_atom_buff(i, change_pos));
@@ -413,7 +413,7 @@ pub fn borders(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>, domain: Res<Doma
 
                     for i in 0..atoms.pos.len() {
                         if swap == 0 {
-                            if atoms.pos[i][dim] < domain.sub_domain_low[dim] + atoms.skin[i] {
+                            if atoms.pos[i][dim] < domain.sub_domain_low[dim] + atoms.skin[i] * 2.0 {
                                 let mut change_pos = Vector3::new(0.0,0.0,0.0);
                                 change_pos[dim] += comm.periodic_swap[swap][dim] * domain.size[dim];
                                 send_buff.append(&mut atoms.clone_atom_buff(i, change_pos));
@@ -426,7 +426,7 @@ pub fn borders(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>, domain: Res<Doma
                                 }
                             }
                         } else {
-                            if atoms.pos[i][dim] >= domain.sub_domain_high[dim] - atoms.skin[i] {
+                            if atoms.pos[i][dim] >= domain.sub_domain_high[dim] - atoms.skin[i] * 2.0 {
                                 let mut change_pos = Vector3::new(0.0,0.0,0.0);
                                 change_pos[dim] += comm.periodic_swap[swap][dim] * domain.size[dim];
                                 send_buff.append(&mut atoms.clone_atom_buff(i, change_pos));
@@ -488,7 +488,7 @@ pub fn borders(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>, domain: Res<Doma
                 if to_proc != -1 {
                     for i in 0..atoms.pos.len() {
                         if swap == 0 {
-                            if atoms.pos[i][dim] < domain.sub_domain_low[dim] + atoms.skin[i] {
+                            if atoms.pos[i][dim] < domain.sub_domain_low[dim] + atoms.skin[i] * 2.0 {
                                 let mut change_pos = Vector3::new(0.0,0.0,0.0);
                                 change_pos[dim] += comm.periodic_swap[swap][dim] * domain.size[dim];
                                 send_buff.append(&mut atoms.clone_atom_buff(i, change_pos));
@@ -501,7 +501,7 @@ pub fn borders(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>, domain: Res<Doma
                                 }
                             }
                         } else {
-                            if atoms.pos[i][dim] >= domain.sub_domain_high[dim] - atoms.skin[i] {
+                            if atoms.pos[i][dim] >= domain.sub_domain_high[dim] - atoms.skin[i] * 2.0 {
                                 let mut change_pos = Vector3::new(0.0,0.0,0.0);
                                 change_pos[dim] += comm.periodic_swap[swap][dim] * domain.size[dim];
                                 send_buff.append(&mut atoms.clone_atom_buff(i, change_pos));

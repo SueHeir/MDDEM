@@ -1,8 +1,9 @@
 
-use std::{fs::{self, File}, io::Write};
+use std::{fs::{self, File, OpenOptions}, io::Write};
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
+use mpi::traits::CommunicatorCollectives;
 
 use crate::{mddem_atom::Atom, mddem_communication::Comm, mddem_verlet::Verlet};
 
@@ -11,7 +12,13 @@ pub struct PrintPlugin;
 impl Plugin for PrintPlugin {
     fn build(&self, app: &mut App) {
         app.add_update_system(print_vtp, ScheduleSet::PostFinalIntegration)
-            .add_update_system(print_cycle_count, ScheduleSet::PostFinalIntegration);
+            .add_update_system(print_cycle_count, ScheduleSet::PostFinalIntegration)
+            .add_update_system(print_total_kinetic_energy, ScheduleSet::PostFinalIntegration)
+            .add_update_system(print_granular_temperature, ScheduleSet::PostFinalIntegration);
+
+            
+
+            
     }
 }
 
@@ -133,4 +140,69 @@ pub fn print_cycle_count(verlet: Res<Verlet>, comm: Res<Comm>) {
         println!("Cycle: {}", verlet.total_cycle)
     }
     
+}
+
+pub fn print_total_kinetic_energy(verlet: Res<Verlet>, comm: Res<Comm>, atoms: Res<Atom>) { 
+    if verlet.total_cycle % 10000 != 0 {
+        return
+    }
+
+    let mut kinetic_energy = 0.0;
+
+    for (vel, mass) in atoms.velocity.iter().zip(atoms.mass.clone()) {
+        kinetic_energy += 0.5 * mass * vel.norm_squared();
+    }
+
+    let u = vec![kinetic_energy; comm.size as usize];
+    let mut v = vec![0.0; comm.size as usize];
+
+    comm.world.all_to_all_into(&u, &mut v);
+
+
+    if comm.rank == 0 {
+        println!("Kinetic Energy: {:?}", v.iter().sum::<f64>())
+    }
+    
+}
+
+
+
+pub fn print_granular_temperature(atoms: Res<Atom>, verlet: Res<Verlet>, comm: Res<Comm>) {
+    let count = verlet.total_cycle;
+    let rank = comm.rank;
+
+    if count % 2000 != 0 {
+        return
+    }
+   
+
+
+    let mut vel_norm_squared = 0.0;
+
+    for vel in atoms.velocity.iter() {
+        vel_norm_squared += vel.norm_squared();
+    }
+
+    let u = vec![vel_norm_squared; comm.size as usize];
+    let mut v = vec![0.0; comm.size as usize];
+
+    comm.world.all_to_all_into(&u, &mut v);
+
+    let granular_temperature =  1.0/ 3.0 * v.iter().sum::<f64>() / atoms.natoms as f64;
+
+
+    if rank != 0 {
+        return;
+    }
+
+    let filename = format!("./data/GranularTemp.txt");
+
+    let result = fs::create_dir_all("./data");
+    if let Err(_error) = result {
+        println!("Could not create file directory ./data")
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(filename).unwrap();
+
+    write!(&mut file, "{}\n", granular_temperature).unwrap();
+
 }

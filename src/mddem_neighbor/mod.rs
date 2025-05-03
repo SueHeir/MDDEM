@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
-use mpi::ffi::ompi_group_t;
 use nalgebra::Vector3;
 
 use crate::{mddem_atom::Atom, mddem_communication::Comm, mddem_domain::Domain, mddem_input::Input};
@@ -154,7 +153,7 @@ pub fn bin_based_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor>,
                         
                     } else if let Some(bin) = neighbor.bins.get_mut(&(xi + x, yi + y, zi + z)) {
                         bin.outside_atom_indexs.push(i);
-                    } // else isn't needed hear because the most left bin doesn't have a bin to the left of it
+                    } // else isn't needed hear because the most left bin doesn't have a bin to the left of it (The cases where the option is None)
                 }
             }
         }
@@ -246,10 +245,10 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
 
             if distance < (r1 + r2)*neighbor.skin_fraction {
 
-                let mut add_half_force = true;
+                let mut add_half_force = false;
 
                 if !atoms.has_ghost[i] && atoms.is_ghost[j] {
-                    add_half_force = false;
+                    add_half_force = true;
                 }
 
                 neighbor.neighbor_list_map.insert((i,j), NeighborData { _distance: distance, add_half_force });

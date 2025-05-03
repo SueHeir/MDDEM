@@ -132,8 +132,8 @@ pub trait AtomAdded: Any {
     fn get_mpi(&mut self, i: usize) -> Vec<f64>;
     fn copy_mpi(&mut self, i: usize) -> Vec<f64>;
     fn set_mpi(&mut self, buff: Vec<f64>) -> Vec<f64>;
-
 }
+
 downcast!(dyn AtomAdded);
 
 pub struct Atom {
