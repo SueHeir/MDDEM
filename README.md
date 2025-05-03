@@ -7,14 +7,6 @@ for the simple simulation of a perodic box of spheres contacting each other with
 as the first argument while running MDDEM.
 
 
-## First Test: Homogeneous Cooling Simulation
-
-Haff's law in a homogeneous cooling state says this graph should approach a slope of -2, Seems to have a less dissipation than expected. 
-
-might be something wrong with dissipative forces, 
-might be something wrong with ghost-atom forces,
-
-[<img src="data/GranularTemp.png">]
 
 ```
 processors        2 2 1
@@ -33,6 +25,17 @@ run                     1000000
 ```bash
 mpiexec -n 4 ./target/release/MDDEM ./input
 ```
+
+
+
+## First Test: Homogeneous Cooling Simulation
+
+Haff's law in a homogeneous cooling state says this graph should approach a slope of -2, Seems to have a less dissipation than expected. 
+
+might be something wrong with dissipative forces, 
+might be something wrong with ghost-atom forces,
+
+<img src="data/GranularTemp.png">
 
 ## Code Layout
 The goal of MDDEM is to be modular and easily editable.  Currently all function calls during the simulation take place via a scheduler that holds structs of data (Domain, Atoms, Comm) which can then
