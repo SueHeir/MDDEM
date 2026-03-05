@@ -1,11 +1,11 @@
 processors        2 2 1
 neighbor          1.1 0.005
-domain            0.0 0.02 0.0 0.02 0.0 0.01
+domain            0.0 0.025 0.0 0.025 0.0 0.025
 periodic          p p p
-gravity           0.0 -9.8 0.0
 
 
-randomparticleinsert    200 0.001 2500 8.7e9 0.3
-randomparticlevelocity  0.05
+randomparticleinsert    500 0.001 2500 8.7e9 0.3
+randomparticlevelocity  0.5
 dampening               0.95
+thermo                  500
 run                     5000000

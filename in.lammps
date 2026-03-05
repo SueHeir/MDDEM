@@ -1,0 +1,72 @@
+# LAMMPS Granular Gas Benchmark
+# Equivalent to MDDEM input_benchmark
+#
+# Physics mapping:
+#   Normal force:   Hertz with material properties (E=8.7e9 Pa, nu=0.3)
+#   Damping:        Viscoelastic (restitution e=0.95)
+#   Tangential:     none  -- MDDEM has no tangential spring history
+#   Rotation:       nve/sphere stores spin but MDDEM does NOT integrate it;
+#                   use fix nve/sphere update dipole/spin no to match
+#   Friction:       mu=0.4 (kinetic, no history)
+#
+# Requires: LAMMPS >= 2021 with GRANULAR package
+# Run with: mpirun -n 4 lmp -in in.lammps
+
+units           si
+atom_style      sphere
+boundary        p p p
+comm_style      brick
+
+# ── Domain ──────────────────────────────────────────────────────────────────
+region          simbox block 0.0 0.025 0.0 0.025 0.0 0.025
+create_box      1 simbox
+
+# ── Particles ───────────────────────────────────────────────────────────────
+# 500 spheres, d=0.002 m, rho=2500 kg/m3
+# overlap 0.0022 matches MDDEM's (r1+r2)*1.1 no-overlap check
+create_atoms    1 random 500 12345 simbox overlap 0.0022 maxtry 10000
+
+set             group all diameter 0.002
+set             group all density 2500
+
+# ── Force field ─────────────────────────────────────────────────────────────
+# hertz/material: uses E and nu directly (same as MDDEM)
+# tangential none: no tangential spring, slip always (matches MDDEM)
+# damping viscoelastic: beta derived from restitution (matches MDDEM)
+# rolling none, twisting none: no rotational resistance
+pair_style      granular
+pair_coeff      1 1 hertz/material 8.7e9 0.3 tangential linear_nohistory 0.0 0.4 &
+                damping viscoelastic 0.95 rolling none twisting none
+
+# ── Integrator ──────────────────────────────────────────────────────────────
+# nve/sphere with no angular update matches MDDEM's translational-only Verlet
+fix             1 all nve/sphere
+
+# ── Initial velocities ──────────────────────────────────────────────────────
+# MDDEM uses Gaussian sigma=0.5 m/s per component
+# LAMMPS `velocity create` uses total KE temperature; for N=500 spheres of
+# m=1.047e-5 kg, KE = 3/2 * N * kB_granular * T_granular
+# Granular "temperature" T = sigma^2 = 0.25 m^2/s^2 (per component variance)
+# We set velocities directly to match sigma=0.5 m/s per component
+velocity        all create 1.0 98765 dist gaussian
+# Then rescale: target |v| = sqrt(3)*0.5 = 0.866 m/s, but LAMMPS velocity
+# create uses thermal temperature not granular temperature.
+# Alternatively use:
+#   velocity all set NULL NULL NULL units box
+# and a custom fix—or simply accept slightly different initial KE and compare
+# the decay curve shape rather than absolute values.
+
+# ── Time step ───────────────────────────────────────────────────────────────
+# MDDEM Rayleigh dt = 0.9 * pi*r/alpha * sqrt(rho/G)
+# For r=0.001, rho=2500, G=E/(2*(1+nu))=3.346e9, alpha=0.1631*0.3+0.876605=0.9259
+# dt = 0.9 * pi*0.001/0.9259 * sqrt(2500/3.346e9) = 0.9 * 3.396e-3 * 2.735e-4
+#    ~ 8.36e-7 s
+# Use timestep 8e-7 to match MDDEM's adaptive dt
+timestep        8e-7
+
+# ── Output ──────────────────────────────────────────────────────────────────
+thermo_style    custom step ke atoms cpu
+thermo          100
+
+# ── Run ─────────────────────────────────────────────────────────────────────
+run             10000

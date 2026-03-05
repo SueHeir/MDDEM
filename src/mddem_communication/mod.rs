@@ -5,15 +5,15 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use mpi::traits::{Communicator, CommunicatorCollectives, Destination, Source};
 use nalgebra::Vector3;
-use crate::{mddem_atom::{Atom, ForceMPI}, mddem_domain::Domain, mddem_input::Input};
+use crate::{mddem_atom::{Atom, AtomDataRegistry, ForceMPI}, mddem_domain::Domain, mddem_input::Input};
 
 pub struct CommincationPlugin;
 
 impl Plugin for CommincationPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(Comm::new())
-            .add_setup_system(read_input, ScheduleSetupSet::PreSetup) // Needs to be called before Domain
-            .add_setup_system(setup, ScheduleSetupSet::PostSetup)// Needs to be called after Domain
+            .add_setup_system(read_input, ScheduleSetupSet::PreSetup)
+            .add_setup_system(setup, ScheduleSetupSet::PostSetup)
             .add_update_system(exchange, ScheduleSet::Exchange)
             .add_update_system(borders, ScheduleSet::PreNeighbor)
             .add_update_system(reverse_send_force, ScheduleSet::PostForce);
@@ -50,9 +50,8 @@ impl Comm {
             processor_position: Vector3::zeros(),
             swap_directions: [Vector3::new(-1, -1, -1), Vector3::new(-1, -1, -1)],
             periodic_swap: [Vector3::zeros(), Vector3::zeros()],
-            send_amount: [Vector3::new(0, 0, 0), Vector3::new(0,0,0)],
-            recieve_amount: [Vector3::new(0,0,0), Vector3::new(0,0,0)],
-
+            send_amount: [Vector3::new(0, 0, 0), Vector3::new(0, 0, 0)],
+            recieve_amount: [Vector3::new(0, 0, 0), Vector3::new(0, 0, 0)],
         }
     }
 }
@@ -91,7 +90,6 @@ pub fn read_input(input: Res<Input>, scheduler_manager: Res<SchedulerManager>, m
                     for i in 0..comm.processor_decomposition[0] {
                         for j in 0..comm.processor_decomposition[1] {
                             for k in 0..comm.processor_decomposition[2] {
-                                //You're Processor
                                 if iter == comm.rank {
                                     comm.processor_position = Vector3::new(i, j, k);
                                     println!("{:?}", comm.processor_position)
@@ -113,7 +111,6 @@ pub fn setup(mut comm: ResMut<Comm>, domain: Res<Domain>) {
     for i in 0..comm.processor_decomposition[0] {
         for j in 0..comm.processor_decomposition[1] {
             for k in 0..comm.processor_decomposition[2] {
-                //Up
                 if i == comm.processor_position.x + 1
                     && j == comm.processor_position.y
                     && k == comm.processor_position.z
@@ -132,7 +129,6 @@ pub fn setup(mut comm: ResMut<Comm>, domain: Res<Domain>) {
                 {
                     comm.swap_directions[1].z = iter
                 }
-                //Perodic up
                 if comm.processor_position.x == comm.processor_decomposition.x - 1
                     && domain.is_periodic.x
                 {
@@ -157,8 +153,6 @@ pub fn setup(mut comm: ResMut<Comm>, domain: Res<Domain>) {
                         comm.periodic_swap[1].z = -1.0;
                     }
                 }
-
-                //Down
                 if i == comm.processor_position.x - 1
                     && j == comm.processor_position.y
                     && k == comm.processor_position.z
@@ -177,8 +171,6 @@ pub fn setup(mut comm: ResMut<Comm>, domain: Res<Domain>) {
                 {
                     comm.swap_directions[0].z = iter
                 }
-
-                //Perodic Down
                 if comm.processor_position.x == 0 && domain.is_periodic.x {
                     if i == comm.processor_decomposition.x - 1
                         && j == comm.processor_position.y
@@ -212,458 +204,277 @@ pub fn setup(mut comm: ResMut<Comm>, domain: Res<Domain>) {
     }
 }
 
-pub fn exchange(comm: Res<Comm>, mut atoms: ResMut<Atom>, domain: Res<Domain>) {
-    // println!("exchange");
-    comm.world.barrier();
-    //Collect Atoms outside of domain
-    // let mut atoms_mpi: Vec<Vec<AtomMPI>> = Vec::new();
-    // let mut atoms_added_mpi: Vec<Vec<Vec<f64>>> = Vec::new();
-    let mut atoms_buff: Vec<Vec<f64>> = Vec::new();
-    let mut counts = Vec::new();
 
-    for _p in 0..comm.size {
-        atoms_buff.push(Vec::new());
-        counts.push(0.0);
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Scan local atoms and pack those within the border skin for (dim, swap) into
+/// `send_buff`. Returns the number of atoms packed. `periodic_offset` is the
+/// domain-length shift applied to the position when wrapping periodically.
+fn pack_border_atoms(
+    atoms: &mut Atom,
+    registry: &AtomDataRegistry,
+    dim: usize,
+    swap: usize,
+    periodic_offset: f64,
+    domain: &Domain,
+    send_buff: &mut Vec<f64>,
+    scan_end: usize,
+) -> i32 {
+    let mut count = 0i32;
+    // Scan local atoms + any ghosts forwarded from earlier dimensions so that
+    // atoms near a subdomain corner reach their diagonal neighbour's ghost list.
+    for i in 0..scan_end {
+        let in_skin = if swap == 0 {
+            atoms.pos[i][dim] < domain.sub_domain_low[dim] + atoms.skin[i] * 4.0
+        } else {
+            atoms.pos[i][dim] >= domain.sub_domain_high[dim] - atoms.skin[i] * 4.0
+        };
+        if in_skin {
+            let mut change_pos = Vector3::zeros();
+            change_pos[dim] = periodic_offset * domain.size[dim];
+            atoms.pack_border(i, change_pos, send_buff);
+            registry.pack_all(i, send_buff);
+            count += 1;
+        }
     }
+    count
+}
+
+/// Unpack `count` ghost atoms from a border receive buffer (has trailing count
+/// sentinel). Increments `atoms.nghost` for each atom added.
+fn unpack_ghost_atoms(
+    atoms: &mut Atom,
+    registry: &AtomDataRegistry,
+    buf: &[f64],
+    count: usize,
+) {
+    let data = &buf[..buf.len() - 1];
+    let mut pos = 0;
+    for _ in 0..count {
+        pos += atoms.unpack_atom(&data[pos..], true);
+        pos += registry.unpack_all(&data[pos..]);
+        atoms.nghost += 1;
+    }
+}
+
+
+// ── Exchange ──────────────────────────────────────────────────────────────────
+
+pub fn exchange(
+    comm: Res<Comm>,
+    mut atoms: ResMut<Atom>,
+    domain: Res<Domain>,
+    registry: Res<AtomDataRegistry>,
+) {
+    comm.world.barrier();
+
+    let mut atoms_buff: Vec<Vec<f64>> = (0..comm.size).map(|_| Vec::new()).collect();
+    let mut counts = vec![0.0f64; comm.size as usize];
 
     for i in (0..atoms.pos.len()).rev() {
-        // println!("{:?}", atoms.pos[i]);
         let xi = (atoms.pos[i].x / domain.sub_length.x).floor() as i32;
         let yi = (atoms.pos[i].y / domain.sub_length.y).floor() as i32;
         let zi = (atoms.pos[i].z / domain.sub_length.z).floor() as i32;
 
-       
         let to_processor = xi * comm.processor_decomposition.z * comm.processor_decomposition.y
             + yi * comm.processor_decomposition.z
             + zi;
 
         if to_processor != comm.rank {
-           
             counts[to_processor as usize] += 1.0;
-            atoms_buff[to_processor as usize].append(&mut atoms.get_atom_buff(i));
-
-        
-            for (_type_id, ref_cell) in &atoms.added {
-                let mut atom_added_binder = ref_cell.borrow_mut();
-                let atom_added = atom_added_binder.as_mut();
-                
-                atoms_buff[to_processor as usize].append(&mut atom_added.get_mpi(i));
-            }
+            atoms.pack_exchange(i, &mut atoms_buff[to_processor as usize]);
+            registry.pack_all(i, &mut atoms_buff[to_processor as usize]);
+            atoms.swap_remove(i);
+            registry.swap_remove_all(i);
         }
     }
 
-    for (buff, count) in atoms_buff.iter_mut().zip(counts) {
-        buff.push(count);
+    for (buf, count) in atoms_buff.iter_mut().zip(counts) {
+        buf.push(count);
     }
-   
-
 
     for p in 0..comm.size {
-        //recieve atoms
         if p == comm.rank {
             for _rec in 0..comm.size - 1 {
-                let (mut msg, _status) = comm.world.any_process().receive_vec::<f64>();
-
-                let msg_count = msg[msg.len()-1] as usize;
-
-                for _i in 0..msg_count {
-                    msg = atoms.add_atom_from_buff(msg, false);
-
-                    for (_type_id, ref_cell) in &atoms.added {
-                        let mut atom_added_binder = ref_cell.borrow_mut();
-                        let atom_added = atom_added_binder.as_mut();
-                        
-                        
-                        msg = atom_added.set_mpi(msg);
-                      
-                    }
+                let (msg, _status) = comm.world.any_process().receive_vec::<f64>();
+                let msg_count = msg[msg.len() - 1] as usize;
+                let data = &msg[..msg.len() - 1];
+                let mut pos = 0;
+                for _ in 0..msg_count {
+                    pos += atoms.unpack_atom(&data[pos..], false);
+                    pos += registry.unpack_all(&data[pos..]);
                 }
-
-                if msg.len() != 1 {
-                    println!("exchange {}", msg.len());
-                }
-                
-
             }
-        }
-        //send atoms
-        else {
-            //send buff to processor p
+        } else {
             comm.world.process_at_rank(p).send(&atoms_buff[p as usize]);
         }
         comm.world.barrier();
     }
 
     let u = vec![atoms.pos.len() as i32; comm.size as usize];
-    let mut v = vec![0; comm.size as usize];
-
-    comm.world.all_to_all_into(&u[..], &mut v[..]);
-
+    let mut v = vec![0i32; comm.size as usize];
+    comm.world.all_to_all_into(&u, &mut v);
     comm.world.barrier();
-
-    // if v.iter().sum::<i32>() > 0 {
-    //     println!("Rank: {} Total real: {} Each Proc:{:?}",comm.rank, v.iter().sum::<i32>(), v);
-    // }
 }
 
 
-pub fn borders(mut comm: ResMut<Comm>, mut atoms: ResMut<Atom>, domain: Res<Domain>) {
-    // println!("borders");
+// ── Borders ───────────────────────────────────────────────────────────────────
 
-    let mut send_buff: Vec<f64> = Vec::new();
-
+pub fn borders(
+    mut comm: ResMut<Comm>,
+    mut atoms: ResMut<Atom>,
+    domain: Res<Domain>,
+    registry: Res<AtomDataRegistry>,
+) {
     let u = vec![atoms.pos.len() as i32; comm.size as usize];
-    let mut v = vec![0; comm.size as usize];
-    comm.world.all_to_all_into(&u[..], &mut v[..]);
+    let mut v = vec![0i32; comm.size as usize];
+    comm.world.all_to_all_into(&u, &mut v);
     atoms.natoms = v.iter().sum::<i32>() as u64;
     atoms.nlocal = atoms.pos.len() as u32;
     atoms.nghost = 0;
 
     comm.world.barrier();
 
-   
+    let mut send_buff: Vec<f64> = Vec::new();
+
+    // scan_end grows after each dimension so that ghosts received in earlier
+    // dimensions are forwarded to diagonal neighbours in later dimensions.
+    // It does NOT grow within a dimension to avoid bouncing atoms back.
+    let mut scan_end = atoms.nlocal as usize;
 
     for dim in 0..3 {
+        let dim_scan_end = scan_end; // snapshot: constant for both swaps of this dim
+
         for swap in 0..2 {
-            let to_proc = comm.swap_directions[swap][dim];
+            let to_proc   = comm.swap_directions[swap][dim];
             let from_proc = comm.swap_directions[(swap + 1) % 2][dim];
+            let periodic_offset = comm.periodic_swap[swap][dim];
 
             comm.send_amount[swap][dim] = 0;
             comm.recieve_amount[swap][dim] = 0;
             send_buff.clear();
-            // Avoid deadlocking for sending and recieving same processor
+
             if to_proc == from_proc && to_proc != comm.rank {
 
-                //Send First, Recieve Second
                 if to_proc > comm.rank {
-                    //Send
+                    // Send first, receive second
                     if to_proc != -1 {
-                        for i in 0..atoms.pos.len() {
-                            if swap == 0 {
-                                // println!("{} {} {}", atoms.pos.len(),domain.sub_domain_low.len(),atoms.skin.len());
-                                if atoms.pos[i][dim] < domain.sub_domain_low[dim] + atoms.skin[i] * 2.0 {
-                                    let mut change_pos = Vector3::new(0.0,0.0,0.0);
-                                    change_pos[dim] += comm.periodic_swap[swap][dim] * domain.size[dim];
-                                    send_buff.append(&mut atoms.clone_atom_buff(i, change_pos));
-                                    comm.send_amount[swap][dim] +=1;
-                                    for (_type_id, ref_cell) in &atoms.added {
-                                        let mut atom_added_binder = ref_cell.borrow_mut();
-                                        let atom_added = atom_added_binder.as_mut();
-                                        
-                                       send_buff.append(&mut atom_added.copy_mpi(i));
-                                    }
-
-                                }
-                            } else {
-                                if atoms.pos[i][dim] >= domain.sub_domain_high[dim] - atoms.skin[i] * 2.0 {
-                                    let mut change_pos = Vector3::new(0.0,0.0,0.0);
-                                    change_pos[dim] += comm.periodic_swap[swap][dim] * domain.size[dim];
-                                    send_buff.append(&mut atoms.clone_atom_buff(i, change_pos));
-                                    comm.send_amount[swap][dim] +=1;
-                                    for (_type_id, ref_cell) in &atoms.added {
-                                        let mut atom_added_binder = ref_cell.borrow_mut();
-                                        let atom_added = atom_added_binder.as_mut();
-                                        
-                                       send_buff.append(&mut atom_added.copy_mpi(i));
-                                    }
-                                }
-                            }
-                        }
-
-                        send_buff.push(comm.send_amount[swap][dim] as f64);
+                        let count = pack_border_atoms(
+                            &mut atoms, &registry, dim, swap, periodic_offset, &domain, &mut send_buff, dim_scan_end,
+                        );
+                        comm.send_amount[swap][dim] = count;
+                        send_buff.push(count as f64);
                         comm.world.process_at_rank(to_proc).send(&send_buff);
-                    
-                        //Receive
-                        // println!(
-                        //     "{} from proc {} ",
-                        //     comm.rank,
-                        //     from_proc
-                        // );
-                        
-                        let (mut msg, _status) = comm
-                            .world
-                            .process_at_rank(from_proc)
-                            .receive_vec::<f64>();
 
-                        // println!(
-                        //     "{} recv from {} on dim {}",
-                        //     comm.rank,
-                        //     status.source_rank(),
-                        //     dim
-                        // );
-                        comm.recieve_amount[swap][dim] = msg[msg.len()-1] as i32;
-                        for _i in 0..comm.recieve_amount[swap][dim] {
-                            msg = atoms.add_atom_from_buff(msg, true);
-                            for (_type_id, ref_cell) in &atoms.added {
-                                let mut atom_added_binder = ref_cell.borrow_mut();
-                                let atom_added = atom_added_binder.as_mut();
-                                
-                                msg = atom_added.set_mpi(msg);
-                            }
-                            atoms.nghost += 1;
-                            // atoms.add_atom_from_atom_mpi(atom, true);
-                        }
-                        if msg.len() != 1 {
-                            println!("borders {}", msg.len());
-                        }
+                        let (msg, _status) = comm.world.process_at_rank(from_proc).receive_vec::<f64>();
+                        let recv_count = msg[msg.len() - 1] as usize;
+                        comm.recieve_amount[swap][dim] = recv_count as i32;
+                        unpack_ghost_atoms(&mut atoms, &registry, &msg, recv_count);
                     }
-                    
-                //Send Second, Recieve First
                 } else {
+                    // Receive first, send second
+                    let count = pack_border_atoms(
+                        &mut atoms, &registry, dim, swap, periodic_offset, &domain, &mut send_buff, dim_scan_end,
+                    );
+                    comm.send_amount[swap][dim] = count;
 
-                    for i in 0..atoms.pos.len() {
-                        if swap == 0 {
-                            if atoms.pos[i][dim] < domain.sub_domain_low[dim] + atoms.skin[i] * 2.0 {
-                                let mut change_pos = Vector3::new(0.0,0.0,0.0);
-                                change_pos[dim] += comm.periodic_swap[swap][dim] * domain.size[dim];
-                                send_buff.append(&mut atoms.clone_atom_buff(i, change_pos));
-                                comm.send_amount[swap][dim] +=1;
-                                for (_type_id, ref_cell) in &atoms.added {
-                                    let mut atom_added_binder = ref_cell.borrow_mut();
-                                    let atom_added = atom_added_binder.as_mut();
-                                    
-                                    send_buff.append(&mut atom_added.copy_mpi(i));
-                                }
-                            }
-                        } else {
-                            if atoms.pos[i][dim] >= domain.sub_domain_high[dim] - atoms.skin[i] * 2.0 {
-                                let mut change_pos = Vector3::new(0.0,0.0,0.0);
-                                change_pos[dim] += comm.periodic_swap[swap][dim] * domain.size[dim];
-                                send_buff.append(&mut atoms.clone_atom_buff(i, change_pos));
-                                comm.send_amount[swap][dim] +=1;
-                                for (_type_id, ref_cell) in &atoms.added {
-                                    let mut atom_added_binder = ref_cell.borrow_mut();
-                                    let atom_added = atom_added_binder.as_mut();
-                                    
-                                    send_buff.append(&mut atom_added.copy_mpi(i));
-                                }
-                            }
-                        }
-                    }
-                    //Receive
-                    // println!(
-                    //     "{} from proc {} ",
-                    //     comm.rank,
-                    //     from_proc
-                    // );
                     if from_proc != -1 {
-                        let (mut msg, _status) = comm
-                            .world
-                            .process_at_rank(from_proc)
-                            .receive_vec::<f64>();
+                        let (msg, _status) = comm.world.process_at_rank(to_proc).receive_vec::<f64>();
+                        let recv_count = msg[msg.len() - 1] as usize;
+                        comm.recieve_amount[swap][dim] = recv_count as i32;
+                        unpack_ghost_atoms(&mut atoms, &registry, &msg, recv_count);
 
-                        // println!(
-                        //     "{} recv from {} on dim {}",
-                        //     comm.rank,
-                        //     status.source_rank(),
-                        //     dim
-                        // );
-
-                        comm.recieve_amount[swap][dim] = msg[msg.len()-1] as i32;
-                        for _i in 0..comm.recieve_amount[swap][dim] {
-                            msg = atoms.add_atom_from_buff(msg, true);
-                            for (_type_id, ref_cell) in &atoms.added {
-                                let mut atom_added_binder = ref_cell.borrow_mut();
-                                let atom_added = atom_added_binder.as_mut();
-                                
-                                msg = atom_added.set_mpi(msg);
-                            }
-                            atoms.nghost += 1;
-                            // atoms.add_atom_from_atom_mpi(atom, true);
-                        }
-                        if msg.len() != 1 {
-                            println!("borders {}", msg.len());
-                        }
-                    
-                        //Send
-                        
-                        // println!("{} sent to {} on dim {}", comm.rank, to_proc, dim);
-                        send_buff.push(comm.send_amount[swap][dim] as f64);
+                        send_buff.push(count as f64);
                         comm.world.process_at_rank(to_proc).send(&send_buff);
                     }
                 }
-            //Sending And Recieveing from different processors
+
             } else {
-                //Send
+                // Send and receive from different processors (or self-send)
                 if to_proc != -1 {
-                    for i in 0..atoms.pos.len() {
-                        if swap == 0 {
-                            if atoms.pos[i][dim] < domain.sub_domain_low[dim] + atoms.skin[i] * 2.0 {
-                                let mut change_pos = Vector3::new(0.0,0.0,0.0);
-                                change_pos[dim] += comm.periodic_swap[swap][dim] * domain.size[dim];
-                                send_buff.append(&mut atoms.clone_atom_buff(i, change_pos));
-                                comm.send_amount[swap][dim] +=1;
-                                for (_type_id, ref_cell) in &atoms.added {
-                                    let mut atom_added_binder = ref_cell.borrow_mut();
-                                    let atom_added = atom_added_binder.as_mut();
-                                    
-                                   send_buff.append(&mut atom_added.copy_mpi(i));
-                                }
-                            }
-                        } else {
-                            if atoms.pos[i][dim] >= domain.sub_domain_high[dim] - atoms.skin[i] * 2.0 {
-                                let mut change_pos = Vector3::new(0.0,0.0,0.0);
-                                change_pos[dim] += comm.periodic_swap[swap][dim] * domain.size[dim];
-                                send_buff.append(&mut atoms.clone_atom_buff(i, change_pos));
-                                comm.send_amount[swap][dim] +=1;
-                                for (_type_id, ref_cell) in &atoms.added {
-                                    let mut atom_added_binder = ref_cell.borrow_mut();
-                                    let atom_added = atom_added_binder.as_mut();
-                                    
-                                    send_buff.append(&mut atom_added.copy_mpi(i));
-                                }
-                            }
-                        }
-                    }
+                    let count = pack_border_atoms(
+                        &mut atoms, &registry, dim, swap, periodic_offset, &domain, &mut send_buff, dim_scan_end,
+                    );
+                    comm.send_amount[swap][dim] = count;
+
                     if to_proc != comm.rank {
-                        // println!("{} sent to {} on dim {}", comm.rank, to_proc, dim);
-                        send_buff.push(comm.send_amount[swap][dim] as f64);
+                        send_buff.push(count as f64);
                         comm.world.process_at_rank(to_proc).send(&send_buff);
                     } else {
-                        let mut msg = send_buff.clone();
-                        comm.recieve_amount[swap][dim] = comm.send_amount[swap][dim];
-                        for _i in 0..comm.recieve_amount[swap][dim] {
-                            msg = atoms.add_atom_from_buff(msg, true);
-                            for (_type_id, ref_cell) in &atoms.added {
-                                let mut atom_added_binder = ref_cell.borrow_mut();
-                                let atom_added = atom_added_binder.as_mut();
-                                
-                                msg = atom_added.set_mpi(msg);
-                            }
-                            atoms.nghost += 1;
-                            // atoms.add_atom_from_atom_mpi(atom, true);
-                        }
+                        // Self-send: write directly
+                        comm.recieve_amount[swap][dim] = count;
+                        let mut self_buf = send_buff.clone();
+                        self_buf.push(count as f64);
+                        unpack_ghost_atoms(&mut atoms, &registry, &self_buf, count as usize);
                     }
                 }
-                //Receive
-                // println!(
-                //     "{} from proc {} ",
-                //     comm.rank,
-                //     from_proc
-                // );
-                if from_proc != -1 && from_proc != comm.rank {
-                    let (mut msg, _status) = comm
-                        .world
-                        .process_at_rank(from_proc)
-                        .receive_vec::<f64>();
 
-                    // println!(
-                    //     "{} recv from {} on dim {}",
-                    //     comm.rank,
-                    //     status.source_rank(),
-                    //     dim
-                    // );
-                    comm.recieve_amount[swap][dim] = msg[msg.len()-1] as i32;
-                    for _i in 0..comm.recieve_amount[swap][dim] {
-                        msg = atoms.add_atom_from_buff(msg, true);
-                        for (_type_id, ref_cell) in &atoms.added {
-                            let mut atom_added_binder = ref_cell.borrow_mut();
-                            let atom_added = atom_added_binder.as_mut();
-                            
-                            msg = atom_added.set_mpi(msg);
-                        }
-                        atoms.nghost += 1;
-                        // atoms.add_atom_from_atom_mpi(atom, true);
-                    }
-                    if msg.len() != 1 {
-                        println!("borders {}", msg.len());
-                    }
+                if from_proc != -1 && from_proc != comm.rank {
+                    let (msg, _status) = comm.world.process_at_rank(from_proc).receive_vec::<f64>();
+                    let recv_count = msg[msg.len() - 1] as usize;
+                    comm.recieve_amount[swap][dim] = recv_count as i32;
+                    unpack_ghost_atoms(&mut atoms, &registry, &msg, recv_count);
                 }
             }
-           
 
             comm.world.barrier();
         }
+
+        // After both swaps of this dimension complete, include the newly received
+        // ghosts when packing for the next dimension.
+        scan_end = atoms.nlocal as usize + atoms.nghost as usize;
     }
+
     comm.world.barrier();
 
     let u = vec![atoms.nghost as i32; comm.size as usize];
-    let mut v = vec![0; comm.size as usize];
-    comm.world.all_to_all_into(&u[..], &mut v[..]);
-    // println!("total ghost atoms: {}", v.iter().sum::<i32>());
-
+    let mut v = vec![0i32; comm.size as usize];
+    comm.world.all_to_all_into(&u, &mut v);
     comm.world.barrier();
 }
 
 
-
+// ── Reverse send force ────────────────────────────────────────────────────────
 
 pub fn reverse_send_force(comm: Res<Comm>, mut atoms: ResMut<Atom>) {
-
-    // println!("reverse send");
-
     let mut send_buff: Vec<ForceMPI> = Vec::new();
-
     let mut recieve_position = atoms.pos.len() as i32;
-
-    // println!("{:?}",comm.recieve_amount);
-
-    // println!("ghosts {} {}", atoms.nghost, (comm.recieve_amount[0].iter().sum::<i32>() + comm.recieve_amount[1].iter().sum::<i32>()));
     let mut _total_got: i32 = 0;
-   
-    
-    // println!("{:?}", atoms.origin_index);
+
     for dim in (0..3).rev() {
         for swap in (0..2).rev() {
-            let to_proc = comm.swap_directions[swap][dim];
+            let to_proc   = comm.swap_directions[swap][dim];
             let from_proc = comm.swap_directions[(swap + 1) % 2][dim];
             send_buff.clear();
 
-            // println!("this swap {} dim {} total {}", swap, dim, comm.send_amount[swap][dim]);
-            // Avoid deadlocking for sending and recieving same processor
             if to_proc == from_proc && to_proc != comm.rank {
-
-                //Send First, Recieve Second
                 if from_proc < comm.rank {
-                    //Send
                     if from_proc != -1 {
                         for i in (recieve_position - comm.recieve_amount[swap][dim])..recieve_position {
-                           send_buff.push(atoms.get_force_data(i as usize));
+                            send_buff.push(atoms.get_force_data(i as usize));
                         }
-                        
                         comm.world.process_at_rank(from_proc).send(&send_buff);
-                    
-                        
-                        let (msg, _status) = comm
-                            .world
-                            .process_at_rank(to_proc)
-                            .receive_vec::<ForceMPI>();
 
-
+                        let (msg, _status) = comm.world.process_at_rank(to_proc).receive_vec::<ForceMPI>();
                         for atom in msg {
                             _total_got += 1;
                             atoms.apply_force_data(atom, comm.rank, swap as i32, dim as i32);
                         }
                     }
-                    
-                //Send Second, Recieve First
                 } else {
-
                     for i in (recieve_position - comm.recieve_amount[swap][dim])..recieve_position {
                         send_buff.push(atoms.get_force_data(i as usize));
                     }
-
                     if from_proc != -1 {
-                        let (msg, _status) = comm
-                            .world
-                            .process_at_rank(to_proc)
-                            .receive_vec::<ForceMPI>();
-
-                        
-
+                        let (msg, _status) = comm.world.process_at_rank(to_proc).receive_vec::<ForceMPI>();
                         for atom in msg {
                             atoms.apply_force_data(atom, comm.rank, swap as i32, dim as i32);
                             _total_got += 1;
                         }
-                    
-                        //Send
-                        
                         comm.world.process_at_rank(from_proc).send(&send_buff);
                     }
                 }
-            //Sending And Recieveing from different processors
             } else {
-                //Send
                 if from_proc != -1 {
                     for i in (recieve_position - comm.recieve_amount[swap][dim])..recieve_position {
                         send_buff.push(atoms.get_force_data(i as usize));
@@ -679,33 +490,23 @@ pub fn reverse_send_force(comm: Res<Comm>, mut atoms: ResMut<Atom>) {
                     }
                 }
                 if to_proc != -1 && to_proc != comm.rank {
-                    let (msg, _status) = comm
-                        .world
-                        .process_at_rank(to_proc)
-                        .receive_vec::<ForceMPI>();
+                    let (msg, _status) = comm.world.process_at_rank(to_proc).receive_vec::<ForceMPI>();
                     for atom in msg {
                         _total_got += 1;
                         atoms.apply_force_data(atom, comm.rank, swap as i32, dim as i32);
                     }
                 }
             }
-            // println!("next swap {} dim {}", swap, dim);
+
             recieve_position -= comm.recieve_amount[swap][dim];
-            
             comm.world.barrier();
         }
     }
 
-    // println!("total_got {} {}", total_got, (comm.send_amount[0].iter().sum::<i32>() + comm.send_amount[1].iter().sum::<i32>()));
-
-    
     comm.world.barrier();
 
     let u = vec![atoms.nghost as i32; comm.size as usize];
-    let mut v = vec![0; comm.size as usize];
-    comm.world.all_to_all_into(&u[..], &mut v[..]);
-    // println!("total ghost atoms: {}", v.iter().sum::<i32>());
-
+    let mut v = vec![0i32; comm.size as usize];
+    comm.world.all_to_all_into(&u, &mut v);
     comm.world.barrier();
 }
-

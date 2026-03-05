@@ -4,7 +4,7 @@ use nalgebra::Vector3;
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 
-use crate::{mddem_atom::Atom, mddem_communication::Comm, mddem_input::Input};
+use crate::{mddem_atom::{Atom, AtomDataRegistry}, mddem_communication::Comm, mddem_input::Input};
 
 pub struct DomainPlugin;
 
@@ -132,7 +132,7 @@ pub(crate) fn read_input(input: Res<Input>, scheduler_manager: Res<SchedulerMana
     }
 }
 
-pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>) {
+pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataRegistry>) {
     for i in (0..atoms.pos.len()).rev() {
         if domain.is_periodic.x {
             while atoms.pos[i].x < domain.boundaries_low.x {
@@ -146,7 +146,8 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>) {
                 || atoms.pos[i].x >= domain.boundaries_high.x
             {
                 println!("xdel");
-                atoms.delete(i);
+                atoms.swap_remove(i);
+                registry.swap_remove_all(i);
                 continue;
             }
         }
@@ -161,7 +162,8 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>) {
             if atoms.pos[i].y < domain.boundaries_low.y
                 || atoms.pos[i].y >= domain.boundaries_high.y
             {
-                atoms.delete(i);
+                atoms.swap_remove(i);
+                registry.swap_remove_all(i);
                 println!("ydel");
                 continue;
             }
@@ -177,7 +179,8 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>) {
             if atoms.pos[i].z < domain.boundaries_low.z
                 || atoms.pos[i].z >= domain.boundaries_high.z
             {
-                atoms.delete(i);
+                atoms.swap_remove(i);
+                registry.swap_remove_all(i);
                 println!("zdel");
                 continue;
             }
