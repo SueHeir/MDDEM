@@ -24,13 +24,18 @@ use mddem_verlet::VerletPlugin;
 use mddem_print::PrintPlugin;
 
 fn main() {
-    App::new()
-        .add_plugins(InputPlugin)
+    let mut app = App::new();
+    app.add_plugins(InputPlugin)
         .add_plugins(CommincationPlugin)
         .add_plugins(DomainPlugin)
         .add_plugins(NeighborPlugin { brute_force: false })
         .add_plugins(GranularDefaultPlugins)
         .add_plugins(VerletPlugin)
-        .add_plugins(PrintPlugin)
-        .start();
+        .add_plugins(PrintPlugin);
+
+    if std::env::args().any(|a| a == "--schedule") {
+        app.enable_schedule_print();
+    }
+
+    app.start();
 }

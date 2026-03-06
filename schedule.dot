@@ -1,0 +1,117 @@
+digraph schedule {
+    rankdir=TB;
+    node [shape=box, style=filled, fillcolor=lightyellow];
+
+    subgraph cluster_setup_PreSetup {
+        label="Setup: PreSetup";
+        style=filled; fillcolor=lightblue;
+        setup_0 [label="mddem_communication::read_input"];
+    }
+
+    subgraph cluster_setup_Setup {
+        label="Setup: Setup";
+        style=filled; fillcolor=lightblue;
+        setup_1 [label="mddem_domain::read_input"];
+        setup_2 [label="mddem_neighbor::read_input"];
+        setup_3 [label="mddem_atom::read_input"];
+        setup_4 [label="dem_atom::read_input"];
+        setup_5 [label="tangential::read_input"];
+        setup_6 [label="mddem_verlet::read_input"];
+    }
+
+    subgraph cluster_setup_PostSetup {
+        label="Setup: PostSetup";
+        style=filled; fillcolor=lightblue;
+        setup_7 [label="mddem_communication::setup"];
+        setup_8 [label="mddem_neighbor::setup"];
+        setup_9 [label="dem_atom::calculate_delta_time"];
+        setup_10 [label="mddem_print::setup_thermo"];
+    }
+
+    subgraph cluster_InitalIntegration {
+        label="InitalIntegration";
+        style=filled; fillcolor=lightyellow;
+        update_0 [label="rotational::initial_rotation"];
+        update_1 [label="mddem_verlet::inital_integration"];
+    }
+
+    subgraph cluster_PostInitalIntegration {
+        label="PostInitalIntegration";
+        style=filled; fillcolor=lightyellow;
+        update_2 [label="mddem_atom::remove_ghost_atoms"];
+        update_3 [label="mddem_atom::zero_all_forces"];
+    }
+
+    subgraph cluster_PreExchange {
+        label="PreExchange";
+        style=filled; fillcolor=lightyellow;
+        update_4 [label="mddem_domain::pbc"];
+        update_5 [label="mddem_print::print_granular_temperature"];
+    }
+
+    subgraph cluster_Exchange {
+        label="Exchange";
+        style=filled; fillcolor=lightyellow;
+        update_6 [label="mddem_communication::exchange"];
+    }
+
+    subgraph cluster_PreNeighbor {
+        label="PreNeighbor";
+        style=filled; fillcolor=lightyellow;
+        update_7 [label="mddem_communication::borders"];
+    }
+
+    subgraph cluster_Neighbor {
+        label="Neighbor";
+        style=filled; fillcolor=lightyellow;
+        update_8 [label="mddem_neighbor::sweep_and_prune_neighbor_list"];
+    }
+
+    subgraph cluster_PreForce {
+        label="PreForce";
+        style=filled; fillcolor=lightyellow;
+        update_9 [label="normal::clear_forces_and_torques"];
+    }
+
+    subgraph cluster_Force {
+        label="Force";
+        style=filled; fillcolor=lightyellow;
+        update_10 [label="normal::hertz_normal_force\n[hertz_normal]"];
+        update_11 [label="tangential::mindlin_tangential_force\n[mindlin_tangential]"];
+    }
+
+    subgraph cluster_PostForce {
+        label="PostForce";
+        style=filled; fillcolor=lightyellow;
+        update_12 [label="mddem_communication::reverse_send_force"];
+    }
+
+    subgraph cluster_FinalIntegration {
+        label="FinalIntegration";
+        style=filled; fillcolor=lightyellow;
+        update_13 [label="rotational::final_rotation"];
+        update_14 [label="mddem_verlet::final_integration"];
+    }
+
+    subgraph cluster_PostFinalIntegration {
+        label="PostFinalIntegration";
+        style=filled; fillcolor=lightyellow;
+        update_15 [label="mddem_verlet::update_cycle"];
+        update_16 [label="mddem_print::print_vtp"];
+        update_17 [label="mddem_print::print_thermo"];
+    }
+
+    update_10 -> update_11 [color=red, style=dashed, label="after"];
+    update_1 -> update_2 [color=blue, style=bold];
+    update_3 -> update_4 [color=blue, style=bold];
+    update_5 -> update_6 [color=blue, style=bold];
+    update_6 -> update_7 [color=blue, style=bold];
+    update_7 -> update_8 [color=blue, style=bold];
+    update_8 -> update_9 [color=blue, style=bold];
+    update_9 -> update_10 [color=blue, style=bold];
+    update_11 -> update_12 [color=blue, style=bold];
+    update_12 -> update_13 [color=blue, style=bold];
+    update_14 -> update_15 [color=blue, style=bold];
+    update_17 -> update_0 [color=green, style=bold, label="run loop", constraint=false];
+    setup_10 -> update_0 [color=blue, style=bold, label="start run"];
+}

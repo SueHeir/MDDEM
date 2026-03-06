@@ -139,6 +139,11 @@ impl App {
     pub fn start(&mut self) {
         self.sub_apps.main.start();
     }
+
+    pub fn enable_schedule_print(&mut self) -> &mut Self {
+        self.sub_apps.main.enable_schedule_print();
+        self
+    }
 }
 
 

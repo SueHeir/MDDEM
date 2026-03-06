@@ -81,6 +81,9 @@ impl SubApp {
         self.scheduler.get_mut_resource(res)
     }
 
+    pub fn enable_schedule_print(&mut self) {
+        self.scheduler.enable_schedule_print();
+    }
 }
 
 

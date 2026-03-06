@@ -26,6 +26,8 @@ macro_rules! impl_system {
                 $(let $params = $params::retrieve(resources, locals_ptr);)*
                 call_inner(&mut self.f, $($params),*)
             }
+
+            fn name(&self) -> &str { std::any::type_name::<F>() }
         }
     }
 }
@@ -188,6 +190,7 @@ impl<T: Default + 'static> DerefMut for Local<'_, T> {
 // ANCHOR: System
 pub trait System {
     fn run(&mut self, resources: &mut HashMap<TypeId, RefCell<Box<dyn Any>>>);
+    fn name(&self) -> &str { "unknown" }
 }
 // ANCHOR_END: System
 
@@ -273,6 +276,7 @@ impl<S: System, C: Condition> System for ConditionalSystem<S, C> {
             self.system.run(resources);
         }
     }
+    fn name(&self) -> &str { self.system.name() }
 }
 
 // ─── SystemDescriptor ─────────────────────────────────────────────────────────
@@ -353,7 +357,9 @@ where
     F::System: 'static,
 {
     fn into_stored(self) -> StoredSystemEntry {
-        StoredSystemEntry { system: Box::new(self.into_system()), label: None, befores: vec![], afters: vec![] }
+        let sys = self.into_system();
+        let name = sys.name().to_string();
+        StoredSystemEntry { system: Box::new(sys), name, label: None, befores: vec![], afters: vec![] }
     }
 }
 
@@ -362,15 +368,18 @@ impl<S: System + 'static, C: Condition + 'static> IntoScheduledSystem<CondMarker
     for ConditionalSystem<S, C>
 {
     fn into_stored(self) -> StoredSystemEntry {
-        StoredSystemEntry { system: Box::new(self), label: None, befores: vec![], afters: vec![] }
+        let name = self.name().to_string();
+        StoredSystemEntry { system: Box::new(self), name, label: None, befores: vec![], afters: vec![] }
     }
 }
 
 /// SystemDescriptor — carries label / before / after metadata.
 impl<S: System + 'static> IntoScheduledSystem<DescMarker> for SystemDescriptor<S> {
     fn into_stored(self) -> StoredSystemEntry {
+        let name = self.system.name().to_string();
         StoredSystemEntry {
             system: Box::new(self.system),
+            name,
             label: self.label,
             befores: self.befores,
             afters: self.afters,
@@ -382,6 +391,7 @@ impl<S: System + 'static> IntoScheduledSystem<DescMarker> for SystemDescriptor<S
 
 pub struct StoredSystemEntry {
     pub system: Box<dyn System>,
+    pub name: String,
     pub label: Option<String>,
     pub befores: Vec<String>,
     pub afters: Vec<String>,
@@ -532,6 +542,7 @@ pub struct Scheduler {
     setup_systems: Vec<(StoredSystemEntry, ScheduleSetupSet)>,
     update_systems: Vec<(StoredSystemEntry, ScheduleSet)>,
     pub resources: HashMap<TypeId, RefCell<Box<dyn Any>>>,
+    print_schedule: bool,
 }
 // ANCHOR_END: Scheduler
 
@@ -541,6 +552,7 @@ impl Default for Scheduler {
             setup_systems: Vec::new(),
             update_systems: Vec::new(),
             resources: HashMap::new(),
+            print_schedule: false,
         }
     }
 }
@@ -592,6 +604,10 @@ impl Scheduler {
 
             if matches!(schedule_state, SchedulerState::Setup) {
                 self.organize_systems();
+                if self.print_schedule {
+                    // self.print_schedule();
+                    self.write_dot("schedule.dot");
+                }
                 self.setup();
                 self.organize_systems(); // systems may be added during setup in the future
 
@@ -617,9 +633,12 @@ impl Scheduler {
         system: impl IntoSystem<I, System = S>,
         schedule_set: ScheduleSetupSet,
     ) {
+        let sys = system.into_system();
+        let name = sys.name().to_string();
         self.setup_systems.push((
             StoredSystemEntry {
-                system: Box::new(system.into_system()),
+                system: Box::new(sys),
+                name,
                 label: None, befores: vec![], afters: vec![],
             },
             schedule_set,
@@ -644,6 +663,205 @@ impl Scheduler {
 
     pub fn get_mut_resource(&mut self, res: TypeId) -> Option<&RefCell<Box<dyn Any>>> {
         self.resources.get(&res)
+    }
+
+    pub fn enable_schedule_print(&mut self) {
+        self.print_schedule = true;
+    }
+
+    fn short_name(full: &str) -> String {
+        let parts: Vec<&str> = full.rsplitn(3, "::").collect();
+        match parts.len() {
+            0 => full.to_string(),
+            1 => parts[0].to_string(),
+            _ => format!("{}::{}", parts[1], parts[0]),
+        }
+    }
+
+    pub fn print_schedule(&self) {
+        println!("\n{}", "═══ Setup Systems ═══");
+        let mut last_set: Option<u32> = None;
+        for (entry, set) in &self.setup_systems {
+            let val = setup_set_to_value(set);
+            if last_set != Some(val) {
+                println!("  [{:?}]", set);
+                last_set = Some(val);
+            }
+            let short = Self::short_name(&entry.name);
+            if let Some(lbl) = &entry.label {
+                print!("    {}  [{}]", short, lbl);
+            } else {
+                print!("    {}", short);
+            }
+            if !entry.afters.is_empty() {
+                print!("  after: {}", entry.afters.join(", "));
+            }
+            if !entry.befores.is_empty() {
+                print!("  before: {}", entry.befores.join(", "));
+            }
+            println!();
+        }
+
+        println!("\n{}", "═══ Update Systems (per-step) ═══");
+        let mut last_set: Option<u32> = None;
+        for (entry, set) in &self.update_systems {
+            let val = set_to_value(set);
+            if last_set != Some(val) {
+                println!("  [{:?}]", set);
+                last_set = Some(val);
+            }
+            let short = Self::short_name(&entry.name);
+            if let Some(lbl) = &entry.label {
+                print!("    {}  [{}]", short, lbl);
+            } else {
+                print!("    {}", short);
+            }
+            if !entry.afters.is_empty() {
+                print!("  after: {}", entry.afters.join(", "));
+            }
+            if !entry.befores.is_empty() {
+                print!("  before: {}", entry.befores.join(", "));
+            }
+            println!();
+        }
+        println!();
+    }
+
+    pub fn write_dot(&self, path: &str) {
+        use std::io::Write;
+        let mut out = String::new();
+        out.push_str("digraph schedule {\n");
+        out.push_str("    rankdir=TB;\n");
+        out.push_str("    node [shape=box, style=filled, fillcolor=lightyellow];\n\n");
+
+        // Helper to make valid DOT node IDs
+        let node_id = |prefix: &str, idx: usize| -> String {
+            format!("{}_{}", prefix, idx)
+        };
+
+        // Setup systems
+        let mut setup_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
+        for (i, (entry, set)) in self.setup_systems.iter().enumerate() {
+            let set_name = format!("{:?}", set);
+            if let Some(last) = setup_groups.last_mut() {
+                if last.0 == set_name {
+                    last.1.push((i, entry));
+                    continue;
+                }
+            }
+            setup_groups.push((set_name, vec![(i, entry)]));
+        }
+
+        for (set_name, entries) in &setup_groups {
+            out.push_str(&format!("    subgraph cluster_setup_{} {{\n", set_name));
+            out.push_str(&format!("        label=\"Setup: {}\";\n", set_name));
+            out.push_str("        style=filled; fillcolor=lightblue;\n");
+            for &(i, entry) in entries {
+                let short = Self::short_name(&entry.name);
+                let label = if let Some(lbl) = &entry.label {
+                    format!("{}\\n[{}]", short, lbl)
+                } else {
+                    short.to_string()
+                };
+                out.push_str(&format!("        {} [label=\"{}\"];\n", node_id("setup", i), label));
+            }
+            out.push_str("    }\n\n");
+        }
+
+        // Update systems
+        let mut update_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
+        for (i, (entry, set)) in self.update_systems.iter().enumerate() {
+            let set_name = format!("{:?}", set);
+            if let Some(last) = update_groups.last_mut() {
+                if last.0 == set_name {
+                    last.1.push((i, entry));
+                    continue;
+                }
+            }
+            update_groups.push((set_name, vec![(i, entry)]));
+        }
+
+        for (set_name, entries) in &update_groups {
+            out.push_str(&format!("    subgraph cluster_{} {{\n", set_name));
+            out.push_str(&format!("        label=\"{}\";\n", set_name));
+            out.push_str("        style=filled; fillcolor=lightyellow;\n");
+            for &(i, entry) in entries {
+                let short = Self::short_name(&entry.name);
+                let label = if let Some(lbl) = &entry.label {
+                    format!("{}\\n[{}]", short, lbl)
+                } else {
+                    short.to_string()
+                };
+                out.push_str(&format!("        {} [label=\"{}\"];\n", node_id("update", i), label));
+            }
+            out.push_str("    }\n\n");
+        }
+
+        // Before/after constraint edges (red dashed)
+        let mut label_to_update_node: HashMap<String, String> = HashMap::new();
+        for (i, (entry, _)) in self.update_systems.iter().enumerate() {
+            if let Some(lbl) = &entry.label {
+                label_to_update_node.insert(lbl.clone(), node_id("update", i));
+            }
+        }
+
+        for (i, (entry, _)) in self.update_systems.iter().enumerate() {
+            let from = node_id("update", i);
+            for b in &entry.befores {
+                if let Some(target) = label_to_update_node.get(b) {
+                    out.push_str(&format!(
+                        "    {} -> {} [color=red, style=dashed, label=\"before\"];\n",
+                        from, target
+                    ));
+                }
+            }
+            for a in &entry.afters {
+                if let Some(source) = label_to_update_node.get(a) {
+                    out.push_str(&format!(
+                        "    {} -> {} [color=red, style=dashed, label=\"after\"];\n",
+                        source, from
+                    ));
+                }
+            }
+        }
+
+        // Blue edges between consecutive ScheduleSet clusters
+        let cluster_tails: Vec<String> = update_groups.iter()
+            .map(|(_, entries)| node_id("update", entries.last().unwrap().0))
+            .collect();
+        let cluster_heads: Vec<String> = update_groups.iter()
+            .map(|(_, entries)| node_id("update", entries.first().unwrap().0))
+            .collect();
+        for i in 0..cluster_tails.len().saturating_sub(1) {
+            out.push_str(&format!(
+                "    {} -> {} [color=blue, style=bold];\n",
+                cluster_tails[i], cluster_heads[i + 1]
+            ));
+        }
+
+        // Loop-back edge from last update cluster to first (run loop)
+        if cluster_tails.len() >= 2 {
+            out.push_str(&format!(
+                "    {} -> {} [color=green, style=bold, label=\"run loop\", constraint=false];\n",
+                cluster_tails.last().unwrap(), cluster_heads.first().unwrap()
+            ));
+        }
+
+        // Setup -> first update cluster edge
+        if !setup_groups.is_empty() && !cluster_heads.is_empty() {
+            let last_setup_group = setup_groups.last().unwrap();
+            let last_setup_node = node_id("setup", last_setup_group.1.last().unwrap().0);
+            out.push_str(&format!(
+                "    {} -> {} [color=blue, style=bold, label=\"start run\"];\n",
+                last_setup_node, cluster_heads[0]
+            ));
+        }
+
+        out.push_str("}\n");
+
+        let mut file = std::fs::File::create(path).expect("Failed to create DOT file");
+        file.write_all(out.as_bytes()).expect("Failed to write DOT file");
+        println!("Schedule DOT file written to: {}", path);
     }
 }
 // ANCHOR_END: SchedulerImpl
