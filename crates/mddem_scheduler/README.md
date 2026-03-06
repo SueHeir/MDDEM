@@ -54,6 +54,16 @@ pub fn tangential_force(
 }
 ```
 
+**DEM use cases**
+- Mindlin-Deresiewicz tangential spring history (contact-pair displacement accumulation)
+- Per-system step counters or timers without global resources
+- Cached neighbor list statistics between rebuilds
+
+**MD use cases**
+- FENE bond extension history
+- Thermostat state (Nose-Hoover chain variables) local to the thermostat system
+- Per-system RNG state for stochastic force methods (Langevin)
+
 ## Run Conditions -- `.run_if()`
 
 A run condition is any DI function that returns `bool`. Attach one to a system with `.run_if()`; the system is skipped when the condition returns `false`.
@@ -69,6 +79,28 @@ app.add_update_system(
 );
 ```
 
+Conditions compose naturally with ordering and states:
+
+```rust
+app.add_update_system(
+    compute_heat_flux
+        .run_if(in_state(SimPhase::Production))
+        .label("heat_flux"),
+    ScheduleSet::PostForce,
+);
+```
+
+**DEM use cases**
+- Restart file writing every N steps
+- VTK/VTP output at a coarser interval than thermo output
+- Neighbor-list validity checks (rebuild only when displacement threshold exceeded)
+- Contact statistics collection during production only, not during initial settling
+
+**MD use cases**
+- Radial distribution function accumulation every N steps
+- Mean-square displacement logging during NVT production after an NVE equilibration
+- Pressure tensor averaging on a coarser schedule than force evaluation
+
 ## System Ordering -- `.label()`, `.before()`, `.after()`
 
 Within a `ScheduleSet`, systems normally run in registration order. Explicit ordering constraints let you express dependencies without hard-coding plugin registration order. The scheduler performs a topological sort (Kahn's algorithm) at startup and panics on cycles.
@@ -82,9 +114,23 @@ app.add_update_system(
     tangential_force.label("tangential").after("hertz"),
     ScheduleSet::Force,
 );
+app.add_update_system(
+    lubrication_force.after("hertz").before("tangential"),
+    ScheduleSet::Force,
+);
 ```
 
-Labels are plain strings and scoped to their `ScheduleSet`.
+Labels are plain strings and scoped to their `ScheduleSet` -- `"hertz"` in `Force` and `"hertz"` in `PostForce` are independent.
+
+**DEM use cases**
+- Normal contact must be computed before tangential contact (tangential force depends on normal overlap)
+- Cohesive/van-der-Waals corrections applied after the base Hertz kernel
+- Heat conduction through contacts computed after contact geometry is known
+
+**MD use cases**
+- Short-range pair forces before long-range corrections (e.g., PPPM mesh forces after real-space forces)
+- Bond forces before angle/dihedral forces that read the same atom force array
+- Constraint projection (SHAKE/RATTLE) strictly after all unconstrained forces are accumulated
 
 ## Simulation States
 
@@ -103,6 +149,27 @@ app.add_update_system(
     ScheduleSet::Force,
 );
 ```
+
+`in_state(S)` is itself a run condition and composes with `.run_if()`:
+
+```rust
+app.add_update_system(
+    accumulate_rdf
+        .run_if(in_state(SimPhase::Production))
+        .run_if(every_n_steps(100)),
+    ScheduleSet::PostFinalIntegration,
+);
+```
+
+**DEM use cases**
+- **Settling -> Shear**: pack particles under gravity until kinetic energy drops below a threshold, then enable Lees-Edwards boundary shear
+- **Fill -> Compress -> Release**: multi-stage die-compaction workflow; each stage activates different boundary motion systems
+- **Initialization -> Production -> Quench**: granular cooling study where force model or restitution coefficient changes between phases
+
+**MD use cases**
+- **Equilibration -> NVT -> NPT**: run NVE first to relax bad contacts, couple thermostat, then couple barostat
+- **Melting -> Quench**: temperature ramp systems active only in the appropriate phase
+- **Steered MD -> Unbiased MD**: bias potential applied only during the pulling phase
 
 ## Schedule Visualization
 

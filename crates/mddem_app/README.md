@@ -59,6 +59,27 @@ impl PluginGroup for GranularDefaultPlugins {
 }
 ```
 
+Groups can be composed into larger groups or overridden at the `main.rs` level. A research simulation that needs a custom force model can add additional plugins on top of the defaults:
+
+```rust
+fn main() {
+    App::new()
+        .add_plugins(GranularDefaultPlugins)
+        .add_plugins(CohesiveForcePlugin)   // additional force on top of defaults
+        ...
+        .start();
+}
+```
+
+**DEM use cases**
+- `GranularDefaultPlugins` bundles Hertz normal + Mindlin tangential + rotational dynamics; users extend with custom plugins
+- Separate `DEMContactPlugin` from `DEMBondPlugin`; bond simulations add both, contact-only simulations add just the first
+- Test harnesses use a stripped group (no I/O plugins) for fast unit-level integration tests
+
+**MD use cases**
+- `MDDefaultPlugins` ships Lennard-Jones + Velocity Verlet; a polymer simulation adds `FENEBondPlugin` on top
+- GPU-offloaded force plugins can live in a separate group that is only added when a CUDA device is detected
+
 ## StatesPlugin
 
 Registers `CurrentState<S>` and `NextState<S>` resources and wires up end-of-step state transitions at `PostFinalIntegration`:
