@@ -6,8 +6,6 @@ pub use app::*;
 pub use sub_app::*;
 pub use plugin::*;
 
-
-
 /// The app prelude.
 ///
 /// This includes the most common types in this crate, re-exported for your convenience.
@@ -16,5 +14,8 @@ pub mod prelude {
         app::App,
         sub_app::SubApp,
         Plugin,
+        PluginGroup,
+        PluginGroupBuilder,
+        StatesPlugin,
     };
 }

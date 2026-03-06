@@ -1,6 +1,6 @@
-use std::{any::{Any, TypeId}, cell::{RefCell, RefMut}, collections::HashMap};
+use std::{any::{Any, TypeId}, cell::RefCell, collections::HashMap};
 
-use mddem_scheduler::{IntoSystem, ScheduleSet, ScheduleSetupSet, System};
+use mddem_scheduler::{IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetupSet, System};
 
 use crate::{Plugin, Plugins, SubApp, SubApps};
 
@@ -118,9 +118,9 @@ impl App {
          self
      }
  
-     pub fn add_update_system<I, S: System + 'static>(
+     pub fn add_update_system<M>(
          &mut self,
-         system: impl IntoSystem<I, System = S>,
+         system: impl IntoScheduledSystem<M>,
          schedule_set: ScheduleSet,
      ) -> &mut Self{
          self.sub_apps.main.add_update_system(system, schedule_set);
@@ -142,6 +142,7 @@ impl App {
 }
 
 
+#[derive(Debug)]
 pub(crate) enum AppError {
     DuplicatePlugin { plugin_name: String },
 }

@@ -1,8 +1,8 @@
-use std::{any::{Any, TypeId}, cell::{RefCell, RefMut}, collections::{HashMap, HashSet}};
+use std::{any::{Any, TypeId}, cell::RefCell, collections::{HashMap, HashSet}};
 
 use crate::Plugin;
 
-use mddem_scheduler::{IntoSystem, ScheduleSet, ScheduleSetupSet, Scheduler, System};
+use mddem_scheduler::{IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetupSet, Scheduler, System};
 
 pub struct SubApp {
     pub(crate) scheduler: Scheduler,
@@ -65,9 +65,9 @@ impl SubApp {
         self.scheduler.add_setup_system(system, schedule_set);
     }
 
-    pub fn add_update_system<I, S: System + 'static>(
+    pub fn add_update_system<M>(
         &mut self,
-        system: impl IntoSystem<I, System = S>,
+        system: impl IntoScheduledSystem<M>,
         schedule_set: ScheduleSet,
     ) {
         self.scheduler.add_update_system(system, schedule_set);
