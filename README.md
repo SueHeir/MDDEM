@@ -1,4 +1,7 @@
 # MDDEM: Molecular Dynamics - Discrete Element Method
+
+> **Disclaimer:** This is a toy project created to explore coding patterns in Rust. Much of the code was written with the assistance of Claude (Anthropic's AI). Vibe-coded pull requests are accepted, provided the contributor is qualified in the relevant domain and has personally reviewed the code being submitted.
+
 MDDEM (pronounced like "Madem" without the 'a') is an MPI-parallelized Molecular Dynamics / Discrete Element Method codebase written in Rust.
 It uses [rsmpi](https://github.com/rsmpi/rsmpi) as a Rust wrapper around MPI and [nalgebra](https://github.com/dimforge/nalgebra) as a math library.
 
