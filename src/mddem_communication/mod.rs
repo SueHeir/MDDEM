@@ -3,6 +3,7 @@ use std::process::exit;
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
+use mpi::collective::SystemOperation;
 use mpi::traits::{Communicator, CommunicatorCollectives, Destination, Source};
 use nalgebra::Vector3;
 use crate::{mddem_atom::{Atom, AtomDataRegistry, ForceMPI}, mddem_domain::Domain, mddem_input::Input};
@@ -311,9 +312,6 @@ pub fn exchange(
         comm.world.barrier();
     }
 
-    let u = vec![atoms.pos.len() as i32; comm.size as usize];
-    let mut v = vec![0i32; comm.size as usize];
-    comm.world.all_to_all_into(&u, &mut v);
     comm.world.barrier();
 }
 
@@ -326,10 +324,10 @@ pub fn borders(
     domain: Res<Domain>,
     registry: Res<AtomDataRegistry>,
 ) {
-    let u = vec![atoms.pos.len() as i32; comm.size as usize];
-    let mut v = vec![0i32; comm.size as usize];
-    comm.world.all_to_all_into(&u, &mut v);
-    atoms.natoms = v.iter().sum::<i32>() as u64;
+    let local_count = atoms.pos.len() as i64;
+    let mut global_count: i64 = 0;
+    comm.world.all_reduce_into(&local_count, &mut global_count, SystemOperation::sum());
+    atoms.natoms = global_count as u64;
     atoms.nlocal = atoms.pos.len() as u32;
     atoms.nghost = 0;
 
@@ -426,11 +424,6 @@ pub fn borders(
     }
 
     comm.world.barrier();
-
-    let u = vec![atoms.nghost as i32; comm.size as usize];
-    let mut v = vec![0i32; comm.size as usize];
-    comm.world.all_to_all_into(&u, &mut v);
-    comm.world.barrier();
 }
 
 
@@ -503,10 +496,5 @@ pub fn reverse_send_force(comm: Res<Comm>, mut atoms: ResMut<Atom>) {
         }
     }
 
-    comm.world.barrier();
-
-    let u = vec![atoms.nghost as i32; comm.size as usize];
-    let mut v = vec![0i32; comm.size as usize];
-    comm.world.all_to_all_into(&u, &mut v);
     comm.world.barrier();
 }

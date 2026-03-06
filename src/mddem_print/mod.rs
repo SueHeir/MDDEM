@@ -3,6 +3,7 @@ use std::{fs::{self, File, OpenOptions}, io::Write, time::Instant};
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
+use mpi::collective::SystemOperation;
 use mpi::traits::CommunicatorCollectives;
 use nalgebra::Vector3;
 
@@ -100,16 +101,12 @@ pub fn print_thermo(
 
     let local_neighbors = neighbor.neighbor_list.len() as f64;
 
-    // MPI reduce: each rank sends its value to all ranks; rank 0 sums.
-    let u_ke = vec![local_ke; comm.size as usize];
-    let mut v_ke = vec![0.0f64; comm.size as usize];
-    comm.world.all_to_all_into(&u_ke, &mut v_ke);
-    let global_ke = v_ke.iter().sum::<f64>();
+    let mut global_ke = 0.0f64;
+    comm.world.all_reduce_into(&local_ke, &mut global_ke, SystemOperation::sum());
 
-    let u_n = vec![local_neighbors; comm.size as usize];
-    let mut v_n = vec![0.0f64; comm.size as usize];
-    comm.world.all_to_all_into(&u_n, &mut v_n);
-    let global_neighbors = v_n.iter().sum::<f64>() as usize;
+    let mut global_neighbors_f = 0.0f64;
+    comm.world.all_reduce_into(&local_neighbors, &mut global_neighbors_f, SystemOperation::sum());
+    let global_neighbors = global_neighbors_f as usize;
 
     if comm.rank == 0 {
         let elapsed = thermo.start_time.elapsed().as_secs_f64();
@@ -256,26 +253,17 @@ pub fn print_granular_temperature(
         local_mass += atoms.mass[i];
     }
 
-    let u_x = vec![local_mass_velocity.x; comm.size as usize];
-    let mut v_x = vec![0.0; comm.size as usize];
-    let u_y = vec![local_mass_velocity.y; comm.size as usize];
-    let mut v_y = vec![0.0; comm.size as usize];
-    let u_z = vec![local_mass_velocity.z; comm.size as usize];
-    let mut v_z = vec![0.0; comm.size as usize];
-    let u_mass = vec![local_mass; comm.size as usize];
-    let mut v_mass = vec![0.0; comm.size as usize];
+    let mut global_mv_x = 0.0;
+    let mut global_mv_y = 0.0;
+    let mut global_mv_z = 0.0;
+    let mut global_mass = 0.0;
 
-    comm.world.all_to_all_into(&u_x, &mut v_x);
-    comm.world.all_to_all_into(&u_y, &mut v_y);
-    comm.world.all_to_all_into(&u_z, &mut v_z);
-    comm.world.all_to_all_into(&u_mass, &mut v_mass);
+    comm.world.all_reduce_into(&local_mass_velocity.x, &mut global_mv_x, SystemOperation::sum());
+    comm.world.all_reduce_into(&local_mass_velocity.y, &mut global_mv_y, SystemOperation::sum());
+    comm.world.all_reduce_into(&local_mass_velocity.z, &mut global_mv_z, SystemOperation::sum());
+    comm.world.all_reduce_into(&local_mass, &mut global_mass, SystemOperation::sum());
 
-    let global_mass_velocity = Vector3::new(
-        v_x.iter().sum::<f64>(),
-        v_y.iter().sum::<f64>(),
-        v_z.iter().sum::<f64>(),
-    );
-    let global_mass = v_mass.iter().sum::<f64>();
+    let global_mass_velocity = Vector3::new(global_mv_x, global_mv_y, global_mv_z);
     let mass_ave_velocity = global_mass_velocity / global_mass;
 
     // ── Pass 2: vel_diff relative to global <v>, then reduce ────────────────
@@ -287,10 +275,8 @@ pub fn print_granular_temperature(
             + atoms.mass[i] * (vel.z - mass_ave_velocity.z).powi(2);
     }
 
-    let u_vel = vec![vel_diff; comm.size as usize];
-    let mut v_vel = vec![0.0; comm.size as usize];
-    comm.world.all_to_all_into(&u_vel, &mut v_vel);
-    let vel_diff_sum = v_vel.iter().sum::<f64>();
+    let mut vel_diff_sum = 0.0;
+    comm.world.all_reduce_into(&vel_diff, &mut vel_diff_sum, SystemOperation::sum());
 
     // T = Σ mᵢ(vᵢ−⟨v⟩)² / (3 · Σmᵢ)
     let granular_temperature = vel_diff_sum / (3.0 * global_mass);

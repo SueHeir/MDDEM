@@ -159,7 +159,11 @@ pub fn mindlin_tangential_force(
 
         // ── Tangential force: spring + viscous damping ────────────────────────
         let gamma_t = -2.0 * SQRT_5_3 * dem.beta * (k_t * m_r).sqrt();
-        let f_t = k_t * s - gamma_t * v_t;
+        let mut f_t = k_t * s - gamma_t * v_t;
+        let f_t_mag = f_t.norm();
+        if f_t_mag > f_t_max && f_t_mag > 1e-30 {
+            f_t = f_t * (f_t_max / f_t_mag);
+        }
 
         // ── Torques (contact point at r·n̂ from sphere center) ─────────────────
         let torque_i = (r1 * n).cross(&f_t);

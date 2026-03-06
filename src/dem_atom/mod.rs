@@ -2,6 +2,7 @@ use std::{any::{Any, TypeId}, f64::consts::PI};
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
+use mpi::collective::SystemOperation;
 use mpi::traits::CommunicatorCollectives;
 
 use crate::{
@@ -155,10 +156,8 @@ fn calculate_delta_time(comm: Res<Comm>, mut atoms: ResMut<Atom>, registry: Res<
         dt = delta.min(dt);
     }
 
-    let u = vec![dt; comm.size as usize];
-    let mut v = vec![0.0; comm.size as usize];
-    comm.world.all_to_all_into(&u, &mut v);
-    dt = v.into_iter().reduce(f64::min).unwrap();
+    let local_dt = dt;
+    comm.world.all_reduce_into(&local_dt, &mut dt, SystemOperation::min());
 
     println!("Using {} for delta time", dt * 0.05);
     atoms.dt = dt * 0.05;
