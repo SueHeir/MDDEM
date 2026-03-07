@@ -1,12 +1,24 @@
-# TOML Single Run
+# Programmatic Config
 
-Single granular simulation configured via TOML. A quick test case with 500 particles and 10,000 steps.
+Quick test demonstrating the Rust API tier: 500 particles, 10,000 steps, with the entire configuration built programmatically in `main.rs` — no TOML file needed.
+
+This example shows how to construct a `Config` table directly in Rust code, useful for:
+- Embedding MDDEM as a library in a larger application
+- Generating configurations from code (parameter sweeps, automated testing)
+- Simulations that need logic beyond what TOML can express
 
 ## Run
 
 ```bash
-mpiexec -n 4 ./target/release/MDDEM ./examples/toml_single/config.toml
+# Single-process (no config file needed — config is built in code)
+cargo run --example toml_single
+
+# With MPI
+cargo build-examples
+mpiexec -n 4 ./target/release/examples/toml_single
 ```
+
+A `config.toml` with equivalent parameters is also included for reference.
 
 ## Parameters
 

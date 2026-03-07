@@ -17,3 +17,5 @@ mddem_print = { path = "../mddem_print" }
 dem_atom = { path = "../dem_atom" }
 dem_atom_insert = { path = "../dem_atom_insert" }
 dem_granular = { path = "../dem_granular" }
+dem_gravity = { path = "../dem_gravity" }
+dem_wall = { path = "../dem_wall" }

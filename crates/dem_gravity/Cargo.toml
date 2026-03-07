@@ -1,0 +1,11 @@
+[package]
+name = "dem_gravity"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mddem_core = { path = "../mddem_core", default-features = false }
+mddem_app = { path = "../mddem_app" }
+mddem_scheduler = { path = "../mddem_scheduler" }
+serde = { version = "1", features = ["derive"] }
+nalgebra = "0.33"

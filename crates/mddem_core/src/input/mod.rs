@@ -33,7 +33,11 @@ impl Plugin for InputPlugin {
         print_banner();
         let table = load_toml(&input_file);
 
-        app.add_resource(Input { filename: input_file, output_dir: None });
+        let output_dir = std::path::Path::new(&input_file)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_string_lossy().into_owned());
+        app.add_resource(Input { filename: input_file, output_dir });
         app.add_resource(Config { table });
         if schedule {
             app.enable_schedule_print();

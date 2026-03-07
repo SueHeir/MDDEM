@@ -14,6 +14,7 @@ The cooling curve should span ~2 decades in temperature and ~2 decades in time, 
 
 ## Files
 
+- `main.rs` -- Compiled example entry point
 - `config.toml` -- MDDEM input
 - `in.lammps` -- Equivalent LAMMPS input using `pair_style granular` with `hertz/material`
 - `haff_analysis.py` -- Analysis script (reads `GranularTemp.txt`, produces `haff_comparison.png`)
@@ -37,8 +38,12 @@ The cooling curve should span ~2 decades in temperature and ~2 decades in time, 
 ## Run
 
 ```bash
-# MDDEM
-mpiexec -n 4 ./target/release/MDDEM ./examples/benchmark/config.toml
+# Single-process
+cargo run --example benchmark -- examples/benchmark/config.toml
+
+# With MPI
+cargo build-examples
+mpiexec -n 4 ./target/release/examples/benchmark examples/benchmark/config.toml
 
 # LAMMPS (for comparison)
 mpirun -n 4 lmp -in ./examples/benchmark/in.lammps

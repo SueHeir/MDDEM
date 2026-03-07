@@ -100,14 +100,14 @@ pub fn run_read_input(config: Res<RunConfig>, scheduler_manager: Res<SchedulerMa
     run_state.cycle_remaining.push(stage.steps);
 }
 
-pub fn update_cycle(mut run_state: ResMut<RunState>, mut scheudler_manager: ResMut<SchedulerManager>) {
+pub fn update_cycle(mut run_state: ResMut<RunState>, mut scheudler_manager: ResMut<SchedulerManager>, run_config: Res<RunConfig>) {
     let index = scheudler_manager.index;
     run_state.cycle_count[index] += 1;
     run_state.total_cycle += 1;
     if run_state.cycle_count[index] == run_state.cycle_remaining[index] {
         scheudler_manager.index += 1;
         scheudler_manager.state = SchedulerState::Setup;
-        if scheudler_manager.index == run_state.cycle_count.len() {
+        if scheudler_manager.index >= run_config.num_stages() {
             scheudler_manager.state = SchedulerState::End;
         }
     }

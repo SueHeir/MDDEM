@@ -3,21 +3,32 @@ name = "MDDEM"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
 edition = "2021"
-
+autobins = false
 
 [workspace]
 members = [
   "crates/*",
 ]
 
-[package.metadata.scripts]
-mpirun = "mpiexec -n 4 ./target/release/MDDEM input"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [features]
 default = ["mpi_backend"]
 mpi_backend = ["mddem/mpi_backend", "dep:libffi-sys"]
+
+[[example]]
+name = "granular_basic"
+path = "examples/granular_basic/main.rs"
+
+[[example]]
+name = "benchmark"
+path = "examples/benchmark/main.rs"
+
+[[example]]
+name = "toml_single"
+path = "examples/toml_single/main.rs"
+
+[[example]]
+name = "hopper"
+path = "examples/hopper/main.rs"
 
 [dependencies]
 mddem = { path = "./crates/mddem", default-features = false }

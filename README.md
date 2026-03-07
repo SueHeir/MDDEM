@@ -33,16 +33,23 @@ When built without `mpi_backend`, a `SingleProcessComm` backend is used automati
 
 ## Running
 
+Examples are compiled executables. For single-process runs:
+
 ```bash
-mpiexec -n 4 ./target/release/MDDEM ./examples/granular_basic/config.toml
+cargo run --example granular_basic -- examples/granular_basic/config.toml
 ```
 
-The path to a TOML configuration file is passed as the first argument.
+For MPI runs, build first then launch with `mpiexec`:
+
+```bash
+cargo build-examples                # alias for: cargo build --release --examples
+mpiexec -n 4 ./target/release/examples/granular_basic examples/granular_basic/config.toml
+```
 
 Pass `--schedule` to print the compiled schedule and write a Graphviz DOT file:
 
 ```bash
-mpiexec -n 1 ./target/release/MDDEM ./examples/granular_basic/config.toml --schedule
+cargo run --example granular_basic -- examples/granular_basic/config.toml --schedule
 ```
 
 ## Input
@@ -141,6 +148,12 @@ Each stage can override `dump_interval`, `restart_interval`, and `vtp_interval` 
 | `[[particles.insert]]` | `radius` | Particle radius (m) |
 | `[[particles.insert]]` | `density` | Particle density (kg/m^3) |
 | `[[particles.insert]]` | `velocity` | Initial RMS velocity (m/s, Gaussian per component) |
+| `[[particles.insert]]` | `region_x/y/z_low/high` | Insertion sub-region bounds (optional, defaults to domain) |
+| `[gravity]` | `gx`, `gy`, `gz` | Gravitational acceleration components (m/s^2, default 0, 0, -9.81) |
+| `[[wall]]` | `point_x/y/z` | A point on the wall plane (m) |
+| `[[wall]]` | `normal_x/y/z` | Inward normal vector (normalized internally) |
+| `[[wall]]` | `material` | Material name for contact properties |
+| `[[wall]]` | `name` | Optional wall name (for runtime toggling) |
 | `[run]` or `[[run]]` | `name` | Stage name for logging (optional) |
 | `[run]` or `[[run]]` | `steps` | Number of timesteps |
 | `[run]` or `[[run]]` | `thermo` | Print thermodynamic output every N steps |
@@ -162,9 +175,9 @@ Each stage can override `dump_interval`, `restart_interval`, and `vtp_interval` 
 - **Integration**: Velocity Verlet for both translational and rotational degrees of freedom
 - **Rotational dynamics**: Quaternion-based orientation tracking, angular velocity integration (I = 2/5 mr^2 for solid spheres)
 - **Timestep**: Automatically computed as 5% of the Rayleigh wave period
+- **Gravity**: Configurable body force (`GravityPlugin`)
+- **Walls**: General plane wall contact with Hertz repulsion (`WallPlugin`), supports axis-aligned and angled walls, toggleable at runtime for staged simulations
 - **MPI**: Optional 3D domain decomposition with ghost atom forwarding to diagonal neighbors (corner-complete). Falls back to single-process mode when built without the `mpi_backend` feature.
-
-Not yet implemented: gravity.
 
 ## Code Layout
 
@@ -181,9 +194,11 @@ MDDEM is built around a dependency-injection scheduler inspired by [Bevy](https:
 | [`dem_atom`](crates/dem_atom/) | Per-atom DEM data (radius, density) with pack/unpack, `MaterialTable` for per-material and per-pair mixing, material config |
 | [`dem_atom_insert`](crates/dem_atom_insert/) | DEM particle insertion: random placement with overlap checking, populates both `Atom` and `DemAtom` fields |
 | [`dem_granular`](crates/dem_granular/) | Granular physics: Hertz normal contact, Mindlin tangential friction, rotational dynamics, `GranularDefaultPlugins` |
+| [`dem_gravity`](crates/dem_gravity/) | Configurable gravity body force (`GravityPlugin`) |
+| [`dem_wall`](crates/dem_wall/) | General plane wall contact forces with Hertz repulsion (`WallPlugin`), runtime-toggleable walls |
 | [`mddem`](crates/mddem/) | Umbrella crate: `CorePlugins`, prelude re-exports |
 
-`main.rs` composes the simulation by adding plugin groups to an `App`:
+A simulation is composed by adding plugin groups to an `App`:
 
 ```rust
 use mddem::prelude::*;
@@ -197,9 +212,9 @@ fn main() {
 
 `CorePlugins` bundles TOML config loading, communication, domain decomposition, neighbor lists, run/cycle management, Velocity Verlet integration, and output. MPI finalization is handled automatically via cleanup callbacks. Individual plugins can be added separately for custom configurations.
 
-### Using App programmatically
+### Programmatic config
 
-You can construct an `App` directly with a programmatic `Config` table, bypassing TOML file parsing:
+You can construct an `App` directly with a programmatic `Config` table, bypassing TOML file parsing (see the [toml_single](examples/toml_single/) example):
 
 ```rust
 use mddem::prelude::*;
@@ -287,16 +302,20 @@ Tests cover:
 
 ## Examples
 
-| Example | Description |
-|---------|-------------|
-| [granular_basic](examples/granular_basic/) | Basic 500-particle granular gas in a periodic box |
-| [benchmark](examples/benchmark/) | Haff's cooling law validation with LAMMPS comparison |
-| [toml_single](examples/toml_single/) | Single short run for quick testing |
+Examples are compiled executables, each with a `main.rs` and supporting files:
+
+| Example | Description | Run |
+|---------|-------------|-----|
+| [granular_basic](examples/granular_basic/) | 500-particle granular gas in a periodic box | `cargo run --example granular_basic -- examples/granular_basic/config.toml` |
+| [benchmark](examples/benchmark/) | Haff's cooling law validation with LAMMPS comparison | `cargo run --example benchmark -- examples/benchmark/config.toml` |
+| [toml_single](examples/toml_single/) | Programmatic config — no TOML file needed | `cargo run --example toml_single` |
+| [hopper](examples/hopper/) | 2D slot hopper with angled funnel walls, gravity, and simulation states | `cargo run --example hopper -- examples/hopper/config.toml` |
+
+The `granular_basic`, `benchmark`, and `hopper` examples use TOML config files (Tier 1). The `toml_single` example builds its config entirely in Rust code (Tier 2), demonstrating programmatic setup for parameter sweeps or embedding MDDEM as a library. The `hopper` example combines TOML config with a custom Rust setup system (Tier 2) for runtime wall control.
 
 ## Future Goals
 
 - **Library crate**: Publish to crates.io so simulations can be composed by importing plugins
-- **Gravity**: Body force support
 - **GPU readiness**: Flat neighbor list arrays; grid-based neighbor detection; f32 GPU kernels
 - **LEBC**: Lees-Edwards boundary conditions for shear flow
 - **Polydispersity**: Per-insert-block radii supported; continuous size distributions planned

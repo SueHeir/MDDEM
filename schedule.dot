@@ -27,6 +27,15 @@ digraph schedule {
         setup_9 [label="dem_atom_insert::calculate_delta_time"];
     }
 
+    setup_0 -> setup_1 [color=blue, style=bold];
+    setup_4 -> setup_5 [color=blue, style=bold];
+    setup_1 -> setup_2 [color=blue, style=bold];
+    setup_2 -> setup_3 [color=blue, style=bold];
+    setup_3 -> setup_4 [color=blue, style=bold];
+    setup_5 -> setup_6 [color=blue, style=bold];
+    setup_6 -> setup_7 [color=blue, style=bold];
+    setup_7 -> setup_8 [color=blue, style=bold];
+    setup_8 -> setup_9 [color=blue, style=bold];
     subgraph cluster_InitialIntegration {
         label="InitialIntegration";
         style=filled; fillcolor=lightyellow;
@@ -96,6 +105,15 @@ digraph schedule {
         update_18 [label="mddem_print::write_restart"];
     }
 
+    update_0 -> update_1 [color=blue, style=bold];
+    update_2 -> update_3 [color=blue, style=bold];
+    update_4 -> update_5 [color=blue, style=bold];
+    update_9 -> update_10 [color=blue, style=bold];
+    update_12 -> update_13 [color=blue, style=bold];
+    update_14 -> update_15 [color=blue, style=bold];
+    update_15 -> update_16 [color=blue, style=bold];
+    update_16 -> update_17 [color=blue, style=bold];
+    update_17 -> update_18 [color=blue, style=bold];
     update_9 -> update_10 [color=red, style=dashed, label="after"];
     update_1 -> update_2 [color=blue, style=bold];
     update_3 -> update_4 [color=blue, style=bold];

@@ -175,6 +175,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "dem_gravity"
+version = "0.1.0"
+dependencies = [
+ "mddem_app",
+ "mddem_core",
+ "mddem_scheduler",
+ "nalgebra",
+ "serde",
+]
+
+[[package]]
+name = "dem_wall"
+version = "0.1.0"
+dependencies = [
+ "dem_atom",
+ "mddem_app",
+ "mddem_core",
+ "mddem_scheduler",
+ "nalgebra",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "downcast-rs"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -342,6 +366,8 @@ dependencies = [
  "dem_atom",
  "dem_atom_insert",
  "dem_granular",
+ "dem_gravity",
+ "dem_wall",
  "mddem_app",
  "mddem_core",
  "mddem_neighbor",

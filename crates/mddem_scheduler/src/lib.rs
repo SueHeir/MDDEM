@@ -773,6 +773,30 @@ impl Scheduler {
             out.push_str("    }\n\n");
         }
 
+        // Edges between consecutive setup clusters (vertical layout)
+        let setup_cluster_tails: Vec<String> = setup_groups.iter()
+            .map(|(_, entries)| node_id("setup", entries.last().unwrap().0))
+            .collect();
+        let setup_cluster_heads: Vec<String> = setup_groups.iter()
+            .map(|(_, entries)| node_id("setup", entries.first().unwrap().0))
+            .collect();
+        for i in 0..setup_cluster_tails.len().saturating_sub(1) {
+            out.push_str(&format!(
+                "    {} -> {} [color=blue, style=bold];\n",
+                setup_cluster_tails[i], setup_cluster_heads[i + 1]
+            ));
+        }
+
+        // Edges between systems within each setup cluster (vertical ordering)
+        for (_set_name, entries) in &setup_groups {
+            for w in entries.windows(2) {
+                out.push_str(&format!(
+                    "    {} -> {} [color=blue, style=bold];\n",
+                    node_id("setup", w[0].0), node_id("setup", w[1].0)
+                ));
+            }
+        }
+
         // Update systems
         let mut update_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
         for (i, (entry, set)) in self.update_systems.iter().enumerate() {
@@ -800,6 +824,16 @@ impl Scheduler {
                 out.push_str(&format!("        {} [label=\"{}\"];\n", node_id("update", i), label));
             }
             out.push_str("    }\n\n");
+        }
+
+        // Edges between systems within each update cluster (vertical ordering)
+        for (_set_name, entries) in &update_groups {
+            for w in entries.windows(2) {
+                out.push_str(&format!(
+                    "    {} -> {} [color=blue, style=bold];\n",
+                    node_id("update", w[0].0), node_id("update", w[1].0)
+                ));
+            }
         }
 
         // Before/after constraint edges (red dashed)

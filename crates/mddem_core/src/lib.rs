@@ -16,3 +16,6 @@ pub use comm::*;
 pub use domain::*;
 pub use input::{Input, InputPlugin, Config, print_banner, load_toml};
 pub use run::*;
+
+// Re-export toml so downstream users can build Config tables programmatically.
+pub use toml;

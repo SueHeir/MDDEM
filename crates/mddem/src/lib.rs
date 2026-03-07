@@ -5,6 +5,8 @@ pub use mddem_print;
 pub use dem_atom;
 pub use dem_atom_insert;
 pub use dem_granular;
+pub use dem_gravity;
+pub use dem_wall;
 
 use mddem_app::prelude::*;
 
@@ -63,5 +65,7 @@ pub mod prelude {
     pub use dem_atom::{DemAtomPlugin, DemConfig, MaterialTable};
     pub use dem_atom_insert::{DemAtomInsertPlugin, ParticlesConfig};
     pub use dem_granular::GranularDefaultPlugins;
+    pub use dem_gravity::{GravityPlugin, GravityConfig};
+    pub use dem_wall::{WallPlugin, Walls, WallDef, WallPlane};
     pub use crate::CorePlugins;
 }

@@ -19,6 +19,15 @@ pub struct InsertConfig {
     pub radius: f64,
     pub density: f64,
     pub velocity: Option<f64>,
+    pub velocity_x: Option<f64>,
+    pub velocity_y: Option<f64>,
+    pub velocity_z: Option<f64>,
+    pub region_x_low: Option<f64>,
+    pub region_x_high: Option<f64>,
+    pub region_y_low: Option<f64>,
+    pub region_y_high: Option<f64>,
+    pub region_z_low: Option<f64>,
+    pub region_z_high: Option<f64>,
 }
 
 #[derive(Deserialize, Clone, Default)]
@@ -48,7 +57,11 @@ pub fn dem_insert_atoms(
     mut atom: ResMut<Atom>,
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
+    scheduler_manager: Res<SchedulerManager>,
 ) {
+    // Only insert particles on the first stage
+    if scheduler_manager.index != 0 { return; }
+
     // Insert particles per insert block
     if let Some(ref inserts) = particles_config.insert {
         if comm.rank() == 0 {
@@ -69,11 +82,18 @@ pub fn dem_insert_atoms(
                     material_table.youngs_mod[mat_idx as usize],
                     material_table.poisson_ratio[mat_idx as usize]);
 
+                let x_lo = insert.region_x_low.unwrap_or(domain.boundaries_low[0]) + radius;
+                let x_hi = insert.region_x_high.unwrap_or(domain.boundaries_high[0]) - radius;
+                let y_lo = insert.region_y_low.unwrap_or(domain.boundaries_low[1]) + radius;
+                let y_hi = insert.region_y_high.unwrap_or(domain.boundaries_high[1]) - radius;
+                let z_lo = insert.region_z_low.unwrap_or(domain.boundaries_low[2]) + radius;
+                let z_hi = insert.region_z_high.unwrap_or(domain.boundaries_high[2]) - radius;
+
                 let mut count = 0u32;
                 while count < insert.count {
-                    let x = rng.random_range(domain.boundaries_low[0] + radius..domain.boundaries_high[0] - radius);
-                    let y = rng.random_range(domain.boundaries_low[1] + radius..domain.boundaries_high[1] - radius);
-                    let z = rng.random_range(domain.boundaries_low[2] + radius..domain.boundaries_high[2] - radius);
+                    let x = rng.random_range(x_lo..x_hi);
+                    let y = rng.random_range(y_lo..y_hi);
+                    let z = rng.random_range(z_lo..z_hi);
 
                     let mut no_overlap = true;
                     for i in 0..atom.len() {
@@ -126,14 +146,25 @@ pub fn dem_insert_atoms(
                 }
 
                 // Apply per-insert velocity to this batch
+                let total_len = atom.vel_x.len();
+                let start = total_len - insert.count as usize;
                 if let Some(rand_vel) = insert.velocity {
-                    let total_len = atom.vel_x.len();
-                    let start = total_len - insert.count as usize;
+                    let normal = Normal::new(0.0, rand_vel).unwrap();
                     for i in start..total_len {
-                        let normal = Normal::new(0.0, rand_vel).unwrap();
                         atom.vel_x[i] = normal.sample(&mut rng);
                         atom.vel_y[i] = normal.sample(&mut rng);
                         atom.vel_z[i] = normal.sample(&mut rng);
+                    }
+                }
+                // Apply directional velocity components (additive with random)
+                let vx = insert.velocity_x.unwrap_or(0.0);
+                let vy = insert.velocity_y.unwrap_or(0.0);
+                let vz = insert.velocity_z.unwrap_or(0.0);
+                if vx != 0.0 || vy != 0.0 || vz != 0.0 {
+                    for i in start..total_len {
+                        atom.vel_x[i] += vx;
+                        atom.vel_y[i] += vy;
+                        atom.vel_z[i] += vz;
                     }
                 }
             }
@@ -146,7 +177,9 @@ fn calculate_delta_time(
     mut atoms: ResMut<Atom>,
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
+    scheduler_manager: Res<SchedulerManager>,
 ) {
+    if scheduler_manager.index != 0 { return; }
     let dem = registry.get::<DemAtom>().unwrap();
     let mut dt: f64 = 0.001;
 
@@ -162,6 +195,6 @@ fn calculate_delta_time(
 
     dt = comm.all_reduce_min_f64(dt);
 
-    if comm.rank() == 0 { println!("Using {} for delta time", dt * 0.05); }
-    atoms.dt = dt * 0.05;
+    if comm.rank() == 0 { println!("Using {} for delta time", dt * 0.15); }
+    atoms.dt = dt * 0.15;
 }

@@ -2,6 +2,17 @@
 
 Basic 3D granular gas simulation with 500 particles in a periodic box.
 
+## Run
+
+```bash
+# Single-process
+cargo run --example granular_basic -- examples/granular_basic/config.toml
+
+# With MPI
+cargo build-examples
+mpiexec -n 4 ./target/release/examples/granular_basic examples/granular_basic/config.toml
+```
+
 ## Parameters
 
 | Parameter | Value |
@@ -17,9 +28,3 @@ Basic 3D granular gas simulation with 500 particles in a periodic box.
 | Domain | 0.025 x 0.025 x 0.025 m (periodic) |
 | Steps | 5,000,000 |
 | Thermo interval | 500 |
-
-## Run
-
-```bash
-mpiexec -n 4 ./target/release/MDDEM ./examples/granular_basic/config.toml
-```

@@ -176,7 +176,7 @@ app.add_update_system(
 Pass `--schedule` on the command line to print the compiled schedule to the terminal and write a Graphviz DOT file:
 
 ```bash
-mpiexec -n 1 ./target/release/MDDEM ./examples/granular_basic/config.toml --schedule
+cargo run --example granular_basic -- examples/granular_basic/config.toml --schedule
 ```
 
 This produces `schedule.dot` in the working directory. Generate an image with:
