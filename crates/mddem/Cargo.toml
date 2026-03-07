@@ -25,3 +25,7 @@ dem_atom_insert = { path = "../dem_atom_insert", version = "0.1.0" }
 dem_granular = { path = "../dem_granular", version = "0.1.0" }
 dem_gravity = { path = "../dem_gravity", version = "0.1.0" }
 dem_wall = { path = "../dem_wall", version = "0.1.0" }
+md_lj = { path = "../md_lj", version = "0.1.0" }
+md_thermostat = { path = "../md_thermostat", version = "0.1.0" }
+md_lattice = { path = "../md_lattice", version = "0.1.0" }
+md_measure = { path = "../md_measure", version = "0.1.0" }

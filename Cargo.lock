@@ -352,6 +352,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "md_lattice"
+version = "0.1.0"
+dependencies = [
+ "mddem_app",
+ "mddem_core",
+ "mddem_scheduler",
+ "nalgebra",
+ "rand",
+ "rand_distr",
+ "serde",
+]
+
+[[package]]
+name = "md_lj"
+version = "0.1.0"
+dependencies = [
+ "mddem_app",
+ "mddem_core",
+ "mddem_neighbor",
+ "mddem_scheduler",
+ "nalgebra",
+ "serde",
+]
+
+[[package]]
+name = "md_measure"
+version = "0.1.0"
+dependencies = [
+ "md_lj",
+ "mddem_app",
+ "mddem_core",
+ "mddem_neighbor",
+ "mddem_scheduler",
+ "serde",
+]
+
+[[package]]
+name = "md_thermostat"
+version = "0.1.0"
+dependencies = [
+ "mddem_app",
+ "mddem_core",
+ "mddem_scheduler",
+ "nalgebra",
+ "serde",
+]
+
+[[package]]
 name = "mddem"
 version = "0.1.0"
 dependencies = [
@@ -360,6 +408,10 @@ dependencies = [
  "dem_granular",
  "dem_gravity",
  "dem_wall",
+ "md_lattice",
+ "md_lj",
+ "md_measure",
+ "md_thermostat",
  "mddem_app",
  "mddem_core",
  "mddem_neighbor",

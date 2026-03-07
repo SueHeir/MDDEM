@@ -1,0 +1,18 @@
+[package]
+name = "md_measure"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Measurement tools for MDDEM: radial distribution function (RDF), mean square displacement (MSD), and virial pressure"
+keywords = ["rdf", "msd", "pressure", "molecular-dynamics"]
+categories = ["simulation", "science"]
+
+[dependencies]
+mddem_core = { path = "../mddem_core", version = "0.1.0", default-features = false }
+mddem_app = { path = "../mddem_app", version = "0.1.0" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.0" }
+mddem_neighbor = { path = "../mddem_neighbor", version = "0.1.0" }
+md_lj = { path = "../md_lj", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }

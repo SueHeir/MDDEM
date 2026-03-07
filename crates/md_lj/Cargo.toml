@@ -1,0 +1,18 @@
+[package]
+name = "md_lj"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Lennard-Jones 12-6 pair force with virial accumulator and tail corrections for MDDEM"
+keywords = ["lennard-jones", "molecular-dynamics", "lj", "pair-potential"]
+categories = ["simulation", "science"]
+
+[dependencies]
+mddem_core = { path = "../mddem_core", version = "0.1.0", default-features = false }
+mddem_app = { path = "../mddem_app", version = "0.1.0" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.0" }
+mddem_neighbor = { path = "../mddem_neighbor", version = "0.1.0" }
+nalgebra = "0.33.2"
+serde = { version = "1", features = ["derive"] }

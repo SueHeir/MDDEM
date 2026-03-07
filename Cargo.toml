@@ -38,6 +38,10 @@ path = "examples/toml_single/main.rs"
 name = "hopper"
 path = "examples/hopper/main.rs"
 
+[[example]]
+name = "lj_argon"
+path = "examples/lj_argon/main.rs"
+
 [dependencies]
 mddem = { path = "./crates/mddem", default-features = false }
 # Force libffi-sys to use system libffi (via pkg-config) instead of building

@@ -1,0 +1,19 @@
+[package]
+name = "md_lattice"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "FCC lattice initialization with Maxwell-Boltzmann velocities for MDDEM"
+keywords = ["lattice", "fcc", "molecular-dynamics", "initialization"]
+categories = ["simulation", "science"]
+
+[dependencies]
+mddem_core = { path = "../mddem_core", version = "0.1.0", default-features = false }
+mddem_app = { path = "../mddem_app", version = "0.1.0" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.0" }
+nalgebra = "0.33.2"
+rand = "0.9"
+rand_distr = "0.5"
+serde = { version = "1", features = ["derive"] }

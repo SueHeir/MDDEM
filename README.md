@@ -5,7 +5,7 @@
 MDDEM (pronounced like "Madem" without the 'a') is a Molecular Dynamics / Discrete Element Method codebase written in Rust with optional MPI parallelization.
 It uses [rsmpi](https://github.com/rsmpi/rsmpi) as a Rust wrapper around MPI (feature-gated behind `mpi_backend`) and [nalgebra](https://github.com/dimforge/nalgebra) as a math library. MPI is optional — MDDEM builds and runs on a single process without it.
 
-LAMMPS/LIGGGHTS-style MPI communication (exchange, borders, reverse force) is fully implemented for periodic boxes of spheres with Hertz normal contact, Mindlin tangential friction, and rotational dynamics.
+LAMMPS/LIGGGHTS-style MPI communication (exchange, borders, reverse force) is fully implemented for periodic boxes of spheres with Hertz normal contact, Mindlin tangential friction, and rotational dynamics. Continuous-potential molecular dynamics is also supported, with a Lennard-Jones fluid example validated against known liquid Argon properties.
 
 ## Design Philosophy
 
@@ -174,6 +174,21 @@ Each stage can override `dump_interval`, `restart_interval`, and `vtp_interval` 
 | `[restart]` | `format` | Restart format: `"bincode"` or `"json"` |
 | `[restart]` | `read` | Read restart file on startup (default false) |
 | `[vtp]` | `interval` | Write VTP visualization files every N steps (0 = disabled) |
+| `[lj]` | `epsilon` | LJ well depth (reduced units, default 1.0) |
+| `[lj]` | `sigma` | LJ length scale (reduced units, default 1.0) |
+| `[lj]` | `cutoff` | LJ cutoff distance in sigma units (default 2.5) |
+| `[thermostat]` | `temperature` | Target temperature T* (reduced units) |
+| `[thermostat]` | `coupling` | Nose-Hoover relaxation time tau_T |
+| `[lattice]` | `style` | Lattice type (`"fcc"`) |
+| `[lattice]` | `density` | Number density rho* |
+| `[lattice]` | `temperature` | Initial temperature for Maxwell-Boltzmann velocities |
+| `[lattice]` | `mass` | Particle mass |
+| `[lattice]` | `skin` | Neighbor skin distance |
+| `[measure]` | `rdf_bins` | Number of RDF histogram bins (default 200) |
+| `[measure]` | `rdf_cutoff` | RDF maximum distance (default 3.0) |
+| `[measure]` | `rdf_interval` | Accumulate RDF every N steps |
+| `[measure]` | `msd_interval` | Compute MSD every N steps |
+| `[measure]` | `output_interval` | Write measurement files every N steps |
 
 ## Physics
 
@@ -186,6 +201,12 @@ Each stage can override `dump_interval`, `restart_interval`, and `vtp_interval` 
 - **Gravity**: Configurable body force (`GravityPlugin`)
 - **Walls**: General plane wall contact with Hertz repulsion (`WallPlugin`), supports axis-aligned and angled walls, toggleable at runtime for staged simulations
 - **MPI**: Optional 3D domain decomposition with ghost atom forwarding to diagonal neighbors (corner-complete). Falls back to single-process mode when built without the `mpi_backend` feature.
+
+### Molecular Dynamics
+- **Lennard-Jones 12-6**: Continuous pair potential with cutoff, virial accumulator, and long-range tail corrections (`LJForcePlugin`)
+- **Nose-Hoover NVT**: Thermostat via symmetric Liouville splitting around Velocity Verlet (`NoseHooverPlugin`)
+- **FCC lattice initialization**: Face-centered cubic crystal with Maxwell-Boltzmann velocities (`LatticePlugin`)
+- **Measurements**: Radial distribution function g(r), mean square displacement, virial pressure (`MeasurePlugin`)
 
 ## Code Layout
 
@@ -204,7 +225,11 @@ MDDEM is built around a dependency-injection scheduler inspired by [Bevy](https:
 | [`dem_granular`](crates/dem_granular/) | Granular physics: Hertz normal contact, Mindlin tangential friction, rotational dynamics, `GranularDefaultPlugins` |
 | [`dem_gravity`](crates/dem_gravity/) | Configurable gravity body force (`GravityPlugin`) |
 | [`dem_wall`](crates/dem_wall/) | General plane wall contact forces with Hertz repulsion (`WallPlugin`), runtime-toggleable walls |
-| [`mddem`](crates/mddem/) | Umbrella crate: `CorePlugins`, prelude re-exports |
+| [`md_lj`](crates/md_lj/) | Lennard-Jones 12-6 pair force with virial accumulator and tail corrections |
+| [`md_thermostat`](crates/md_thermostat/) | Nose-Hoover NVT thermostat (symmetric Liouville splitting) |
+| [`md_lattice`](crates/md_lattice/) | FCC lattice initialization with Maxwell-Boltzmann velocities |
+| [`md_measure`](crates/md_measure/) | Measurement tools: radial distribution function, mean square displacement, virial pressure |
+| [`mddem`](crates/mddem/) | Umbrella crate: `CorePlugins`, `LJDefaultPlugins`, prelude re-exports |
 
 A simulation is composed by adding plugin groups to an `App`:
 
@@ -218,7 +243,7 @@ fn main() {
 }
 ```
 
-`CorePlugins` bundles TOML config loading, communication, domain decomposition, neighbor lists, run/cycle management, Velocity Verlet integration, and output. MPI finalization is handled automatically via cleanup callbacks. Individual plugins can be added separately for custom configurations.
+`CorePlugins` bundles TOML config loading, communication, domain decomposition, neighbor lists, run/cycle management, Velocity Verlet integration, and output. `LJDefaultPlugins` bundles FCC lattice initialization, LJ 12-6 forces, Nose-Hoover thermostat, and measurements for MD simulations. MPI finalization is handled automatically via cleanup callbacks. Individual plugins can be added separately for custom configurations.
 
 ### Programmatic config
 
@@ -296,6 +321,10 @@ cargo test -p mddem_core --no-default-features
 cargo test -p mddem_verlet
 cargo test -p mddem_neighbor
 cargo test -p dem_granular
+cargo test -p md_lj
+cargo test -p md_thermostat
+cargo test -p md_lattice
+cargo test -p md_measure
 ```
 
 Tests cover:
@@ -307,6 +336,10 @@ Tests cover:
 - Mindlin tangential friction (spring history, Coulomb cap)
 - Rotational dynamics (angular acceleration, quaternion updates)
 - Material mixing (single-material, multi-material symmetry)
+- LJ 12-6 force (repulsive/attractive/cutoff, Newton's 3rd law, virial)
+- Nose-Hoover thermostat (temperature control, stability)
+- FCC lattice insertion (atom count, density, zero COM velocity)
+- RDF and MSD measurement infrastructure
 
 ## Examples
 
@@ -318,8 +351,9 @@ Examples are compiled executables, each with a `main.rs` and supporting files:
 | [benchmark](examples/benchmark/) | Haff's cooling law validation with LAMMPS comparison | `cargo run --example benchmark -- examples/benchmark/config.toml` |
 | [toml_single](examples/toml_single/) | Programmatic config — no TOML file needed | `cargo run --example toml_single` |
 | [hopper](examples/hopper/) | 2D slot hopper with angled funnel walls, gravity, and simulation states | `cargo run --example hopper -- examples/hopper/config.toml` |
+| [lj_argon](examples/lj_argon/) | LJ fluid validated against liquid Argon (RDF, MSD, pressure) | `cargo run --release --no-default-features --example lj_argon -- examples/lj_argon/config.toml` |
 
-The `granular_basic`, `benchmark`, and `hopper` examples use TOML config files (Tier 1). The `toml_single` example builds its config entirely in Rust code (Tier 2), demonstrating programmatic setup for parameter sweeps or embedding MDDEM as a library. The `hopper` example combines TOML config with a custom Rust setup system (Tier 2) for runtime wall control.
+The `granular_basic`, `benchmark`, `hopper`, and `lj_argon` examples use TOML config files (Tier 1). The `toml_single` example builds its config entirely in Rust code (Tier 2), demonstrating programmatic setup for parameter sweeps or embedding MDDEM as a library. The `hopper` example combines TOML config with a custom Rust setup system (Tier 2) for runtime wall control. The `lj_argon` example includes a Python validation script (`validate.py`) that checks simulation output against known liquid Argon properties and generates diagnostic plots.
 
 ## Future Goals
 
@@ -391,19 +425,11 @@ A container of particles is vibrated sinusoidally from below. Above a critical a
 
 The DEM benchmarks above validate granular contact mechanics. The following MD benchmarks progressively build general-purpose molecular simulation capability, each layering new features on top of the previous ones.
 
-### 6. Lennard-Jones Fluid (Argon)
+### ~~6. Lennard-Jones Fluid (Argon)~~ DONE
 
-A box of Lennard-Jones atoms at controlled temperature and density. The "hello world" of molecular dynamics.
+Implemented and validated in the [lj_argon](examples/lj_argon/) example. 864 LJ atoms on an FCC lattice at T\*=0.85, rho\*=0.85 with Nose-Hoover NVT thermostat. Validated: g(r) first peak at r=1.07 sigma (height 2.89), diffusion D\*=0.038, virial pressure with tail corrections. See `examples/lj_argon/validate.py` for automated validation and plots.
 
-**New features needed:**
-- `md_lj` — Lennard-Jones 12-6 pair potential with cutoff and energy shift. The first *continuous* pair potential (attractive + repulsive, vs. DEM's purely repulsive overlap-based forces)
-- `md_thermostat` — Nose-Hoover thermostat (NVT ensemble). Extends the Velocity Verlet integrator with thermostat coupling via auxiliary chain variables
-- `md_measure` — Radial distribution function g(r) computation and virial pressure calculation
-- Reduced (LJ) units system alongside existing SI units
-
-**Why it matters:** Proves the plugin architecture supports continuous pair potentials alongside DEM contact forces without modifying the scheduler or core. Tests that neighbor lists, ghost communication, and periodic boundaries work correctly for a fundamentally different force model. The thermostat plugin tests that the integration pipeline can be modified by plugins (inserting half-step velocity scaling).
-
-**Validation:** Johnson-Zollweg-Gubbins equation of state — pressure vs. density/temperature to within 1-2%. g(r) at T\*=0.85, rho\*=0.85 (liquid argon near triple point): first peak at r/sigma ~ 1.09 ([Verlet, Phys. Rev. 159, 1967](https://doi.org/10.1103/PhysRev.159.98)). Diffusion coefficient D\* ~ 0.033 at T\*=1.0 via mean-square displacement ([Rahman, Phys. Rev. 136, 1964](https://doi.org/10.1103/PhysRev.136.A405)).
+**Crates added:** `md_lj` (LJ 12-6 force + virial), `md_thermostat` (Nose-Hoover NVT), `md_lattice` (FCC initialization), `md_measure` (RDF, MSD, pressure). Plugin group: `LJDefaultPlugins`.
 
 ### 7. Lennard-Jones Crystal Melting
 

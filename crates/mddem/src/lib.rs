@@ -3,6 +3,10 @@ pub use dem_atom_insert;
 pub use dem_granular;
 pub use dem_gravity;
 pub use dem_wall;
+pub use md_lattice;
+pub use md_lj;
+pub use md_measure;
+pub use md_thermostat;
 pub use mddem_core;
 pub use mddem_neighbor;
 pub use mddem_print;
@@ -56,13 +60,36 @@ impl PluginGroup for CorePlugins {
     }
 }
 
+/// Lennard-Jones simulation plugin group.
+///
+/// Includes:
+/// - [`LatticePlugin`](md_lattice::LatticePlugin) — FCC lattice initialization
+/// - [`LJForcePlugin`](md_lj::LJForcePlugin) — LJ 12-6 pair force + virial
+/// - [`NoseHooverPlugin`](md_thermostat::NoseHooverPlugin) — NVT thermostat
+/// - [`MeasurePlugin`](md_measure::MeasurePlugin) — RDF, MSD, pressure measurements
+pub struct LJDefaultPlugins;
+
+impl PluginGroup for LJDefaultPlugins {
+    fn build(self) -> PluginGroupBuilder {
+        PluginGroupBuilder::start::<Self>()
+            .add(md_lattice::LatticePlugin)
+            .add(md_lj::LJForcePlugin)
+            .add(md_thermostat::NoseHooverPlugin)
+            .add(md_measure::MeasurePlugin)
+    }
+}
+
 pub mod prelude {
-    pub use crate::CorePlugins;
+    pub use crate::{CorePlugins, LJDefaultPlugins};
     pub use dem_atom::{DemAtomPlugin, DemConfig, MaterialTable};
     pub use dem_atom_insert::{DemAtomInsertPlugin, ParticlesConfig};
     pub use dem_granular::GranularDefaultPlugins;
     pub use dem_gravity::{GravityConfig, GravityPlugin};
     pub use dem_wall::{WallDef, WallPlane, WallPlugin, Walls};
+    pub use md_lattice::{LatticeConfig, LatticePlugin};
+    pub use md_lj::{LJConfig, LJForcePlugin, LJTailCorrections, VirialAccumulator};
+    pub use md_measure::{MeasureConfig, MeasurePlugin};
+    pub use md_thermostat::{NoseHooverPlugin, NoseHooverState, ThermostatConfig};
     pub use mddem_app::prelude::*;
     pub use mddem_core::*;
     pub use mddem_neighbor::*;
