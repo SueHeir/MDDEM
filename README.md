@@ -7,6 +7,16 @@ It uses [rsmpi](https://github.com/rsmpi/rsmpi) as a Rust wrapper around MPI (fe
 
 LAMMPS/LIGGGHTS-style MPI communication (exchange, borders, reverse force) is fully implemented for periodic boxes of spheres with Hertz normal contact, Mindlin tangential friction, and rotational dynamics.
 
+## Design Philosophy
+
+MDDEM is built around **composability**. A dependency-injection scheduler (inspired by [Bevy](https://github.com/bevyengine/bevy)) and plugin system let you assemble simulations from independent, reusable pieces. Physics models, integrators, neighbor list algorithms, and output formats are all plugins — swap one out, add a new one, or combine them without touching the rest of the codebase. Systems declare what resources they need as function arguments; the scheduler injects them automatically and handles execution order.
+
+Configuration follows a **two-tier** approach:
+
+**Tier 1 — Declarative TOML config** for standard simulations. Named fields, typed values, validated at startup via `serde`. Each plugin owns its config section, and multi-stage runs are expressed as `[[run]]` arrays.
+
+**Tier 2 — Rust API** for complex simulations. The simulation is a library — `main.rs` composes plugins, and custom systems are real functions with full type safety, IDE autocomplete, and the entire Rust ecosystem.
+
 ## Building
 
 By default, MDDEM builds with MPI support via the `mpi_backend` feature flag. On systems where MPI/libffi-sys is unavailable (e.g. aarch64 macOS without Homebrew libffi), you can build without MPI:
@@ -34,92 +44,6 @@ Pass `--schedule` to print the compiled schedule and write a Graphviz DOT file:
 ```bash
 mpiexec -n 1 ./target/release/MDDEM ./examples/granular_basic/config.toml --schedule
 ```
-
-## Design Philosophy
-
-MDDEM avoids the pitfalls of LAMMPS-style scripting through a deliberate two-tier design.
-
-LAMMPS input scripts occupy the worst possible design point: complex enough to require programming (multi-stage runs, conditional logic, variable expressions), but implemented as a weak scripting language with positional numeric arguments, order-dependent commands, arcane variable syntax (`${x}` vs `v_x` vs `$(v_x)`), and `fix`/`unfix` lifecycle management. The result is 500-line scripts that nobody can debug.
-
-MDDEM replaces this with two clean tiers:
-
-### Tier 1: Declarative TOML Config
-
-For standard simulations, everything is specified in a TOML configuration file with named fields, typed values, and compile-time validation via `serde`. No positional arguments, no order dependence, no string-based ID management. Multi-stage simulations use `[[run]]` arrays:
-
-```toml
-[[run]]
-name = "settling"
-steps = 10000
-thermo = 100
-
-[[run]]
-name = "production"
-steps = 100000
-thermo = 1000
-dump_interval = 500
-```
-
-Each plugin owns its config section. Bad values produce clear serde error messages at startup, not silent wrong physics at step 50,000.
-
-### Tier 2: Rust API
-
-When TOML isn't enough, users write Rust directly. The simulation is a library — `main.rs` composes plugins, and custom systems are real functions with full type safety, IDE autocomplete, and the entire Rust ecosystem:
-
-```rust
-fn main() {
-    let mut app = App::new();
-    app.add_plugins(CorePlugins)
-       .add_plugins(GranularDefaultPlugins);
-
-    // Custom system with DI, type checking, and real programming constructs
-    app.add_update_system(
-        my_custom_force.run_if(in_state(Phase::Production)),
-        ScheduleSet::PostForce,
-    );
-    app.start();
-}
-
-fn my_custom_force(mut atoms: ResMut<Atom>, domain: Res<Domain>) {
-    // Real code in a real language
-}
-```
-
-There is no middle-ground scripting language. Simple things stay simple (TOML). Complex things use a real language (Rust).
-
-## Testing
-
-Tests run without MPI, using the single-process backend:
-
-```bash
-# Run all tests
-cargo test --workspace --no-default-features
-
-# Run tests for a specific crate
-cargo test -p mddem_core --no-default-features
-cargo test -p mddem_verlet
-cargo test -p mddem_neighbor
-cargo test -p dem_granular
-```
-
-Tests cover:
-- `SingleProcessComm` backend (rank, size, reductions)
-- `CartesianDecomposition` (single-proc and multi-proc domain splitting)
-- Velocity Verlet integration (initial and final half-steps)
-- Neighbor lists (brute force, sweep-and-prune, and bin-based)
-- Hertz normal contact force (repulsive for overlap, zero for gap)
-- Mindlin tangential friction (spring history, Coulomb cap)
-- Rotational dynamics (angular acceleration, quaternion updates)
-- Material mixing (single-material, multi-material symmetry)
-
-## Examples
-
-| Example | Description |
-|---------|-------------|
-| [granular_basic](examples/granular_basic/) | Basic 500-particle granular gas in a periodic box |
-| [benchmark](examples/benchmark/) | Haff's cooling law validation with LAMMPS comparison |
-| [toml_single](examples/toml_single/) | Single short run for quick testing |
-
 
 ## Input
 
@@ -160,22 +84,9 @@ radius = 0.001
 density = 2500.0
 velocity = 0.5
 
-# Single-stage run (backwards compatible)
 [run]
 thermo = 100
 steps = 10000
-
-# Or multi-stage: use [[run]] for sequential stages
-# [[run]]
-# name = "settling"
-# steps = 10000
-# thermo = 100
-#
-# [[run]]
-# name = "production"
-# steps = 100000
-# thermo = 1000
-# dump_interval = 500
 
 [dump]
 interval = 1000
@@ -191,6 +102,25 @@ interval = 2000
 ```
 
 Materials are defined as named types under `[[dem.materials]]`. Particles reference a material by name in `[[particles.insert]]`. Multiple material types and insert blocks are supported — mixed-material contacts use geometric-mean mixing for restitution and friction (LAMMPS convention).
+
+### Multi-stage runs
+
+For sequential simulation stages with different settings, use `[[run]]` (TOML array) instead of `[run]`:
+
+```toml
+[[run]]
+name = "settling"
+steps = 10000
+thermo = 100
+
+[[run]]
+name = "production"
+steps = 100000
+thermo = 1000
+dump_interval = 500
+```
+
+Each stage can override `dump_interval`, `restart_interval`, and `vtp_interval` for that stage only; unset values fall back to the global `[dump]`/`[restart]`/`[vtp]` config. Single-stage `[run]` is still supported.
 
 ### Parameters
 
@@ -211,7 +141,7 @@ Materials are defined as named types under `[[dem.materials]]`. Particles refere
 | `[[particles.insert]]` | `radius` | Particle radius (m) |
 | `[[particles.insert]]` | `density` | Particle density (kg/m^3) |
 | `[[particles.insert]]` | `velocity` | Initial RMS velocity (m/s, Gaussian per component) |
-| `[run]` or `[[run]]` | `name` | Stage name for logging (optional, multi-stage only) |
+| `[run]` or `[[run]]` | `name` | Stage name for logging (optional) |
 | `[run]` or `[[run]]` | `steps` | Number of timesteps |
 | `[run]` or `[[run]]` | `thermo` | Print thermodynamic output every N steps |
 | `[[run]]` | `dump_interval` | Override dump interval for this stage (optional) |
@@ -330,6 +260,39 @@ When `Config` is already present before `CorePlugins` builds, `InputPlugin` skip
 
 Per-atom DEM data (radius, density) is stored in `DemAtom`, a typed extension registered with `AtomDataRegistry`. The registry packs and unpacks these fields automatically during MPI communication alongside the base `Atom` fields. Per-material properties (Young's modulus, Poisson ratio, restitution, friction) live in `MaterialTable`, populated at plugin build time from `[[dem.materials]]` config.
 
+## Testing
+
+Tests run without MPI, using the single-process backend:
+
+```bash
+# Run all tests
+cargo test --workspace --no-default-features
+
+# Run tests for a specific crate
+cargo test -p mddem_core --no-default-features
+cargo test -p mddem_verlet
+cargo test -p mddem_neighbor
+cargo test -p dem_granular
+```
+
+Tests cover:
+- `SingleProcessComm` backend (rank, size, reductions)
+- `CartesianDecomposition` (single-proc and multi-proc domain splitting)
+- Velocity Verlet integration (initial and final half-steps)
+- Neighbor lists (brute force, sweep-and-prune, and bin-based)
+- Hertz normal contact force (repulsive for overlap, zero for gap)
+- Mindlin tangential friction (spring history, Coulomb cap)
+- Rotational dynamics (angular acceleration, quaternion updates)
+- Material mixing (single-material, multi-material symmetry)
+
+## Examples
+
+| Example | Description |
+|---------|-------------|
+| [granular_basic](examples/granular_basic/) | Basic 500-particle granular gas in a periodic box |
+| [benchmark](examples/benchmark/) | Haff's cooling law validation with LAMMPS comparison |
+| [toml_single](examples/toml_single/) | Single short run for quick testing |
+
 ## Future Goals
 
 - **Library crate**: Publish to crates.io so simulations can be composed by importing plugins
@@ -337,8 +300,3 @@ Per-atom DEM data (radius, density) is stored in `DemAtom`, a typed extension re
 - **GPU readiness**: Flat neighbor list arrays; grid-based neighbor detection; f32 GPU kernels
 - **LEBC**: Lees-Edwards boundary conditions for shear flow
 - **Polydispersity**: Per-insert-block radii supported; continuous size distributions planned
-
-## Completed
-
-- **Multi-stage runs**: `[[run]]` TOML arrays for sequential simulation stages with per-stage thermo/dump/restart/vtp intervals
-- **SoA refactor**: Flat `Vec<f64>` per field for cache efficiency (~9x speedup)
