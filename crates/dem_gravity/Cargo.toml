@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 description = "Configurable gravity body force plugin for MDDEM simulations"
 keywords = ["dem", "gravity", "simulation"]
 categories = ["simulation", "science"]

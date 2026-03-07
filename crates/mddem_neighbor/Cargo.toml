@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 description = "Neighbor list algorithms for MDDEM: brute force, sweep-and-prune, bin-based"
 keywords = ["neighbor-list", "dem", "simulation"]
 categories = ["simulation", "science"]
