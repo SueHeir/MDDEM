@@ -1,0 +1,19 @@
+[package]
+name = "mddem"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["mpi_backend"]
+mpi_backend = ["mddem_core/mpi_backend"]
+
+[dependencies]
+mddem_scheduler = { path = "../mddem_scheduler" }
+mddem_app = { path = "../mddem_app" }
+mddem_core = { path = "../mddem_core", default-features = false }
+mddem_neighbor = { path = "../mddem_neighbor" }
+mddem_verlet = { path = "../mddem_verlet" }
+mddem_print = { path = "../mddem_print" }
+dem_atom = { path = "../dem_atom" }
+dem_atom_insert = { path = "../dem_atom_insert" }
+dem_granular = { path = "../dem_granular" }

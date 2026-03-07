@@ -1,8 +1,9 @@
 /target
-/vtp
 .gitignore
 /src/.gitignore
 .DS_Store
 */.DS_Store
 .cargo
 .claude
+**/vtp/
+*.vtp

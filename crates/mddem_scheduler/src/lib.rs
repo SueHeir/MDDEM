@@ -402,9 +402,9 @@ pub struct StoredSystemEntry {
 #[derive(Debug)]
 pub enum ScheduleSet {
     Setup,
-    PreInitalIntegration,
-    InitalIntegration,
-    PostInitalIntegration,
+    PreInitialIntegration,
+    InitialIntegration,
+    PostInitialIntegration,
     PreExchange,
     Exchange,
     PreNeighbor,
@@ -427,9 +427,9 @@ pub enum ScheduleSetupSet {
 pub fn set_to_value(schedule_set: &ScheduleSet) -> u32 {
     match schedule_set {
         ScheduleSet::Setup => 0,
-        ScheduleSet::PreInitalIntegration => 1,
-        ScheduleSet::InitalIntegration => 2,
-        ScheduleSet::PostInitalIntegration => 3,
+        ScheduleSet::PreInitialIntegration => 1,
+        ScheduleSet::InitialIntegration => 2,
+        ScheduleSet::PostInitialIntegration => 3,
         ScheduleSet::PreExchange => 4,
         ScheduleSet::Exchange => 5,
         ScheduleSet::PreNeighbor => 6,
@@ -605,7 +605,6 @@ impl Scheduler {
             if matches!(schedule_state, SchedulerState::Setup) {
                 self.organize_systems();
                 if self.print_schedule {
-                    // self.print_schedule();
                     self.write_dot("schedule.dot");
                 }
                 self.setup();
@@ -663,6 +662,12 @@ impl Scheduler {
 
     pub fn get_mut_resource(&mut self, res: TypeId) -> Option<&RefCell<Box<dyn Any>>> {
         self.resources.get(&res)
+    }
+
+    pub fn get_resource_ref<R: 'static>(&self) -> Option<std::cell::Ref<'_, R>> {
+        self.resources.get(&TypeId::of::<R>()).map(|cell| {
+            std::cell::Ref::map(cell.borrow(), |b| b.downcast_ref::<R>().unwrap())
+        })
     }
 
     pub fn enable_schedule_print(&mut self) {

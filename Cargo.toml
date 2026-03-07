@@ -15,22 +15,13 @@ mpirun = "mpiexec -n 4 ./target/release/MDDEM input"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["mpi_backend"]
+mpi_backend = ["mddem/mpi_backend", "dep:libffi-sys"]
+
 [dependencies]
-#Internal
-mddem_scheduler = { path = "./crates/mddem_scheduler"}
-mddem_app = { path = "./crates/mddem_app"}
-#External
-
-
-
-mpi = { version = "0.8.0", features = ["user-operations", "derive"] }
+mddem = { path = "./crates/mddem", default-features = false }
 # Force libffi-sys to use system libffi (via pkg-config) instead of building
 # from source. libffi-sys 2.3.0 has a broken aarch64 macOS assembler; Homebrew
 # libffi is set in .cargo/config.toml via PKG_CONFIG_PATH.
-libffi-sys = { version = "2.3.0", features = ["system"] }
-nalgebra = "0.33.2"
-rand = "*"
-rand_distr = "0.5.1"
-
-
-
+libffi-sys = { version = "2.3.0", features = ["system"], optional = true }

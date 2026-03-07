@@ -15,12 +15,6 @@ pub struct SubApp {
     pub(crate) plugin_build_depth: usize,
 }
 
-// impl Debug for SubApp {
-//     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-//         write!(f, "SubApp")
-//     }
-// }
-
 impl Default for SubApp {
     fn default() -> Self {
         let scheduler = Scheduler::default();
@@ -81,6 +75,10 @@ impl SubApp {
         self.scheduler.get_mut_resource(res)
     }
 
+    pub fn get_resource_ref<R: 'static>(&self) -> Option<std::cell::Ref<'_, R>> {
+        self.scheduler.get_resource_ref::<R>()
+    }
+
     pub fn enable_schedule_print(&mut self) {
         self.scheduler.enable_schedule_print();
     }
@@ -96,6 +94,3 @@ pub struct SubApps {
     pub sub_apps: HashMap<String, SubApp>,
 }
 
-impl SubApps { 
-
-}

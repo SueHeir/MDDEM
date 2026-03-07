@@ -8,9 +8,9 @@ The per-step schedule runs in this order:
 
 ```rust
 pub enum ScheduleSet {
-    PreInitalIntegration,
-    InitalIntegration,
-    PostInitalIntegration,
+    PreInitialIntegration,
+    InitialIntegration,
+    PostInitialIntegration,
     PreExchange,
     Exchange,
     PreNeighbor,
@@ -69,8 +69,8 @@ pub fn tangential_force(
 A run condition is any DI function that returns `bool`. Attach one to a system with `.run_if()`; the system is skipped when the condition returns `false`.
 
 ```rust
-pub fn every_n_steps(n: u64) -> impl Fn(Res<Verlet>) -> bool {
-    move |verlet: Res<Verlet>| verlet.total_cycle % n == 0
+pub fn every_n_steps(n: u64) -> impl Fn(Res<RunState>) -> bool {
+    move |run_state: Res<RunState>| run_state.total_cycle % n == 0
 }
 
 app.add_update_system(
@@ -176,7 +176,7 @@ app.add_update_system(
 Pass `--schedule` on the command line to print the compiled schedule to the terminal and write a Graphviz DOT file:
 
 ```bash
-mpiexec -n 1 ./target/release/MDDEM ./input --schedule
+mpiexec -n 1 ./target/release/MDDEM ./examples/granular_basic/config.toml --schedule
 ```
 
 This produces `schedule.dot` in the working directory. Generate an image with:

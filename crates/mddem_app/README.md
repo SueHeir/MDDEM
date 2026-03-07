@@ -8,15 +8,10 @@ Application framework for MDDEM. Provides `App`, `SubApp`, `Plugin`, `PluginGrou
 
 ```rust
 fn main() {
-    App::new()
-        .add_plugins(InputPlugin)
-        .add_plugins(CommunicationPlugin)
-        .add_plugins(DomainPlugin)
-        .add_plugins(NeighborPlugin { brute_force: false })
-        .add_plugins(GranularDefaultPlugins)
-        .add_plugins(VerletPlugin)
-        .add_plugins(PrintPlugin)
-        .start();
+    let mut app = App::new();
+    app.add_plugins(CorePlugins)
+        .add_plugins(GranularDefaultPlugins);
+    app.start();
 }
 ```
 
@@ -63,11 +58,11 @@ Groups can be composed into larger groups or overridden at the `main.rs` level. 
 
 ```rust
 fn main() {
-    App::new()
+    let mut app = App::new();
+    app.add_plugins(CorePlugins)
         .add_plugins(GranularDefaultPlugins)
-        .add_plugins(CohesiveForcePlugin)   // additional force on top of defaults
-        ...
-        .start();
+        .add_plugins(CohesiveForcePlugin);   // additional force on top of defaults
+    app.start();
 }
 ```
 
@@ -88,20 +83,20 @@ Registers `CurrentState<S>` and `NextState<S>` resources and wires up end-of-ste
 #[derive(Clone, PartialEq, Default)]
 enum Phase { #[default] Settling, Production }
 
-App::new()
-    .add_plugins(StatesPlugin { initial: Phase::Settling })
+let mut app = App::new();
+app.add_plugins(StatesPlugin { initial: Phase::Settling })
     .add_update_system(
         compute_forces.run_if(in_state(Phase::Production)),
         ScheduleSet::Force,
-    )
-    .start();
+    );
+app.start();
 ```
 
 Transition states by writing to `ResMut<NextState<S>>`:
 
 ```rust
-fn maybe_transition(verlet: Res<Verlet>, mut next: ResMut<NextState<Phase>>) {
-    if verlet.total_cycle == 50_000 {
+fn maybe_transition(run_state: Res<RunState>, mut next: ResMut<NextState<Phase>>) {
+    if run_state.total_cycle == 50_000 {
         next.set(Phase::Production);
     }
 }

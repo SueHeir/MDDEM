@@ -1,0 +1,9 @@
+[package]
+name = "dem_atom"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mddem_core = { path = "../mddem_core", default-features = false }
+mddem_app = { path = "../mddem_app" }
+serde = { version = "1", features = ["derive"] }
