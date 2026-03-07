@@ -8,21 +8,29 @@ pub trait Plugin: Downcast + Any + Send + Sync {
     /// Configures the [`App`] to which this plugin is added.
     fn build(&self, app: &mut App);
 
-    fn ready(&self, _app: &App) -> bool { true }
+    fn ready(&self, _app: &App) -> bool {
+        true
+    }
     fn finish(&self, _app: &mut App) {}
     fn cleanup(&self, _app: &mut App) {}
 
-    fn name(&self) -> &str { core::any::type_name::<Self>() }
+    fn name(&self) -> &str {
+        core::any::type_name::<Self>()
+    }
 
     /// If the plugin can be meaningfully instantiated several times in an [`App`],
     /// override this method to return `false`.
-    fn is_unique(&self) -> bool { true }
+    fn is_unique(&self) -> bool {
+        true
+    }
 }
 
 impl_downcast!(Plugin);
 
 impl<T: Fn(&mut App) + Send + Sync + 'static> Plugin for T {
-    fn build(&self, app: &mut App) { self(app); }
+    fn build(&self, app: &mut App) {
+        self(app);
+    }
 }
 
 /// Plugins state in the application
@@ -55,7 +63,9 @@ pub enum PluginsState {
 /// ```
 pub trait PluginGroup: Sized {
     fn build(self) -> PluginGroupBuilder;
-    fn name() -> &'static str { core::any::type_name::<Self>() }
+    fn name() -> &'static str {
+        core::any::type_name::<Self>()
+    }
 }
 
 /// Builder for a [`PluginGroup`]. Add plugins in order; they will be registered in that order.
@@ -65,9 +75,12 @@ pub struct PluginGroupBuilder {
 
 impl PluginGroupBuilder {
     pub fn start<G: PluginGroup>() -> Self {
-        Self { plugins: Vec::new() }
+        Self {
+            plugins: Vec::new(),
+        }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn add<P: Plugin>(mut self, plugin: P) -> Self {
         self.plugins.push(Box::new(plugin));
         self
@@ -101,7 +114,10 @@ impl<S: Clone + PartialEq + Default + Send + Sync + 'static> Plugin for StatesPl
     fn build(&self, app: &mut App) {
         app.add_resource(CurrentState(self.initial.clone()));
         app.add_resource(NextState::<S>(None));
-        app.add_update_system(apply_state_transitions::<S>, ScheduleSet::PostFinalIntegration);
+        app.add_update_system(
+            apply_state_transitions::<S>,
+            ScheduleSet::PostFinalIntegration,
+        );
     }
 }
 
@@ -130,9 +146,7 @@ pub(crate) mod sealed {
             if let Err(AppError::DuplicatePlugin { plugin_name }) =
                 app.add_boxed_plugin(Box::new(self))
             {
-                panic!(
-                    "Error adding plugin {plugin_name}: plugin was already added in application"
-                )
+                panic!("Error adding plugin {plugin_name}: plugin was already added in application")
             }
         }
     }

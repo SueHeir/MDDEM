@@ -35,7 +35,6 @@ pub fn final_integration(mut atoms: ResMut<Atom>) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,10 +44,18 @@ mod tests {
     fn make_atom() -> Atom {
         let mut atom = Atom::new();
         atom.dt = 0.01;
-        atom.pos_x.push(0.0); atom.pos_y.push(0.0); atom.pos_z.push(0.0);
-        atom.vel_x.push(1.0); atom.vel_y.push(0.0); atom.vel_z.push(0.0);
-        atom.force_x.push(2.0); atom.force_y.push(0.0); atom.force_z.push(0.0);
-        atom.torque_x.push(0.0); atom.torque_y.push(0.0); atom.torque_z.push(0.0);
+        atom.pos_x.push(0.0);
+        atom.pos_y.push(0.0);
+        atom.pos_z.push(0.0);
+        atom.vel_x.push(1.0);
+        atom.vel_y.push(0.0);
+        atom.vel_z.push(0.0);
+        atom.force_x.push(2.0);
+        atom.force_y.push(0.0);
+        atom.force_z.push(0.0);
+        atom.torque_x.push(0.0);
+        atom.torque_y.push(0.0);
+        atom.torque_z.push(0.0);
         atom.mass.push(1.0);
         atom.tag.push(0);
         atom.atom_type.push(0);
@@ -58,8 +65,12 @@ mod tests {
         atom.is_collision.push(false);
         atom.skin.push(0.001);
         atom.quaterion.push(UnitQuaternion::identity());
-        atom.omega_x.push(0.0); atom.omega_y.push(0.0); atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0); atom.ang_mom_y.push(0.0); atom.ang_mom_z.push(0.0);
+        atom.omega_x.push(0.0);
+        atom.omega_y.push(0.0);
+        atom.omega_z.push(0.0);
+        atom.ang_mom_x.push(0.0);
+        atom.ang_mom_y.push(0.0);
+        atom.ang_mom_z.push(0.0);
         atom.nlocal = 1;
         atom.natoms = 1;
         atom

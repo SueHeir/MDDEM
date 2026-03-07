@@ -1,14 +1,22 @@
 [package]
-name = "MDDEM"
-version = "0.1.0"
-license = "MIT OR Apache-2.0"
-edition = "2021"
-autobins = false
+name = "mddem-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MDDEM simulation examples and binaries"
+publish = false
 
 [workspace]
 members = [
   "crates/*",
 ]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/elizabethsuehr/MDDEM"
 
 [features]
 default = ["mpi_backend"]

@@ -1,11 +1,13 @@
 [package]
 name = "mddem_app"
-version = "0.1.0"
-edition = "2021"
-
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "App, SubApp, Plugin, and PluginGroup abstractions for MDDEM simulations"
+keywords = ["plugin", "app", "simulation", "ecs"]
+categories = ["simulation"]
 
 [dependencies]
-mddem_scheduler = { path = "../mddem_scheduler"}
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.0" }
 downcast-rs = "1.2.0"
-
-

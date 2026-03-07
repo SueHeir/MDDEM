@@ -33,7 +33,10 @@ fn main() {
     mat.insert("restitution".into(), toml::Value::Float(0.95));
     mat.insert("friction".into(), toml::Value::Float(0.4));
     let mut dem = toml::Table::new();
-    dem.insert("materials".into(), toml::Value::Array(vec![toml::Value::Table(mat)]));
+    dem.insert(
+        "materials".into(),
+        toml::Value::Array(vec![toml::Value::Table(mat)]),
+    );
     table.insert("dem".into(), dem.into());
 
     let mut insert = toml::Table::new();
@@ -43,7 +46,10 @@ fn main() {
     insert.insert("density".into(), toml::Value::Float(2500.0));
     insert.insert("velocity".into(), toml::Value::Float(0.5));
     let mut particles = toml::Table::new();
-    particles.insert("insert".into(), toml::Value::Array(vec![toml::Value::Table(insert)]));
+    particles.insert(
+        "insert".into(),
+        toml::Value::Array(vec![toml::Value::Table(insert)]),
+    );
     table.insert("particles".into(), particles.into());
 
     let mut run = toml::Table::new();
@@ -52,8 +58,12 @@ fn main() {
     table.insert("run".into(), run.into());
 
     let mut app = App::new();
-    app.add_resource(Input { filename: String::new(), output_dir: None });
+    app.add_resource(Input {
+        filename: String::new(),
+        output_dir: None,
+    });
     app.add_resource(Config { table });
-    app.add_plugins(CorePlugins).add_plugins(GranularDefaultPlugins);
+    app.add_plugins(CorePlugins)
+        .add_plugins(GranularDefaultPlugins);
     app.start();
 }

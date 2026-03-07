@@ -1,12 +1,16 @@
-use serde::{Deserialize, Serialize};
-use nalgebra::Vector3;
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
+use nalgebra::Vector3;
+use serde::{Deserialize, Serialize};
 
-use crate::{Config, Atom, AtomDataRegistry, CommBackend, CommResource};
+use crate::{Atom, AtomDataRegistry, CommBackend, CommResource, Config};
 
-fn default_one_f64() -> f64 { 1.0 }
-fn default_true() -> bool { true }
+fn default_one_f64() -> f64 {
+    1.0
+}
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct DomainConfig {
@@ -33,10 +37,15 @@ pub struct DomainConfig {
 impl Default for DomainConfig {
     fn default() -> Self {
         DomainConfig {
-            x_low: 0.0, x_high: 1.0,
-            y_low: 0.0, y_high: 1.0,
-            z_low: 0.0, z_high: 1.0,
-            periodic_x: true, periodic_y: true, periodic_z: true,
+            x_low: 0.0,
+            x_high: 1.0,
+            y_low: 0.0,
+            y_high: 1.0,
+            z_low: 0.0,
+            z_high: 1.0,
+            periodic_x: true,
+            periodic_y: true,
+            periodic_z: true,
         }
     }
 }
@@ -50,6 +59,12 @@ pub struct Domain {
     pub volume: f64,
     pub size: Vector3<f64>,
     pub is_periodic: Vector3<bool>,
+}
+
+impl Default for Domain {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Domain {
@@ -66,7 +81,6 @@ impl Domain {
         }
     }
 }
-
 
 // ── DomainDecomposition trait ────────────────────────────────────────────────
 
@@ -115,14 +129,15 @@ impl DomainDecomposition for CartesianDecomposition {
     }
 }
 
-
 // ── Plugin ───────────────────────────────────────────────────────────────────
 
 pub struct DecompositionResource(pub Box<dyn DomainDecomposition>);
 
 impl std::ops::Deref for DecompositionResource {
     type Target = dyn DomainDecomposition;
-    fn deref(&self) -> &(dyn DomainDecomposition + 'static) { &*self.0 }
+    fn deref(&self) -> &(dyn DomainDecomposition + 'static) {
+        &*self.0
+    }
 }
 
 pub struct DomainPlugin {
@@ -131,7 +146,9 @@ pub struct DomainPlugin {
 
 impl DomainPlugin {
     pub fn new(decomposition: Box<dyn DomainDecomposition>) -> Self {
-        DomainPlugin { decomposition: std::sync::Mutex::new(Some(decomposition)) }
+        DomainPlugin {
+            decomposition: std::sync::Mutex::new(Some(decomposition)),
+        }
     }
 }
 
@@ -145,7 +162,11 @@ impl Plugin for DomainPlugin {
     fn build(&self, app: &mut App) {
         Config::load::<DomainConfig>(app, "domain");
 
-        let decomp = self.decomposition.lock().unwrap().take()
+        let decomp = self
+            .decomposition
+            .lock()
+            .unwrap()
+            .take()
             .expect("DomainPlugin::build called twice");
         app.add_resource(DecompositionResource(decomp))
             .add_resource(Domain::new())
@@ -154,13 +175,23 @@ impl Plugin for DomainPlugin {
     }
 }
 
-pub fn domain_read_input(config: Res<DomainConfig>, comm: Res<CommResource>, decomp: Res<DecompositionResource>, mut domain: ResMut<Domain>) {
+pub fn domain_read_input(
+    config: Res<DomainConfig>,
+    comm: Res<CommResource>,
+    decomp: Res<DecompositionResource>,
+    mut domain: ResMut<Domain>,
+) {
     if comm.rank() == 0 {
-        println!("Domain: {} {} {} {} {} {}", config.x_low, config.x_high, config.y_low, config.y_high, config.z_low, config.z_high);
-        println!("Domain: periodic {} {} {}",
+        println!(
+            "Domain: {} {} {} {} {} {}",
+            config.x_low, config.x_high, config.y_low, config.y_high, config.z_low, config.z_high
+        );
+        println!(
+            "Domain: periodic {} {} {}",
             if config.periodic_x { "p" } else { "n" },
             if config.periodic_y { "p" } else { "n" },
-            if config.periodic_z { "p" } else { "n" });
+            if config.periodic_z { "p" } else { "n" }
+        );
     }
 
     *domain = decomp.decompose(&config, &**comm);
@@ -169,26 +200,49 @@ pub fn domain_read_input(config: Res<DomainConfig>, comm: Res<CommResource>, dec
 pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataRegistry>) {
     for i in (0..atoms.len()).rev() {
         if domain.is_periodic.x {
-            while atoms.pos_x[i] < domain.boundaries_low.x { atoms.pos_x[i] += domain.size.x }
-            while atoms.pos_x[i] >= domain.boundaries_high.x { atoms.pos_x[i] -= domain.size.x }
-        } else if atoms.pos_x[i] < domain.boundaries_low.x || atoms.pos_x[i] >= domain.boundaries_high.x {
-            atoms.swap_remove(i); registry.swap_remove_all(i); continue;
+            while atoms.pos_x[i] < domain.boundaries_low.x {
+                atoms.pos_x[i] += domain.size.x
+            }
+            while atoms.pos_x[i] >= domain.boundaries_high.x {
+                atoms.pos_x[i] -= domain.size.x
+            }
+        } else if atoms.pos_x[i] < domain.boundaries_low.x
+            || atoms.pos_x[i] >= domain.boundaries_high.x
+        {
+            atoms.swap_remove(i);
+            registry.swap_remove_all(i);
+            continue;
         }
         if domain.is_periodic.y {
-            while atoms.pos_y[i] < domain.boundaries_low.y { atoms.pos_y[i] += domain.size.y }
-            while atoms.pos_y[i] >= domain.boundaries_high.y { atoms.pos_y[i] -= domain.size.y }
-        } else if atoms.pos_y[i] < domain.boundaries_low.y || atoms.pos_y[i] >= domain.boundaries_high.y {
-            atoms.swap_remove(i); registry.swap_remove_all(i); continue;
+            while atoms.pos_y[i] < domain.boundaries_low.y {
+                atoms.pos_y[i] += domain.size.y
+            }
+            while atoms.pos_y[i] >= domain.boundaries_high.y {
+                atoms.pos_y[i] -= domain.size.y
+            }
+        } else if atoms.pos_y[i] < domain.boundaries_low.y
+            || atoms.pos_y[i] >= domain.boundaries_high.y
+        {
+            atoms.swap_remove(i);
+            registry.swap_remove_all(i);
+            continue;
         }
         if domain.is_periodic.z {
-            while atoms.pos_z[i] < domain.boundaries_low.z { atoms.pos_z[i] += domain.size.z }
-            while atoms.pos_z[i] >= domain.boundaries_high.z { atoms.pos_z[i] -= domain.size.z }
-        } else if atoms.pos_z[i] < domain.boundaries_low.z || atoms.pos_z[i] >= domain.boundaries_high.z {
-            atoms.swap_remove(i); registry.swap_remove_all(i); continue;
+            while atoms.pos_z[i] < domain.boundaries_low.z {
+                atoms.pos_z[i] += domain.size.z
+            }
+            while atoms.pos_z[i] >= domain.boundaries_high.z {
+                atoms.pos_z[i] -= domain.size.z
+            }
+        } else if atoms.pos_z[i] < domain.boundaries_low.z
+            || atoms.pos_z[i] >= domain.boundaries_high.z
+        {
+            atoms.swap_remove(i);
+            registry.swap_remove_all(i);
+            continue;
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -204,10 +258,15 @@ mod tests {
     #[test]
     fn cartesian_single_proc_full_domain() {
         let config = DomainConfig {
-            x_low: 0.0, x_high: 10.0,
-            y_low: 0.0, y_high: 5.0,
-            z_low: 0.0, z_high: 2.0,
-            periodic_x: true, periodic_y: false, periodic_z: true,
+            x_low: 0.0,
+            x_high: 10.0,
+            y_low: 0.0,
+            y_high: 5.0,
+            z_low: 0.0,
+            z_high: 2.0,
+            periodic_x: true,
+            periodic_y: false,
+            periodic_z: true,
         };
         let comm = make_comm(Vector3::new(1, 1, 1), Vector3::new(0, 0, 0));
         let domain = CartesianDecomposition.decompose(&config, &comm);
@@ -223,10 +282,15 @@ mod tests {
     #[test]
     fn cartesian_multi_proc_subdivides() {
         let config = DomainConfig {
-            x_low: 0.0, x_high: 10.0,
-            y_low: 0.0, y_high: 10.0,
-            z_low: 0.0, z_high: 10.0,
-            periodic_x: true, periodic_y: true, periodic_z: true,
+            x_low: 0.0,
+            x_high: 10.0,
+            y_low: 0.0,
+            y_high: 10.0,
+            z_low: 0.0,
+            z_high: 10.0,
+            periodic_x: true,
+            periodic_y: true,
+            periodic_z: true,
         };
         // Simulate proc at position (1,0,0) in a 2x1x1 decomposition
         let comm = make_comm(Vector3::new(2, 1, 1), Vector3::new(1, 0, 0));

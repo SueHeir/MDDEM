@@ -1,11 +1,13 @@
-use serde::{Deserialize, Serialize};
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use nalgebra::Vector3;
+use serde::{Deserialize, Serialize};
 
-use mddem_core::{Config, Atom, CommResource, Domain};
+use mddem_core::{Atom, CommResource, Config, Domain};
 
-fn default_one_f64() -> f64 { 1.0 }
+fn default_one_f64() -> f64 {
+    1.0
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct NeighborConfig {
@@ -17,7 +19,10 @@ pub struct NeighborConfig {
 
 impl Default for NeighborConfig {
     fn default() -> Self {
-        NeighborConfig { skin_fraction: 1.0, bin_size: 1.0 }
+        NeighborConfig {
+            skin_fraction: 1.0,
+            bin_size: 1.0,
+        }
     }
 }
 
@@ -45,15 +50,29 @@ pub struct Neighbor {
     pub bin_total_cells: usize,   // nx * ny * nz (including ghost layers)
 }
 
+impl Default for Neighbor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Neighbor {
     pub fn new() -> Self {
         Neighbor {
-            skin_fraction: 1.0, neighbor_list: Vec::new(),
-            sweep_and_prune: Vec::new(), bin_min_size: 1.0,
-            bin_size: Vector3::new(1.0, 1.0, 1.0), bin_count: Vector3::new(1, 1, 1),
-            last_build_pos: Vec::new(), last_build_tags: Vec::new(), steps_since_build: 0,
-            bin_head: Vec::new(), bin_next: Vec::new(), bin_stencil: Vec::new(),
-            bin_origin: Vector3::new(0.0, 0.0, 0.0), bin_total_cells: 0,
+            skin_fraction: 1.0,
+            neighbor_list: Vec::new(),
+            sweep_and_prune: Vec::new(),
+            bin_min_size: 1.0,
+            bin_size: Vector3::new(1.0, 1.0, 1.0),
+            bin_count: Vector3::new(1, 1, 1),
+            last_build_pos: Vec::new(),
+            last_build_tags: Vec::new(),
+            steps_since_build: 0,
+            bin_head: Vec::new(),
+            bin_next: Vec::new(),
+            bin_stencil: Vec::new(),
+            bin_origin: Vector3::new(0.0, 0.0, 0.0),
+            bin_total_cells: 0,
         }
     }
 }
@@ -83,10 +102,19 @@ impl Plugin for NeighborPlugin {
     }
 }
 
-pub fn neighbor_read_input(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor>, comm: Res<CommResource>) {
+pub fn neighbor_read_input(
+    config: Res<NeighborConfig>,
+    mut neighbor: ResMut<Neighbor>,
+    comm: Res<CommResource>,
+) {
     neighbor.skin_fraction = config.skin_fraction;
     neighbor.bin_min_size = config.bin_size;
-    if comm.rank() == 0 { println!("Neighbor: skin_fraction={} bin_size={}", config.skin_fraction, config.bin_size); }
+    if comm.rank() == 0 {
+        println!(
+            "Neighbor: skin_fraction={} bin_size={}",
+            config.skin_fraction, config.bin_size
+        );
+    }
 }
 
 pub fn neighbor_setup(mut neighbor: ResMut<Neighbor>, domain: Res<Domain>) {
@@ -127,7 +155,9 @@ pub fn neighbor_setup(mut neighbor: ResMut<Neighbor>, domain: Res<Domain>) {
 fn save_build_positions(atoms: &Atom, neighbor: &mut Neighbor) {
     neighbor.last_build_pos.clear();
     for i in 0..atoms.len() {
-        neighbor.last_build_pos.push(Vector3::new(atoms.pos_x[i], atoms.pos_y[i], atoms.pos_z[i]));
+        neighbor
+            .last_build_pos
+            .push(Vector3::new(atoms.pos_x[i], atoms.pos_y[i], atoms.pos_z[i]));
     }
     neighbor.last_build_tags.clear();
     neighbor.last_build_tags.extend_from_slice(&atoms.tag);
@@ -141,25 +171,37 @@ fn needs_rebuild(atoms: &Atom, neighbor: &Neighbor) -> bool {
     if neighbor.last_build_pos.len() != total || total == 0 {
         return true;
     }
-    let tags_unchanged = atoms.tag.iter().zip(neighbor.last_build_tags.iter()).all(|(t, lt)| t == lt);
+    let tags_unchanged = atoms
+        .tag
+        .iter()
+        .zip(neighbor.last_build_tags.iter())
+        .all(|(t, lt)| t == lt);
     if !tags_unchanged {
         return true;
     }
-    let min_r = atoms.skin[..nlocal].iter().cloned().fold(f64::MAX, f64::min);
+    let min_r = atoms.skin[..nlocal]
+        .iter()
+        .cloned()
+        .fold(f64::MAX, f64::min);
     let half_skin = (neighbor.skin_fraction - 1.0) * min_r * 0.5;
     let threshold_sq = half_skin * half_skin;
     for (idx, last) in neighbor.last_build_pos.iter().enumerate() {
         let dx = atoms.pos_x[idx] - last.x;
         let dy = atoms.pos_y[idx] - last.y;
         let dz = atoms.pos_z[idx] - last.z;
-        if dx*dx + dy*dy + dz*dz > threshold_sq {
+        if dx * dx + dy * dy + dz * dz > threshold_sq {
             return true;
         }
     }
     false
 }
 
-pub fn sweep_and_prune_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor>, _domain: Res<Domain>, _comm: Res<CommResource>) {
+pub fn sweep_and_prune_neighbor_list(
+    atoms: Res<Atom>,
+    mut neighbor: ResMut<Neighbor>,
+    _domain: Res<Domain>,
+    _comm: Res<CommResource>,
+) {
     if !needs_rebuild(&atoms, &neighbor) {
         neighbor.steps_since_build += 1;
         return;
@@ -169,8 +211,12 @@ pub fn sweep_and_prune_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neig
     neighbor.sweep_and_prune.clear();
     neighbor.neighbor_list.clear();
 
-    for j in 0..atoms.len() { neighbor.sweep_and_prune.push((j, atoms.pos_x[j])); }
-    neighbor.sweep_and_prune.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    for j in 0..atoms.len() {
+        neighbor.sweep_and_prune.push((j, atoms.pos_x[j]));
+    }
+    neighbor
+        .sweep_and_prune
+        .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
     let skin_fraction = neighbor.skin_fraction;
     for i in 0..neighbor.sweep_and_prune.len() {
@@ -179,16 +225,24 @@ pub fn sweep_and_prune_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neig
         let py = atoms.pos_y[index];
         let pz = atoms.pos_z[index];
         let r = atoms.skin[index];
-        for j in (i+1)..neighbor.sweep_and_prune.len() {
-            if (neighbor.sweep_and_prune[j].1 - px) > (r * 2.0 * skin_fraction) { break; }
+        for j in (i + 1)..neighbor.sweep_and_prune.len() {
+            if (neighbor.sweep_and_prune[j].1 - px) > (r * 2.0 * skin_fraction) {
+                break;
+            }
             let index2 = neighbor.sweep_and_prune[j].0;
-            if atoms.tag[index] == atoms.tag[index2] || (atoms.is_ghost[index] && atoms.is_ghost[index2]) { continue; }
+            if atoms.tag[index] == atoms.tag[index2]
+                || (atoms.is_ghost[index] && atoms.is_ghost[index2])
+            {
+                continue;
+            }
             let r2 = atoms.skin[index2];
             let dx = atoms.pos_x[index2] - px;
             let dy = atoms.pos_y[index2] - py;
             let dz = atoms.pos_z[index2] - pz;
-            let distance = (dx*dx + dy*dy + dz*dz).sqrt();
-            if distance < (r + r2)*skin_fraction { neighbor.neighbor_list.push((index, index2)); }
+            let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+            if distance < (r + r2) * skin_fraction {
+                neighbor.neighbor_list.push((index, index2));
+            }
         }
     }
 }
@@ -197,18 +251,27 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
     neighbor.neighbor_list.clear();
     let nlocal = atoms.len() - atoms.nghost as usize;
     for i in 0..nlocal {
-        for j in (i+1)..atoms.len() {
-            if atoms.tag[i] == atoms.tag[j] { continue; }
+        for j in (i + 1)..atoms.len() {
+            if atoms.tag[i] == atoms.tag[j] {
+                continue;
+            }
             let dx = atoms.pos_x[j] - atoms.pos_x[i];
             let dy = atoms.pos_y[j] - atoms.pos_y[i];
             let dz = atoms.pos_z[j] - atoms.pos_z[i];
-            let distance = (dx*dx + dy*dy + dz*dz).sqrt();
-            if distance < (atoms.skin[i] + atoms.skin[j])*neighbor.skin_fraction { neighbor.neighbor_list.push((i, j)); }
+            let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+            if distance < (atoms.skin[i] + atoms.skin[j]) * neighbor.skin_fraction {
+                neighbor.neighbor_list.push((i, j));
+            }
         }
     }
 }
 
-pub fn bin_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor>, _domain: Res<Domain>, _comm: Res<CommResource>) {
+pub fn bin_neighbor_list(
+    atoms: Res<Atom>,
+    mut neighbor: ResMut<Neighbor>,
+    _domain: Res<Domain>,
+    _comm: Res<CommResource>,
+) {
     let nlocal = atoms.nlocal as usize;
     let total = atoms.len();
 
@@ -225,7 +288,9 @@ pub fn bin_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor>, _doma
     let nx = neighbor.bin_count.x;
 
     // Step 1: Clear bin_head and resize bin_next
-    for h in neighbor.bin_head.iter_mut() { *h = -1; }
+    for h in neighbor.bin_head.iter_mut() {
+        *h = -1;
+    }
     neighbor.bin_next.resize(total, -1);
 
     // Step 2: Assign atoms to bins via linked list
@@ -255,7 +320,9 @@ pub fn bin_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor>, _doma
 
         for &offset in &stencil {
             let neighbor_cell = my_cell + offset;
-            if neighbor_cell < 0 || neighbor_cell >= neighbor.bin_total_cells as i32 { continue; }
+            if neighbor_cell < 0 || neighbor_cell >= neighbor.bin_total_cells as i32 {
+                continue;
+            }
             let mut j = neighbor.bin_head[neighbor_cell as usize];
             while j >= 0 {
                 let ju = j as usize;
@@ -268,7 +335,7 @@ pub fn bin_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor>, _doma
                     let dx = atoms.pos_x[ju] - atoms.pos_x[i];
                     let dy = atoms.pos_y[ju] - atoms.pos_y[i];
                     let dz = atoms.pos_z[ju] - atoms.pos_z[i];
-                    let distance = (dx*dx + dy*dy + dz*dz).sqrt();
+                    let distance = (dx * dx + dy * dy + dz * dz).sqrt();
                     if distance < (atoms.skin[i] + atoms.skin[ju]) * skin_fraction {
                         neighbor.neighbor_list.push((i, ju));
                     }
@@ -278,7 +345,6 @@ pub fn bin_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor>, _doma
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -290,18 +356,30 @@ mod tests {
         atom.tag.push(tag);
         atom.atom_type.push(0);
         atom.origin_index.push(0);
-        atom.pos_x.push(pos.x); atom.pos_y.push(pos.y); atom.pos_z.push(pos.z);
-        atom.vel_x.push(0.0); atom.vel_y.push(0.0); atom.vel_z.push(0.0);
-        atom.force_x.push(0.0); atom.force_y.push(0.0); atom.force_z.push(0.0);
-        atom.torque_x.push(0.0); atom.torque_y.push(0.0); atom.torque_z.push(0.0);
+        atom.pos_x.push(pos.x);
+        atom.pos_y.push(pos.y);
+        atom.pos_z.push(pos.z);
+        atom.vel_x.push(0.0);
+        atom.vel_y.push(0.0);
+        atom.vel_z.push(0.0);
+        atom.force_x.push(0.0);
+        atom.force_y.push(0.0);
+        atom.force_z.push(0.0);
+        atom.torque_x.push(0.0);
+        atom.torque_y.push(0.0);
+        atom.torque_z.push(0.0);
         atom.mass.push(1.0);
         atom.skin.push(radius);
         atom.is_ghost.push(false);
         atom.has_ghost.push(false);
         atom.is_collision.push(false);
         atom.quaterion.push(UnitQuaternion::identity());
-        atom.omega_x.push(0.0); atom.omega_y.push(0.0); atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0); atom.ang_mom_y.push(0.0); atom.ang_mom_z.push(0.0);
+        atom.omega_x.push(0.0);
+        atom.omega_y.push(0.0);
+        atom.omega_z.push(0.0);
+        atom.ang_mom_x.push(0.0);
+        atom.ang_mom_y.push(0.0);
+        atom.ang_mom_z.push(0.0);
     }
 
     #[test]
@@ -371,7 +449,9 @@ mod tests {
         app.add_resource(atom);
         app.add_resource(neighbor);
         app.add_resource(domain);
-        app.add_resource(mddem_core::CommResource(Box::new(mddem_core::SingleProcessComm::new())));
+        app.add_resource(mddem_core::CommResource(Box::new(
+            mddem_core::SingleProcessComm::new(),
+        )));
         app.add_setup_system(neighbor_setup, ScheduleSetupSet::PostSetup);
         app.add_update_system(bin_neighbor_list, ScheduleSet::Neighbor);
         app.organize_systems();
@@ -379,8 +459,14 @@ mod tests {
         app.run();
 
         let n = app.get_resource_ref::<Neighbor>().unwrap();
-        assert!(n.neighbor_list.len() >= 1, "bin neighbor list should find the close pair");
-        let has_pair = n.neighbor_list.iter().any(|&(i, j)| (i == 0 && j == 1) || (i == 1 && j == 0));
+        assert!(
+            n.neighbor_list.len() >= 1,
+            "bin neighbor list should find the close pair"
+        );
+        let has_pair = n
+            .neighbor_list
+            .iter()
+            .any(|&(i, j)| (i == 0 && j == 1) || (i == 1 && j == 0));
         assert!(has_pair, "pair (0,1) should be in neighbor list");
     }
 
@@ -399,7 +485,9 @@ mod tests {
         app.add_resource(atom);
         app.add_resource(neighbor);
         app.add_resource(mddem_core::Domain::new());
-        app.add_resource(mddem_core::CommResource(Box::new(mddem_core::SingleProcessComm::new())));
+        app.add_resource(mddem_core::CommResource(Box::new(
+            mddem_core::SingleProcessComm::new(),
+        )));
         app.add_update_system(sweep_and_prune_neighbor_list, ScheduleSet::Neighbor);
         app.organize_systems();
         app.run();

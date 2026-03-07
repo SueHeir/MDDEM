@@ -1,15 +1,20 @@
 [package]
 name = "mddem_core"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core simulation infrastructure: TOML config, domain decomposition, MPI communication, atom data structures"
+keywords = ["dem", "simulation", "mpi", "domain-decomposition"]
+categories = ["simulation", "science"]
 
 [features]
 default = ["mpi_backend"]
 mpi_backend = ["dep:mpi", "dep:libffi-sys"]
 
 [dependencies]
-mddem_scheduler = { path = "../mddem_scheduler" }
-mddem_app = { path = "../mddem_app" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.0" }
+mddem_app = { path = "../mddem_app", version = "0.1.0" }
 mpi = { version = "0.8.0", features = ["user-operations", "derive"], optional = true }
 libffi-sys = { version = "2.3.0", features = ["system"], optional = true }
 nalgebra = "0.33.2"

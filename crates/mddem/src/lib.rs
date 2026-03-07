@@ -1,12 +1,12 @@
-pub use mddem_core;
-pub use mddem_neighbor;
-pub use mddem_verlet;
-pub use mddem_print;
 pub use dem_atom;
 pub use dem_atom_insert;
 pub use dem_granular;
 pub use dem_gravity;
 pub use dem_wall;
+pub use mddem_core;
+pub use mddem_neighbor;
+pub use mddem_print;
+pub use mddem_verlet;
 
 use mddem_app::prelude::*;
 
@@ -38,8 +38,7 @@ pub struct CorePlugins;
 
 impl PluginGroup for CorePlugins {
     fn build(self) -> PluginGroupBuilder {
-        let builder = PluginGroupBuilder::start::<Self>()
-            .add(mddem_core::InputPlugin);
+        let builder = PluginGroupBuilder::start::<Self>().add(mddem_core::InputPlugin);
 
         #[cfg(feature = "mpi_backend")]
         let builder = builder.add(mddem_core::CommunicationPlugin);
@@ -48,7 +47,9 @@ impl PluginGroup for CorePlugins {
 
         builder
             .add(mddem_core::DomainPlugin::default())
-            .add(mddem_neighbor::NeighborPlugin { style: mddem_neighbor::NeighborStyle::SweepAndPrune })
+            .add(mddem_neighbor::NeighborPlugin {
+                style: mddem_neighbor::NeighborStyle::SweepAndPrune,
+            })
             .add(mddem_core::RunPlugin)
             .add(mddem_verlet::VelocityVerletPlugin)
             .add(mddem_print::PrintPlugin)
@@ -56,16 +57,16 @@ impl PluginGroup for CorePlugins {
 }
 
 pub mod prelude {
-    pub use mddem_app::prelude::*;
-    pub use mddem_scheduler::prelude::*;
-    pub use mddem_core::*;
-    pub use mddem_neighbor::*;
-    pub use mddem_verlet::*;
-    pub use mddem_print::*;
+    pub use crate::CorePlugins;
     pub use dem_atom::{DemAtomPlugin, DemConfig, MaterialTable};
     pub use dem_atom_insert::{DemAtomInsertPlugin, ParticlesConfig};
     pub use dem_granular::GranularDefaultPlugins;
-    pub use dem_gravity::{GravityPlugin, GravityConfig};
-    pub use dem_wall::{WallPlugin, Walls, WallDef, WallPlane};
-    pub use crate::CorePlugins;
+    pub use dem_gravity::{GravityConfig, GravityPlugin};
+    pub use dem_wall::{WallDef, WallPlane, WallPlugin, Walls};
+    pub use mddem_app::prelude::*;
+    pub use mddem_core::*;
+    pub use mddem_neighbor::*;
+    pub use mddem_print::*;
+    pub use mddem_scheduler::prelude::*;
+    pub use mddem_verlet::*;
 }

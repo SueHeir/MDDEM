@@ -1,14 +1,16 @@
 use std::any::{Any, TypeId};
 use std::f64::consts::PI;
 
-use serde::Deserialize;
 use mddem_app::prelude::*;
+use serde::Deserialize;
 
-use mddem_core::{Config, AtomData, AtomDataRegistry, AtomPlugin};
+use mddem_core::{AtomData, AtomDataRegistry, AtomPlugin, Config};
 
 // ── Config structs ──────────────────────────────────────────────────────────
 
-fn default_friction() -> f64 { 0.4 }
+fn default_friction() -> f64 {
+    0.4
+}
 
 #[derive(Deserialize, Clone)]
 pub struct MaterialConfig {
@@ -37,6 +39,12 @@ pub struct MaterialTable {
     pub friction_ij: Vec<Vec<f64>>,
 }
 
+impl Default for MaterialTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MaterialTable {
     pub fn new() -> Self {
         MaterialTable {
@@ -50,7 +58,14 @@ impl MaterialTable {
         }
     }
 
-    pub fn add_material(&mut self, name: &str, youngs_mod: f64, poisson_ratio: f64, restitution: f64, friction: f64) -> u32 {
+    pub fn add_material(
+        &mut self,
+        name: &str,
+        youngs_mod: f64,
+        poisson_ratio: f64,
+        restitution: f64,
+        friction: f64,
+    ) -> u32 {
         let idx = self.names.len() as u32;
         self.names.push(name.to_string());
         self.youngs_mod.push(youngs_mod);
@@ -89,6 +104,12 @@ pub struct DemAtom {
     pub density: Vec<f64>,
 }
 
+impl Default for DemAtom {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DemAtom {
     pub fn new() -> Self {
         DemAtom {
@@ -99,8 +120,12 @@ impl DemAtom {
 }
 
 impl AtomData for DemAtom {
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 
     fn truncate(&mut self, n: usize) {
         self.radius.truncate(n);
@@ -137,10 +162,17 @@ mod tests {
         let e = 0.95_f64;
         let log_e = e.ln();
         let expected_beta = -log_e / (PI * PI + log_e * log_e).sqrt();
-        assert!((mt.beta_ij[0][0] - expected_beta).abs() < 1e-12,
-            "beta should be {}, got {}", expected_beta, mt.beta_ij[0][0]);
-        assert!((mt.friction_ij[0][0] - 0.4).abs() < 1e-12,
-            "friction should be 0.4, got {}", mt.friction_ij[0][0]);
+        assert!(
+            (mt.beta_ij[0][0] - expected_beta).abs() < 1e-12,
+            "beta should be {}, got {}",
+            expected_beta,
+            mt.beta_ij[0][0]
+        );
+        assert!(
+            (mt.friction_ij[0][0] - 0.4).abs() < 1e-12,
+            "friction should be 0.4, got {}",
+            mt.friction_ij[0][0]
+        );
     }
 
     #[test]
@@ -151,20 +183,32 @@ mod tests {
         mt.build_pair_tables();
 
         // Symmetry
-        assert!((mt.beta_ij[0][1] - mt.beta_ij[1][0]).abs() < 1e-15, "beta_ij should be symmetric");
-        assert!((mt.friction_ij[0][1] - mt.friction_ij[1][0]).abs() < 1e-15, "friction_ij should be symmetric");
+        assert!(
+            (mt.beta_ij[0][1] - mt.beta_ij[1][0]).abs() < 1e-15,
+            "beta_ij should be symmetric"
+        );
+        assert!(
+            (mt.friction_ij[0][1] - mt.friction_ij[1][0]).abs() < 1e-15,
+            "friction_ij should be symmetric"
+        );
 
         // Geometric mean mixing for friction
         let expected_friction = (0.4_f64 * 0.3).sqrt();
-        assert!((mt.friction_ij[0][1] - expected_friction).abs() < 1e-12,
-            "friction_ij should be geometric mean {}, got {}", expected_friction, mt.friction_ij[0][1]);
+        assert!(
+            (mt.friction_ij[0][1] - expected_friction).abs() < 1e-12,
+            "friction_ij should be geometric mean {}, got {}",
+            expected_friction,
+            mt.friction_ij[0][1]
+        );
 
         // Geometric mean mixing for restitution -> beta
         let e_mix = (0.95_f64 * 0.8).sqrt();
         let log_e = e_mix.ln();
         let expected_beta = -log_e / (PI * PI + log_e * log_e).sqrt();
-        assert!((mt.beta_ij[0][1] - expected_beta).abs() < 1e-12,
-            "beta_ij should use geometric mean restitution");
+        assert!(
+            (mt.beta_ij[0][1] - expected_beta).abs() < 1e-12,
+            "beta_ij should use geometric mean restitution"
+        );
     }
 }
 
@@ -191,7 +235,13 @@ impl Plugin for DemAtomPlugin {
 
         if let Some(ref materials) = dem_config.materials {
             for mat in materials {
-                material_table.add_material(&mat.name, mat.youngs_mod, mat.poisson_ratio, mat.restitution, mat.friction);
+                material_table.add_material(
+                    &mat.name,
+                    mat.youngs_mod,
+                    mat.poisson_ratio,
+                    mat.restitution,
+                    mat.friction,
+                );
             }
             material_table.build_pair_tables();
         }

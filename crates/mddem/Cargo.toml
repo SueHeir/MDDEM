@@ -1,21 +1,27 @@
 [package]
 name = "mddem"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Molecular Dynamics / Discrete Element Method simulation framework with plugin architecture"
+readme = "../../README.md"
+keywords = ["dem", "molecular-dynamics", "simulation", "granular"]
+categories = ["simulation", "science"]
 
 [features]
 default = ["mpi_backend"]
 mpi_backend = ["mddem_core/mpi_backend"]
 
 [dependencies]
-mddem_scheduler = { path = "../mddem_scheduler" }
-mddem_app = { path = "../mddem_app" }
-mddem_core = { path = "../mddem_core", default-features = false }
-mddem_neighbor = { path = "../mddem_neighbor" }
-mddem_verlet = { path = "../mddem_verlet" }
-mddem_print = { path = "../mddem_print" }
-dem_atom = { path = "../dem_atom" }
-dem_atom_insert = { path = "../dem_atom_insert" }
-dem_granular = { path = "../dem_granular" }
-dem_gravity = { path = "../dem_gravity" }
-dem_wall = { path = "../dem_wall" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.0" }
+mddem_app = { path = "../mddem_app", version = "0.1.0" }
+mddem_core = { path = "../mddem_core", version = "0.1.0", default-features = false }
+mddem_neighbor = { path = "../mddem_neighbor", version = "0.1.0" }
+mddem_verlet = { path = "../mddem_verlet", version = "0.1.0" }
+mddem_print = { path = "../mddem_print", version = "0.1.0" }
+dem_atom = { path = "../dem_atom", version = "0.1.0" }
+dem_atom_insert = { path = "../dem_atom_insert", version = "0.1.0" }
+dem_granular = { path = "../dem_granular", version = "0.1.0" }
+dem_gravity = { path = "../dem_gravity", version = "0.1.0" }
+dem_wall = { path = "../dem_wall", version = "0.1.0" }

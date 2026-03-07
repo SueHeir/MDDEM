@@ -1,4 +1,8 @@
-use std::{any::{Any, TypeId}, cell::RefCell, collections::HashMap};
+use std::{
+    any::{Any, TypeId},
+    cell::RefCell,
+    collections::HashMap,
+};
 
 use mddem_scheduler::{IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetupSet, System};
 
@@ -45,13 +49,13 @@ impl App {
         plugin: Box<dyn Plugin>,
     ) -> Result<&mut Self, AppError> {
         if plugin.is_unique() && self.main_mut().plugin_names.contains(plugin.name()) {
-            return Err(AppError::DuplicatePlugin { plugin_name: plugin.name().to_string() })
+            return Err(AppError::DuplicatePlugin {
+                plugin_name: plugin.name().to_string(),
+            });
         }
 
         plugin.build(self);
-        self.main_mut()
-            .plugin_registry
-            .push(plugin);
+        self.main_mut().plugin_registry.push(plugin);
         self.main_mut().plugin_build_depth += 1;
         Ok(self)
     }
@@ -68,47 +72,47 @@ impl App {
 
     pub fn organize_systems(&mut self) {
         self.sub_apps.main.organize_systems();
-     }
- 
-     pub fn setup(&mut self)  -> &mut Self {
-         self.sub_apps.main.setup();
-         self
-     }
-     pub fn run(&mut self)  -> &mut Self{
+    }
+
+    pub fn setup(&mut self) -> &mut Self {
+        self.sub_apps.main.setup();
+        self
+    }
+    pub fn run(&mut self) -> &mut Self {
         self.sub_apps.main.run();
         self
-     }
- 
-     pub fn add_setup_system<I, S: System + 'static>(
-         &mut self,
-         system: impl IntoSystem<I, System = S>,
-         schedule_set: ScheduleSetupSet,
-     ) -> &mut Self{
-         self.sub_apps.main.add_setup_system(system, schedule_set);
-         self
-     }
- 
-     pub fn add_update_system<M>(
-         &mut self,
-         system: impl IntoScheduledSystem<M>,
-         schedule_set: ScheduleSet,
-     ) -> &mut Self{
-         self.sub_apps.main.add_update_system(system, schedule_set);
-         self
-     }
- 
-     pub fn add_resource<R: 'static>(&mut self, res: R) -> &mut Self { 
-         self.sub_apps.main.add_resource(res);
-         self
-     }
+    }
 
-     pub fn get_mut_resource(&mut self, res: TypeId) -> Option<&RefCell<Box<dyn Any>>> {
+    pub fn add_setup_system<I, S: System + 'static>(
+        &mut self,
+        system: impl IntoSystem<I, System = S>,
+        schedule_set: ScheduleSetupSet,
+    ) -> &mut Self {
+        self.sub_apps.main.add_setup_system(system, schedule_set);
+        self
+    }
+
+    pub fn add_update_system<M>(
+        &mut self,
+        system: impl IntoScheduledSystem<M>,
+        schedule_set: ScheduleSet,
+    ) -> &mut Self {
+        self.sub_apps.main.add_update_system(system, schedule_set);
+        self
+    }
+
+    pub fn add_resource<R: 'static>(&mut self, res: R) -> &mut Self {
+        self.sub_apps.main.add_resource(res);
+        self
+    }
+
+    pub fn get_mut_resource(&mut self, res: TypeId) -> Option<&RefCell<Box<dyn Any>>> {
         self.sub_apps.main.get_mut_resource(res)
-     }
+    }
 
-     pub fn get_resource_ref<R: 'static>(&self) -> Option<std::cell::Ref<'_, R>> {
+    pub fn get_resource_ref<R: 'static>(&self) -> Option<std::cell::Ref<'_, R>> {
         self.sub_apps.main.get_resource_ref::<R>()
-     }
+    }
 
     pub fn add_cleanup(&mut self, f: fn()) -> &mut Self {
         self.cleanup_fns.push(Box::new(f));
@@ -127,7 +131,6 @@ impl App {
         self
     }
 }
-
 
 #[derive(Debug)]
 pub(crate) enum AppError {

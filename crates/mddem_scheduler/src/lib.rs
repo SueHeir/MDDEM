@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 // ANCHOR: All
 use std::any::{Any, TypeId};
 use std::cell::{Ref, RefCell, RefMut};
@@ -108,7 +109,10 @@ impl<'res, T: 'static> SystemParam for Res<'res, T> {
         resources: &'r HashMap<TypeId, RefCell<Box<dyn Any>>>,
         _locals: *mut HashMap<TypeId, Box<dyn Any>>,
     ) -> Self::Item<'r> {
-        Res { value: resources.get(&TypeId::of::<T>()).unwrap().borrow(), _marker: PhantomData }
+        Res {
+            value: resources.get(&TypeId::of::<T>()).unwrap().borrow(),
+            _marker: PhantomData,
+        }
     }
 }
 // ANCHOR_END: ResSystemParam
@@ -120,7 +124,10 @@ impl<'res, T: 'static> SystemParam for ResMut<'res, T> {
         resources: &'r HashMap<TypeId, RefCell<Box<dyn Any>>>,
         _locals: *mut HashMap<TypeId, Box<dyn Any>>,
     ) -> Self::Item<'r> {
-        ResMut { value: resources.get(&TypeId::of::<T>()).unwrap().borrow_mut(), _marker: PhantomData }
+        ResMut {
+            value: resources.get(&TypeId::of::<T>()).unwrap().borrow_mut(),
+            _marker: PhantomData,
+        }
     }
 }
 // ANCHOR_END: ResMutSystemParam
@@ -136,7 +143,9 @@ pub struct Res<'a, T: 'static> {
 
 impl<T: 'static> Deref for Res<'_, T> {
     type Target = T;
-    fn deref(&self) -> &T { self.value.downcast_ref().unwrap() }
+    fn deref(&self) -> &T {
+        self.value.downcast_ref().unwrap()
+    }
 }
 
 // ANCHOR: ResMut
@@ -147,10 +156,14 @@ pub struct ResMut<'a, T: 'static> {
 
 impl<T: 'static> Deref for ResMut<'_, T> {
     type Target = T;
-    fn deref(&self) -> &T { self.value.downcast_ref().unwrap() }
+    fn deref(&self) -> &T {
+        self.value.downcast_ref().unwrap()
+    }
 }
 impl<T: 'static> DerefMut for ResMut<'_, T> {
-    fn deref_mut(&mut self) -> &mut T { self.value.downcast_mut().unwrap() }
+    fn deref_mut(&mut self) -> &mut T {
+        self.value.downcast_mut().unwrap()
+    }
 }
 // ANCHOR_END: ResMut
 
@@ -162,6 +175,7 @@ pub struct Local<'a, T: Default + 'static> {
     _marker: PhantomData<&'a mut T>,
 }
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 impl<'res, T: Default + 'static> SystemParam for Local<'res, T> {
     type Item<'new> = Local<'new, T>;
     fn retrieve<'r>(
@@ -171,17 +185,26 @@ impl<'res, T: Default + 'static> SystemParam for Local<'res, T> {
         // SAFETY: locals points to FunctionSystem::locals, exclusively owned by this
         // system and alive for the duration of this retrieve call.
         let map = unsafe { &mut *locals };
-        let entry = map.entry(TypeId::of::<T>()).or_insert_with(|| Box::new(T::default()));
-        Local { value: entry.downcast_mut::<T>().unwrap(), _marker: PhantomData }
+        let entry = map
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| Box::new(T::default()));
+        Local {
+            value: entry.downcast_mut::<T>().unwrap(),
+            _marker: PhantomData,
+        }
     }
 }
 
 impl<T: Default + 'static> Deref for Local<'_, T> {
     type Target = T;
-    fn deref(&self) -> &T { self.value }
+    fn deref(&self) -> &T {
+        self.value
+    }
 }
 impl<T: Default + 'static> DerefMut for Local<'_, T> {
-    fn deref_mut(&mut self) -> &mut T { self.value }
+    fn deref_mut(&mut self) -> &mut T {
+        self.value
+    }
 }
 // ANCHOR_END: Local
 
@@ -190,7 +213,9 @@ impl<T: Default + 'static> DerefMut for Local<'_, T> {
 // ANCHOR: System
 pub trait System {
     fn run(&mut self, resources: &mut HashMap<TypeId, RefCell<Box<dyn Any>>>);
-    fn name(&self) -> &str { "unknown" }
+    fn name(&self) -> &str {
+        "unknown"
+    }
 }
 // ANCHOR_END: System
 
@@ -276,7 +301,9 @@ impl<S: System, C: Condition> System for ConditionalSystem<S, C> {
             self.system.run(resources);
         }
     }
-    fn name(&self) -> &str { self.system.name() }
+    fn name(&self) -> &str {
+        self.system.name()
+    }
 }
 
 // ─── SystemDescriptor ─────────────────────────────────────────────────────────
@@ -291,19 +318,26 @@ pub struct SystemDescriptor<S: System + 'static> {
 
 impl<S: System + 'static> SystemDescriptor<S> {
     pub fn label(mut self, lbl: impl Into<String>) -> Self {
-        self.label = Some(lbl.into()); self
+        self.label = Some(lbl.into());
+        self
     }
     pub fn before(mut self, target: impl Into<String>) -> Self {
-        self.befores.push(target.into()); self
+        self.befores.push(target.into());
+        self
     }
     pub fn after(mut self, target: impl Into<String>) -> Self {
-        self.afters.push(target.into()); self
+        self.afters.push(target.into());
+        self
     }
-    pub fn run_if<I2, C: Condition + 'static>(self, cond: impl IntoCondition<I2, Condition = C>)
-        -> SystemDescriptor<ConditionalSystem<S, C>>
-    {
+    pub fn run_if<I2, C: Condition + 'static>(
+        self,
+        cond: impl IntoCondition<I2, Condition = C>,
+    ) -> SystemDescriptor<ConditionalSystem<S, C>> {
         SystemDescriptor {
-            system: ConditionalSystem { system: self.system, condition: cond.into_condition() },
+            system: ConditionalSystem {
+                system: self.system,
+                condition: cond.into_condition(),
+            },
             label: self.label,
             befores: self.befores,
             afters: self.afters,
@@ -319,22 +353,41 @@ pub trait SystemExt<I>: IntoSystem<I> + Sized
 where
     Self::System: 'static,
 {
-    fn run_if<I2, C: Condition + 'static>(self, cond: impl IntoCondition<I2, Condition = C>)
-        -> ConditionalSystem<Self::System, C>
-    {
-        ConditionalSystem { system: self.into_system(), condition: cond.into_condition() }
+    fn run_if<I2, C: Condition + 'static>(
+        self,
+        cond: impl IntoCondition<I2, Condition = C>,
+    ) -> ConditionalSystem<Self::System, C> {
+        ConditionalSystem {
+            system: self.into_system(),
+            condition: cond.into_condition(),
+        }
     }
 
     fn label(self, lbl: impl Into<String>) -> SystemDescriptor<Self::System> {
-        SystemDescriptor { system: self.into_system(), label: Some(lbl.into()), befores: vec![], afters: vec![] }
+        SystemDescriptor {
+            system: self.into_system(),
+            label: Some(lbl.into()),
+            befores: vec![],
+            afters: vec![],
+        }
     }
 
     fn before(self, target: impl Into<String>) -> SystemDescriptor<Self::System> {
-        SystemDescriptor { system: self.into_system(), label: None, befores: vec![target.into()], afters: vec![] }
+        SystemDescriptor {
+            system: self.into_system(),
+            label: None,
+            befores: vec![target.into()],
+            afters: vec![],
+        }
     }
 
     fn after(self, target: impl Into<String>) -> SystemDescriptor<Self::System> {
-        SystemDescriptor { system: self.into_system(), label: None, befores: vec![], afters: vec![target.into()] }
+        SystemDescriptor {
+            system: self.into_system(),
+            label: None,
+            befores: vec![],
+            afters: vec![target.into()],
+        }
     }
 }
 
@@ -359,7 +412,13 @@ where
     fn into_stored(self) -> StoredSystemEntry {
         let sys = self.into_system();
         let name = sys.name().to_string();
-        StoredSystemEntry { system: Box::new(sys), name, label: None, befores: vec![], afters: vec![] }
+        StoredSystemEntry {
+            system: Box::new(sys),
+            name,
+            label: None,
+            befores: vec![],
+            afters: vec![],
+        }
     }
 }
 
@@ -369,7 +428,13 @@ impl<S: System + 'static, C: Condition + 'static> IntoScheduledSystem<CondMarker
 {
     fn into_stored(self) -> StoredSystemEntry {
         let name = self.name().to_string();
-        StoredSystemEntry { system: Box::new(self), name, label: None, befores: vec![], afters: vec![] }
+        StoredSystemEntry {
+            system: Box::new(self),
+            name,
+            label: None,
+            befores: vec![],
+            afters: vec![],
+        }
     }
 }
 
@@ -460,8 +525,12 @@ pub struct CurrentState<S: Clone + PartialEq + 'static>(pub S);
 pub struct NextState<S: Clone + PartialEq + 'static>(pub Option<S>);
 
 impl<S: Clone + PartialEq + 'static> NextState<S> {
-    pub fn set(&mut self, state: S) { self.0 = Some(state); }
-    pub fn clear(&mut self) { self.0 = None; }
+    pub fn set(&mut self, state: S) {
+        self.0 = Some(state);
+    }
+    pub fn clear(&mut self) {
+        self.0 = None;
+    }
 }
 
 /// Run condition: returns true when the current state equals `target`.
@@ -486,7 +555,9 @@ pub fn apply_state_transitions<S: Clone + PartialEq + 'static>(
 
 fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, ScheduleSet)>) {
     let n = group.len();
-    if n <= 1 { return; }
+    if n <= 1 {
+        return;
+    }
 
     let mut label_to_idx: HashMap<String, usize> = HashMap::new();
     for (i, (entry, _)) in group.iter().enumerate() {
@@ -520,7 +591,9 @@ fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, ScheduleSet)>) {
         order.push(node);
         for &nbr in &adj[node] {
             in_degree[nbr] -= 1;
-            if in_degree[nbr] == 0 { queue.push_back(nbr); }
+            if in_degree[nbr] == 0 {
+                queue.push_back(nbr);
+            }
         }
     }
 
@@ -546,6 +619,8 @@ pub struct Scheduler {
 }
 // ANCHOR_END: Scheduler
 
+// Scheduler::default() is manually implemented because it appears in the book's ANCHOR blocks.
+#[allow(clippy::derivable_impls)]
 impl Default for Scheduler {
     fn default() -> Self {
         Scheduler {
@@ -560,12 +635,15 @@ impl Default for Scheduler {
 // ANCHOR: SchedulerImpl
 impl Scheduler {
     pub fn organize_systems(&mut self) {
-        self.setup_systems.sort_by_key(|(_, f)| setup_set_to_value(f));
+        self.setup_systems
+            .sort_by_key(|(_, f)| setup_set_to_value(f));
         self.update_systems.sort_by_key(|(_, f)| set_to_value(f));
 
         // Topo sort within each ScheduleSet group
         let all = std::mem::take(&mut self.update_systems);
-        if all.is_empty() { return; }
+        if all.is_empty() {
+            return;
+        }
 
         let mut groups: Vec<Vec<(StoredSystemEntry, ScheduleSet)>> = Vec::new();
         for entry in all {
@@ -601,7 +679,6 @@ impl Scheduler {
         self.add_scheduler_manager();
         let mut schedule_state = SchedulerState::Setup;
         while !matches!(schedule_state, SchedulerState::End) {
-
             if matches!(schedule_state, SchedulerState::Setup) {
                 self.organize_systems();
                 if self.print_schedule {
@@ -610,8 +687,11 @@ impl Scheduler {
                 self.setup();
                 self.organize_systems(); // systems may be added during setup in the future
 
-                let mut binding = self.resources
-                    .get(&TypeId::of::<SchedulerManager>()).unwrap().borrow_mut();
+                let mut binding = self
+                    .resources
+                    .get(&TypeId::of::<SchedulerManager>())
+                    .unwrap()
+                    .borrow_mut();
                 let sm = binding.downcast_mut::<SchedulerManager>().unwrap();
                 sm.state = SchedulerState::Run;
             }
@@ -620,10 +700,13 @@ impl Scheduler {
                 self.run();
             }
 
-            let mut binding = self.resources
-                .get(&TypeId::of::<SchedulerManager>()).unwrap().borrow_mut();
+            let mut binding = self
+                .resources
+                .get(&TypeId::of::<SchedulerManager>())
+                .unwrap()
+                .borrow_mut();
             let sm = binding.downcast_mut::<SchedulerManager>().unwrap();
-            schedule_state = sm.state.clone();
+            schedule_state = sm.state;
         }
     }
 
@@ -638,7 +721,9 @@ impl Scheduler {
             StoredSystemEntry {
                 system: Box::new(sys),
                 name,
-                label: None, befores: vec![], afters: vec![],
+                label: None,
+                befores: vec![],
+                afters: vec![],
             },
             schedule_set,
         ));
@@ -649,7 +734,8 @@ impl Scheduler {
         system: impl IntoScheduledSystem<M>,
         schedule_set: ScheduleSet,
     ) {
-        self.update_systems.push((system.into_stored(), schedule_set));
+        self.update_systems
+            .push((system.into_stored(), schedule_set));
     }
 
     pub fn add_scheduler_manager(&mut self) {
@@ -657,7 +743,8 @@ impl Scheduler {
     }
 
     pub fn add_resource<R: 'static>(&mut self, res: R) {
-        self.resources.insert(TypeId::of::<R>(), RefCell::new(Box::new(res)));
+        self.resources
+            .insert(TypeId::of::<R>(), RefCell::new(Box::new(res)));
     }
 
     pub fn get_mut_resource(&mut self, res: TypeId) -> Option<&RefCell<Box<dyn Any>>> {
@@ -665,9 +752,9 @@ impl Scheduler {
     }
 
     pub fn get_resource_ref<R: 'static>(&self) -> Option<std::cell::Ref<'_, R>> {
-        self.resources.get(&TypeId::of::<R>()).map(|cell| {
-            std::cell::Ref::map(cell.borrow(), |b| b.downcast_ref::<R>().unwrap())
-        })
+        self.resources
+            .get(&TypeId::of::<R>())
+            .map(|cell| std::cell::Ref::map(cell.borrow(), |b| b.downcast_ref::<R>().unwrap()))
     }
 
     pub fn enable_schedule_print(&mut self) {
@@ -684,7 +771,7 @@ impl Scheduler {
     }
 
     pub fn print_schedule(&self) {
-        println!("\n{}", "═══ Setup Systems ═══");
+        println!("\n═══ Setup Systems ═══");
         let mut last_set: Option<u32> = None;
         for (entry, set) in &self.setup_systems {
             let val = setup_set_to_value(set);
@@ -707,7 +794,7 @@ impl Scheduler {
             println!();
         }
 
-        println!("\n{}", "═══ Update Systems (per-step) ═══");
+        println!("\n═══ Update Systems (per-step) ═══");
         let mut last_set: Option<u32> = None;
         for (entry, set) in &self.update_systems {
             let val = set_to_value(set);
@@ -740,9 +827,7 @@ impl Scheduler {
         out.push_str("    node [shape=box, style=filled, fillcolor=lightyellow];\n\n");
 
         // Helper to make valid DOT node IDs
-        let node_id = |prefix: &str, idx: usize| -> String {
-            format!("{}_{}", prefix, idx)
-        };
+        let node_id = |prefix: &str, idx: usize| -> String { format!("{}_{}", prefix, idx) };
 
         // Setup systems
         let mut setup_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
@@ -768,22 +853,29 @@ impl Scheduler {
                 } else {
                     short.to_string()
                 };
-                out.push_str(&format!("        {} [label=\"{}\"];\n", node_id("setup", i), label));
+                out.push_str(&format!(
+                    "        {} [label=\"{}\"];\n",
+                    node_id("setup", i),
+                    label
+                ));
             }
             out.push_str("    }\n\n");
         }
 
         // Edges between consecutive setup clusters (vertical layout)
-        let setup_cluster_tails: Vec<String> = setup_groups.iter()
+        let setup_cluster_tails: Vec<String> = setup_groups
+            .iter()
             .map(|(_, entries)| node_id("setup", entries.last().unwrap().0))
             .collect();
-        let setup_cluster_heads: Vec<String> = setup_groups.iter()
+        let setup_cluster_heads: Vec<String> = setup_groups
+            .iter()
             .map(|(_, entries)| node_id("setup", entries.first().unwrap().0))
             .collect();
         for i in 0..setup_cluster_tails.len().saturating_sub(1) {
             out.push_str(&format!(
                 "    {} -> {} [color=blue, style=bold];\n",
-                setup_cluster_tails[i], setup_cluster_heads[i + 1]
+                setup_cluster_tails[i],
+                setup_cluster_heads[i + 1]
             ));
         }
 
@@ -792,7 +884,8 @@ impl Scheduler {
             for w in entries.windows(2) {
                 out.push_str(&format!(
                     "    {} -> {} [color=blue, style=bold];\n",
-                    node_id("setup", w[0].0), node_id("setup", w[1].0)
+                    node_id("setup", w[0].0),
+                    node_id("setup", w[1].0)
                 ));
             }
         }
@@ -821,7 +914,11 @@ impl Scheduler {
                 } else {
                     short.to_string()
                 };
-                out.push_str(&format!("        {} [label=\"{}\"];\n", node_id("update", i), label));
+                out.push_str(&format!(
+                    "        {} [label=\"{}\"];\n",
+                    node_id("update", i),
+                    label
+                ));
             }
             out.push_str("    }\n\n");
         }
@@ -831,7 +928,8 @@ impl Scheduler {
             for w in entries.windows(2) {
                 out.push_str(&format!(
                     "    {} -> {} [color=blue, style=bold];\n",
-                    node_id("update", w[0].0), node_id("update", w[1].0)
+                    node_id("update", w[0].0),
+                    node_id("update", w[1].0)
                 ));
             }
         }
@@ -865,16 +963,19 @@ impl Scheduler {
         }
 
         // Blue edges between consecutive ScheduleSet clusters
-        let cluster_tails: Vec<String> = update_groups.iter()
+        let cluster_tails: Vec<String> = update_groups
+            .iter()
             .map(|(_, entries)| node_id("update", entries.last().unwrap().0))
             .collect();
-        let cluster_heads: Vec<String> = update_groups.iter()
+        let cluster_heads: Vec<String> = update_groups
+            .iter()
             .map(|(_, entries)| node_id("update", entries.first().unwrap().0))
             .collect();
         for i in 0..cluster_tails.len().saturating_sub(1) {
             out.push_str(&format!(
                 "    {} -> {} [color=blue, style=bold];\n",
-                cluster_tails[i], cluster_heads[i + 1]
+                cluster_tails[i],
+                cluster_heads[i + 1]
             ));
         }
 
@@ -882,7 +983,8 @@ impl Scheduler {
         if cluster_tails.len() >= 2 {
             out.push_str(&format!(
                 "    {} -> {} [color=green, style=bold, label=\"run loop\", constraint=false];\n",
-                cluster_tails.last().unwrap(), cluster_heads.first().unwrap()
+                cluster_tails.last().unwrap(),
+                cluster_heads.first().unwrap()
             ));
         }
 
@@ -899,7 +1001,8 @@ impl Scheduler {
         out.push_str("}\n");
 
         let mut file = std::fs::File::create(path).expect("Failed to create DOT file");
-        file.write_all(out.as_bytes()).expect("Failed to write DOT file");
+        file.write_all(out.as_bytes())
+            .expect("Failed to write DOT file");
         println!("Schedule DOT file written to: {}", path);
     }
 }
@@ -920,9 +1023,18 @@ pub struct SchedulerManager {
     pub index: usize,
 }
 
+impl Default for SchedulerManager {
+    fn default() -> Self {
+        SchedulerManager {
+            state: SchedulerState::Setup,
+            index: 0,
+        }
+    }
+}
+
 impl SchedulerManager {
     pub fn new() -> Self {
-        SchedulerManager { state: SchedulerState::Setup, index: 0 }
+        Self::default()
     }
 }
 
@@ -930,15 +1042,26 @@ impl SchedulerManager {
 
 pub mod prelude {
     pub use crate::{
-        // Core DI
-        Scheduler, Res, ResMut, Local,
-        // System scheduling
-        ScheduleSet, ScheduleSetupSet, SchedulerManager, SchedulerState,
-        // Run conditions
-        SystemExt, ConditionalSystem,
-        // System ordering
-        SystemDescriptor, IntoScheduledSystem,
+        apply_state_transitions,
+        in_state,
+        ConditionalSystem,
         // Simulation states
-        CurrentState, NextState, in_state, apply_state_transitions,
+        CurrentState,
+        IntoScheduledSystem,
+        Local,
+        NextState,
+        Res,
+        ResMut,
+        // System scheduling
+        ScheduleSet,
+        ScheduleSetupSet,
+        // Core DI
+        Scheduler,
+        SchedulerManager,
+        SchedulerState,
+        // System ordering
+        SystemDescriptor,
+        // Run conditions
+        SystemExt,
     };
 }

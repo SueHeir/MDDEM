@@ -1,6 +1,12 @@
 [package]
 name = "mddem_scheduler"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Dependency-injection scheduler with typed resources, schedule sets, ordering, run conditions, and states"
+readme = "README.md"
+keywords = ["scheduler", "dependency-injection", "ecs", "simulation"]
+categories = ["simulation", "game-engines"]
 
 [dependencies]

@@ -1,14 +1,14 @@
 use std::f64::consts::PI;
 
-use serde::Deserialize;
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use nalgebra::UnitQuaternion;
 use rand::Rng;
-use rand_distr::{Normal, Distribution};
+use rand_distr::{Distribution, Normal};
+use serde::Deserialize;
 
-use mddem_core::{Config, Atom, AtomDataRegistry, CommResource, Domain};
 use dem_atom::{DemAtom, MaterialTable};
+use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, Domain};
 
 // ── Config structs ──────────────────────────────────────────────────────────
 
@@ -60,7 +60,9 @@ pub fn dem_insert_atoms(
     scheduler_manager: Res<SchedulerManager>,
 ) {
     // Only insert particles on the first stage
-    if scheduler_manager.index != 0 { return; }
+    if scheduler_manager.index != 0 {
+        return;
+    }
 
     // Insert particles per insert block
     if let Some(ref inserts) = particles_config.insert {
@@ -71,8 +73,14 @@ pub fn dem_insert_atoms(
 
             for insert in inserts {
                 // Find material config by name
-                let mat_idx = material_table.find_material(&insert.material)
-                    .unwrap_or_else(|| panic!("Unknown material '{}' in [[particles.insert]]", insert.material));
+                let mat_idx = material_table
+                    .find_material(&insert.material)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "Unknown material '{}' in [[particles.insert]]",
+                            insert.material
+                        )
+                    });
 
                 let radius = insert.radius;
                 let density = insert.density;
@@ -100,7 +108,7 @@ pub fn dem_insert_atoms(
                         let dx = x - atom.pos_x[i];
                         let dy = y - atom.pos_y[i];
                         let dz = z - atom.pos_z[i];
-                        let distance = (dx*dx + dy*dy + dz*dz).sqrt();
+                        let distance = (dx * dx + dy * dy + dz * dz).sqrt();
                         if distance <= (radius + dem_data.radius[i]) * 1.1 {
                             no_overlap = false;
                             break;
@@ -179,7 +187,9 @@ fn calculate_delta_time(
     material_table: Res<MaterialTable>,
     scheduler_manager: Res<SchedulerManager>,
 ) {
-    if scheduler_manager.index != 0 { return; }
+    if scheduler_manager.index != 0 {
+        return;
+    }
     let dem = registry.get::<DemAtom>().unwrap();
     let mut dt: f64 = 0.001;
 
@@ -195,6 +205,8 @@ fn calculate_delta_time(
 
     dt = comm.all_reduce_min_f64(dt);
 
-    if comm.rank() == 0 { println!("Using {} for delta time", dt * 0.15); }
+    if comm.rank() == 0 {
+        println!("Using {} for delta time", dt * 0.15);
+    }
     atoms.dt = dt * 0.15;
 }

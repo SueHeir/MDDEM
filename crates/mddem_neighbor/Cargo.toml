@@ -1,11 +1,16 @@
 [package]
 name = "mddem_neighbor"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Neighbor list algorithms for MDDEM: brute force, sweep-and-prune, bin-based"
+keywords = ["neighbor-list", "dem", "simulation"]
+categories = ["simulation", "science"]
 
 [dependencies]
-mddem_core = { path = "../mddem_core", default-features = false }
-mddem_app = { path = "../mddem_app" }
-mddem_scheduler = { path = "../mddem_scheduler" }
+mddem_core = { path = "../mddem_core", version = "0.1.0", default-features = false }
+mddem_app = { path = "../mddem_app", version = "0.1.0" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.0" }
 nalgebra = "0.33.2"
 serde = { version = "1", features = ["derive"] }

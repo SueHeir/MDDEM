@@ -1,21 +1,16 @@
 mod app;
-mod sub_app;
 mod plugin;
+mod sub_app;
 
 pub use app::*;
-pub use sub_app::*;
 pub use plugin::*;
+pub use sub_app::*;
 
 /// The app prelude.
 ///
 /// This includes the most common types in this crate, re-exported for your convenience.
 pub mod prelude {
     pub use crate::{
-        app::App,
-        sub_app::SubApp,
-        Plugin,
-        PluginGroup,
-        PluginGroupBuilder,
-        StatesPlugin,
+        app::App, sub_app::SubApp, Plugin, PluginGroup, PluginGroupBuilder, StatesPlugin,
     };
 }

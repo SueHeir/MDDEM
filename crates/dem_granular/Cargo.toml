@@ -1,13 +1,18 @@
 [package]
 name = "dem_granular"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Granular physics for MDDEM: Hertz normal contact, Mindlin tangential friction, rotational dynamics"
+keywords = ["dem", "hertz", "granular", "contact"]
+categories = ["simulation", "science"]
 
 [dependencies]
-mddem_core = { path = "../mddem_core", default-features = false }
-mddem_neighbor = { path = "../mddem_neighbor" }
-mddem_app = { path = "../mddem_app" }
-mddem_scheduler = { path = "../mddem_scheduler" }
-dem_atom = { path = "../dem_atom" }
-dem_atom_insert = { path = "../dem_atom_insert" }
+mddem_core = { path = "../mddem_core", version = "0.1.0", default-features = false }
+mddem_neighbor = { path = "../mddem_neighbor", version = "0.1.0" }
+mddem_app = { path = "../mddem_app", version = "0.1.0" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.0" }
+dem_atom = { path = "../dem_atom", version = "0.1.0" }
+dem_atom_insert = { path = "../dem_atom_insert", version = "0.1.0" }
 nalgebra = "0.33.2"

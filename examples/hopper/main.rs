@@ -13,7 +13,9 @@ fn main() {
         .add_plugins(GranularDefaultPlugins)
         .add_plugins(GravityPlugin)
         .add_plugins(WallPlugin)
-        .add_plugins(StatesPlugin { initial: Phase::Filling });
+        .add_plugins(StatesPlugin {
+            initial: Phase::Filling,
+        });
 
     app.add_update_system(
         check_settled.run_if(in_state(Phase::Filling)),

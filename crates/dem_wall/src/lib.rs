@@ -2,14 +2,18 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, AtomDataRegistry, Config};
 use dem_atom::{DemAtom, MaterialTable};
+use mddem_core::{Atom, AtomDataRegistry, Config};
 
 // √(5/3) — appears in the viscoelastic damping formula
 const SQRT_5_3: f64 = 0.9128709291752768;
 
-fn default_neg_inf() -> f64 { f64::NEG_INFINITY }
-fn default_pos_inf() -> f64 { f64::INFINITY }
+fn default_neg_inf() -> f64 {
+    f64::NEG_INFINITY
+}
+fn default_pos_inf() -> f64 {
+    f64::INFINITY
+}
 
 #[derive(Deserialize, Clone)]
 pub struct WallDef {
@@ -58,9 +62,12 @@ impl WallPlane {
     /// Uses the atom position directly (not the projected point on the plane).
     #[inline]
     fn in_bounds(&self, x: f64, y: f64, z: f64) -> bool {
-        x >= self.bound_x_low && x <= self.bound_x_high
-            && y >= self.bound_y_low && y <= self.bound_y_high
-            && z >= self.bound_z_low && z <= self.bound_z_high
+        x >= self.bound_x_low
+            && x <= self.bound_x_high
+            && y >= self.bound_y_low
+            && y <= self.bound_y_high
+            && z >= self.bound_z_low
+            && z <= self.bound_z_high
     }
 }
 
@@ -84,16 +91,23 @@ pub struct WallPlugin;
 impl Plugin for WallPlugin {
     fn build(&self, app: &mut App) {
         let walls = {
-            let config = app.get_resource_ref::<Config>().expect("Config resource must exist");
+            let config = app
+                .get_resource_ref::<Config>()
+                .expect("Config resource must exist");
             let wall_defs: Vec<WallDef> = if let Some(val) = config.table.get("wall") {
                 match val {
-                    toml::Value::Array(arr) => {
-                        arr.iter()
-                            .map(|v| v.clone().try_into::<WallDef>().expect("failed to parse [[wall]] entry"))
-                            .collect()
-                    }
+                    toml::Value::Array(arr) => arr
+                        .iter()
+                        .map(|v| {
+                            v.clone()
+                                .try_into::<WallDef>()
+                                .expect("failed to parse [[wall]] entry")
+                        })
+                        .collect(),
                     toml::Value::Table(t) => {
-                        vec![toml::Value::Table(t.clone()).try_into::<WallDef>().expect("failed to parse [wall] entry")]
+                        vec![toml::Value::Table(t.clone())
+                            .try_into::<WallDef>()
+                            .expect("failed to parse [wall] entry")]
                     }
                     _ => panic!("[wall] must be a table or array of tables"),
                 }
@@ -102,14 +116,23 @@ impl Plugin for WallPlugin {
             };
             drop(config);
 
-            let material_table = app.get_resource_ref::<MaterialTable>()
+            let material_table = app
+                .get_resource_ref::<MaterialTable>()
                 .expect("MaterialTable must exist before WallPlugin — add DemAtomPlugin first");
 
             let mut planes = Vec::with_capacity(wall_defs.len());
             for w in &wall_defs {
-                let mat_idx = material_table.find_material(&w.material)
-                    .unwrap_or_else(|| panic!("wall material '{}' not found in [[dem.materials]]", w.material)) as usize;
-                let mag = (w.normal_x * w.normal_x + w.normal_y * w.normal_y + w.normal_z * w.normal_z).sqrt();
+                let mat_idx = material_table
+                    .find_material(&w.material)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "wall material '{}' not found in [[dem.materials]]",
+                            w.material
+                        )
+                    }) as usize;
+                let mag =
+                    (w.normal_x * w.normal_x + w.normal_y * w.normal_y + w.normal_z * w.normal_z)
+                        .sqrt();
                 assert!(mag > 1e-15, "wall normal vector must be non-zero");
                 planes.push(WallPlane {
                     point_x: w.point_x,
@@ -138,10 +161,7 @@ impl Plugin for WallPlugin {
         };
 
         app.add_resource(walls);
-        app.add_update_system(
-            wall_contact_force.label("wall_contact"),
-            ScheduleSet::Force,
-        );
+        app.add_update_system(wall_contact_force.label("wall_contact"), ScheduleSet::Force);
     }
 }
 
@@ -195,8 +215,10 @@ pub fn wall_contact_force(
             // Wall has infinite radius → r_eff = r_particle
             let r_eff = radius;
             let e_eff = 1.0
-                / ((1.0 - material_table.poisson_ratio[mat_i].powi(2)) / material_table.youngs_mod[mat_i]
-                    + (1.0 - material_table.poisson_ratio[wall_mat].powi(2)) / material_table.youngs_mod[wall_mat]);
+                / ((1.0 - material_table.poisson_ratio[mat_i].powi(2))
+                    / material_table.youngs_mod[mat_i]
+                    + (1.0 - material_table.poisson_ratio[wall_mat].powi(2))
+                        / material_table.youngs_mod[wall_mat]);
 
             let sqrt_dr = (delta * r_eff).sqrt();
             let s_n = 2.0 * e_eff * sqrt_dr;
@@ -208,8 +230,8 @@ pub fn wall_contact_force(
             // Relative velocity along wall normal: positive = separating, negative = approaching
             // Matches particle-particle convention where v_n = v_rel . n with n pointing from atom toward wall
             let v_n = atoms.vel_x[i] * wall.normal_x
-                    + atoms.vel_y[i] * wall.normal_y
-                    + atoms.vel_z[i] * wall.normal_z;
+                + atoms.vel_y[i] * wall.normal_y
+                + atoms.vel_z[i] * wall.normal_z;
 
             let beta = material_table.beta_ij[mat_i][wall_mat];
 
@@ -228,26 +250,47 @@ pub fn wall_contact_force(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mddem_core::{Atom, AtomDataRegistry};
     use dem_atom::{DemAtom, MaterialTable};
+    use mddem_core::{Atom, AtomDataRegistry};
     use nalgebra::UnitQuaternion;
 
-    fn push_test_atom(atom: &mut Atom, dem: &mut DemAtom, tag: u32, pos_x: f64, pos_y: f64, pos_z: f64, radius: f64) {
+    fn push_test_atom(
+        atom: &mut Atom,
+        dem: &mut DemAtom,
+        tag: u32,
+        pos_x: f64,
+        pos_y: f64,
+        pos_z: f64,
+        radius: f64,
+    ) {
         atom.tag.push(tag);
         atom.atom_type.push(0);
         atom.origin_index.push(0);
-        atom.pos_x.push(pos_x); atom.pos_y.push(pos_y); atom.pos_z.push(pos_z);
-        atom.vel_x.push(0.0); atom.vel_y.push(0.0); atom.vel_z.push(0.0);
-        atom.force_x.push(0.0); atom.force_y.push(0.0); atom.force_z.push(0.0);
-        atom.torque_x.push(0.0); atom.torque_y.push(0.0); atom.torque_z.push(0.0);
-        atom.mass.push(2500.0 * 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3));
+        atom.pos_x.push(pos_x);
+        atom.pos_y.push(pos_y);
+        atom.pos_z.push(pos_z);
+        atom.vel_x.push(0.0);
+        atom.vel_y.push(0.0);
+        atom.vel_z.push(0.0);
+        atom.force_x.push(0.0);
+        atom.force_y.push(0.0);
+        atom.force_z.push(0.0);
+        atom.torque_x.push(0.0);
+        atom.torque_y.push(0.0);
+        atom.torque_z.push(0.0);
+        atom.mass
+            .push(2500.0 * 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3));
         atom.skin.push(radius);
         atom.is_ghost.push(false);
         atom.has_ghost.push(false);
         atom.is_collision.push(false);
         atom.quaterion.push(UnitQuaternion::identity());
-        atom.omega_x.push(0.0); atom.omega_y.push(0.0); atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0); atom.ang_mom_y.push(0.0); atom.ang_mom_z.push(0.0);
+        atom.omega_x.push(0.0);
+        atom.omega_y.push(0.0);
+        atom.omega_z.push(0.0);
+        atom.ang_mom_x.push(0.0);
+        atom.ang_mom_y.push(0.0);
+        atom.ang_mom_z.push(0.0);
         dem.radius.push(radius);
         dem.density.push(2500.0);
     }
@@ -259,10 +302,19 @@ mod tests {
         mt
     }
 
-    fn make_wall_plane(point_x: f64, point_y: f64, point_z: f64, normal_x: f64, normal_y: f64, normal_z: f64) -> WallPlane {
+    fn make_wall_plane(
+        point_x: f64,
+        point_y: f64,
+        point_z: f64,
+        normal_x: f64,
+        normal_y: f64,
+        normal_z: f64,
+    ) -> WallPlane {
         let mag = (normal_x * normal_x + normal_y * normal_y + normal_z * normal_z).sqrt();
         WallPlane {
-            point_x, point_y, point_z,
+            point_x,
+            point_y,
+            point_z,
             normal_x: normal_x / mag,
             normal_y: normal_y / mag,
             normal_z: normal_z / mag,
@@ -307,7 +359,11 @@ mod tests {
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
         // Force should push atom in +z direction (away from wall)
-        assert!(atom.force_z[0] > 0.0, "atom should be pushed away from wall, got {}", atom.force_z[0]);
+        assert!(
+            atom.force_z[0] > 0.0,
+            "atom should be pushed away from wall, got {}",
+            atom.force_z[0]
+        );
         assert!((atom.force_x[0]).abs() < 1e-15);
         assert!((atom.force_y[0]).abs() < 1e-15);
     }
@@ -359,13 +415,20 @@ mod tests {
 
         let walls = Walls {
             planes: vec![WallPlane {
-                point_x: 0.0, point_y: 0.0, point_z: 0.0,
-                normal_x: 0.0, normal_y: 0.0, normal_z: 1.0,
+                point_x: 0.0,
+                point_y: 0.0,
+                point_z: 0.0,
+                normal_x: 0.0,
+                normal_y: 0.0,
+                normal_z: 1.0,
                 material_index: 0,
                 name: Some("blocker".into()),
-                bound_x_low: f64::NEG_INFINITY, bound_x_high: f64::INFINITY,
-                bound_y_low: f64::NEG_INFINITY, bound_y_high: f64::INFINITY,
-                bound_z_low: f64::NEG_INFINITY, bound_z_high: f64::INFINITY,
+                bound_x_low: f64::NEG_INFINITY,
+                bound_x_high: f64::INFINITY,
+                bound_y_low: f64::NEG_INFINITY,
+                bound_y_high: f64::INFINITY,
+                bound_z_low: f64::NEG_INFINITY,
+                bound_z_high: f64::INFINITY,
             }],
             active: vec![false],
         };
@@ -380,7 +443,10 @@ mod tests {
         app.run();
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
-        assert!((atom.force_z[0]).abs() < 1e-15, "inactive wall should apply no force");
+        assert!(
+            (atom.force_z[0]).abs() < 1e-15,
+            "inactive wall should apply no force"
+        );
     }
 
     #[test]
@@ -414,10 +480,20 @@ mod tests {
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
         // Force should be along the (1,0,1) normal direction — equal x and z components
-        assert!(atom.force_x[0] > 0.0, "force_x should be positive, got {}", atom.force_x[0]);
-        assert!(atom.force_z[0] > 0.0, "force_z should be positive, got {}", atom.force_z[0]);
-        assert!((atom.force_x[0] - atom.force_z[0]).abs() < 1e-10,
-            "force_x and force_z should be equal for 45-degree wall");
+        assert!(
+            atom.force_x[0] > 0.0,
+            "force_x should be positive, got {}",
+            atom.force_x[0]
+        );
+        assert!(
+            atom.force_z[0] > 0.0,
+            "force_z should be positive, got {}",
+            atom.force_z[0]
+        );
+        assert!(
+            (atom.force_x[0] - atom.force_z[0]).abs() < 1e-10,
+            "force_x and force_z should be equal for 45-degree wall"
+        );
         assert!((atom.force_y[0]).abs() < 1e-15);
     }
 
@@ -454,6 +530,9 @@ mod tests {
         app.run();
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
-        assert!((atom.force_z[0]).abs() < 1e-15, "out-of-bounds atom should get no wall force");
+        assert!(
+            (atom.force_z[0]).abs() < 1e-15,
+            "out-of-bounds atom should get no wall force"
+        );
     }
 }

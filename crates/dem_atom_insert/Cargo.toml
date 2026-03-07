@@ -1,14 +1,19 @@
 [package]
 name = "dem_atom_insert"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "DEM particle insertion with random placement and overlap checking for MDDEM"
+keywords = ["dem", "particle", "insertion", "simulation"]
+categories = ["simulation", "science"]
 
 [dependencies]
-mddem_core = { path = "../mddem_core", default-features = false }
-mddem_app = { path = "../mddem_app" }
-mddem_scheduler = { path = "../mddem_scheduler" }
-dem_atom = { path = "../dem_atom" }
+mddem_core = { path = "../mddem_core", version = "0.1.0", default-features = false }
+mddem_app = { path = "../mddem_app", version = "0.1.0" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.0" }
+dem_atom = { path = "../dem_atom", version = "0.1.0" }
 nalgebra = "0.33.2"
-rand = "*"
+rand = "0.9"
 rand_distr = "0.5.1"
 serde = { version = "1", features = ["derive"] }

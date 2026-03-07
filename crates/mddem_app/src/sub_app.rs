@@ -1,8 +1,14 @@
-use std::{any::{Any, TypeId}, cell::RefCell, collections::{HashMap, HashSet}};
+use std::{
+    any::{Any, TypeId},
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+};
 
 use crate::Plugin;
 
-use mddem_scheduler::{IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetupSet, Scheduler, System};
+use mddem_scheduler::{
+    IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetupSet, Scheduler, System,
+};
 
 pub struct SubApp {
     pub(crate) scheduler: Scheduler,
@@ -25,10 +31,7 @@ impl Default for SubApp {
             plugin_build_depth: 0,
         }
     }
-
-
 }
-
 
 impl SubApp {
     /// Returns a default, empty [`SubApp`].
@@ -36,19 +39,19 @@ impl SubApp {
         Self::default()
     }
 
-    pub fn start(&mut self){
+    pub fn start(&mut self) {
         self.scheduler.start();
     }
 
     pub fn organize_systems(&mut self) {
-       self.scheduler.organize_systems();
+        self.scheduler.organize_systems();
     }
 
     pub fn setup(&mut self) {
         self.scheduler.setup();
     }
     pub fn run(&mut self) {
-       self.scheduler.run();
+        self.scheduler.run();
     }
 
     pub fn add_setup_system<I, S: System + 'static>(
@@ -67,7 +70,7 @@ impl SubApp {
         self.scheduler.add_update_system(system, schedule_set);
     }
 
-    pub fn add_resource<R: 'static>(&mut self, res: R) { 
+    pub fn add_resource<R: 'static>(&mut self, res: R) {
         self.scheduler.add_resource(res);
     }
 
@@ -84,7 +87,6 @@ impl SubApp {
     }
 }
 
-
 /// The collection of sub-apps that belong to an [`App`].
 #[derive(Default)]
 pub struct SubApps {
@@ -93,4 +95,3 @@ pub struct SubApps {
     /// Other, labeled sub-apps.
     pub sub_apps: HashMap<String, SubApp>,
 }
-

@@ -1,7 +1,7 @@
 use std::any::TypeId;
 
-use serde::Deserialize;
 use mddem_app::prelude::App;
+use serde::Deserialize;
 
 pub struct Config {
     pub table: toml::Table,
@@ -15,7 +15,10 @@ impl Config {
             .unwrap_or_default()
     }
 
-    pub fn load<T: for<'de> Deserialize<'de> + Default + Clone + 'static>(app: &mut App, key: &str) -> T {
+    pub fn load<T: for<'de> Deserialize<'de> + Default + Clone + 'static>(
+        app: &mut App,
+        key: &str,
+    ) -> T {
         let config = if let Some(raw_cell) = app.get_mut_resource(TypeId::of::<Config>()) {
             let raw = raw_cell.borrow();
             let raw_config = raw.downcast_ref::<Config>().unwrap();
@@ -34,14 +37,17 @@ impl Config {
         use crate::{RunConfig, StageConfig};
         match self.table.get("run") {
             Some(toml::Value::Array(arr)) => {
-                let stages: Vec<StageConfig> = arr.iter()
+                let stages: Vec<StageConfig> = arr
+                    .iter()
                     .map(|v| v.clone().try_into().unwrap_or_default())
                     .collect();
                 RunConfig { stages }
             }
             Some(toml::Value::Table(_)) => {
                 let stage: StageConfig = self.section("run");
-                RunConfig { stages: vec![stage] }
+                RunConfig {
+                    stages: vec![stage],
+                }
             }
             _ => RunConfig::default(),
         }
@@ -111,7 +117,9 @@ dump_interval = 100
 
     #[test]
     fn default_fallback_for_missing_section() {
-        let config = Config { table: toml::Table::new() };
+        let config = Config {
+            table: toml::Table::new(),
+        };
         let run = config.parse_run_config();
         assert_eq!(run.num_stages(), 1);
         assert_eq!(run.current_stage(0).steps, 1000);

@@ -1,13 +1,18 @@
 [package]
 name = "dem_wall"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "General plane wall contact forces with Hertz repulsion for MDDEM simulations"
+keywords = ["dem", "wall", "contact", "simulation"]
+categories = ["simulation", "science"]
 
 [dependencies]
-mddem_core = { path = "../mddem_core", default-features = false }
-mddem_app = { path = "../mddem_app" }
-mddem_scheduler = { path = "../mddem_scheduler" }
-dem_atom = { path = "../dem_atom" }
+mddem_core = { path = "../mddem_core", version = "0.1.0", default-features = false }
+mddem_app = { path = "../mddem_app", version = "0.1.0" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.0" }
+dem_atom = { path = "../dem_atom", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 nalgebra = "0.33"

@@ -14,7 +14,7 @@ pub mod run;
 pub use atom::*;
 pub use comm::*;
 pub use domain::*;
-pub use input::{Input, InputPlugin, Config, print_banner, load_toml};
+pub use input::{load_toml, print_banner, Config, Input, InputPlugin};
 pub use run::*;
 
 // Re-export toml so downstream users can build Config tables programmatically.

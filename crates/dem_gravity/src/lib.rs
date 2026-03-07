@@ -16,7 +16,11 @@ pub struct GravityConfig {
 
 impl Default for GravityConfig {
     fn default() -> Self {
-        GravityConfig { gx: 0.0, gy: 0.0, gz: -9.81 }
+        GravityConfig {
+            gx: 0.0,
+            gy: 0.0,
+            gz: -9.81,
+        }
     }
 }
 
@@ -50,10 +54,18 @@ mod tests {
     fn make_atom(mass: f64) -> Atom {
         let mut atom = Atom::new();
         atom.dt = 1e-6;
-        atom.pos_x.push(0.0); atom.pos_y.push(0.0); atom.pos_z.push(0.0);
-        atom.vel_x.push(0.0); atom.vel_y.push(0.0); atom.vel_z.push(0.0);
-        atom.force_x.push(0.0); atom.force_y.push(0.0); atom.force_z.push(0.0);
-        atom.torque_x.push(0.0); atom.torque_y.push(0.0); atom.torque_z.push(0.0);
+        atom.pos_x.push(0.0);
+        atom.pos_y.push(0.0);
+        atom.pos_z.push(0.0);
+        atom.vel_x.push(0.0);
+        atom.vel_y.push(0.0);
+        atom.vel_z.push(0.0);
+        atom.force_x.push(0.0);
+        atom.force_y.push(0.0);
+        atom.force_z.push(0.0);
+        atom.torque_x.push(0.0);
+        atom.torque_y.push(0.0);
+        atom.torque_z.push(0.0);
         atom.mass.push(mass);
         atom.tag.push(0);
         atom.atom_type.push(0);
@@ -63,8 +75,12 @@ mod tests {
         atom.is_collision.push(false);
         atom.skin.push(0.001);
         atom.quaterion.push(UnitQuaternion::identity());
-        atom.omega_x.push(0.0); atom.omega_y.push(0.0); atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0); atom.ang_mom_y.push(0.0); atom.ang_mom_z.push(0.0);
+        atom.omega_x.push(0.0);
+        atom.omega_y.push(0.0);
+        atom.omega_z.push(0.0);
+        atom.ang_mom_x.push(0.0);
+        atom.ang_mom_y.push(0.0);
+        atom.ang_mom_z.push(0.0);
         atom.nlocal = 1;
         atom.natoms = 1;
         atom
@@ -77,7 +93,11 @@ mod tests {
 
         let mut app = App::new();
         app.add_resource(make_atom(mass));
-        app.add_resource(GravityConfig { gx: 0.0, gy: 0.0, gz });
+        app.add_resource(GravityConfig {
+            gx: 0.0,
+            gy: 0.0,
+            gz,
+        });
         app.add_update_system(apply_gravity, ScheduleSet::Force);
         app.organize_systems();
         app.run();
@@ -95,10 +115,18 @@ mod tests {
 
         let mut atom = make_atom(mass);
         // Add a ghost atom
-        atom.pos_x.push(0.0); atom.pos_y.push(0.0); atom.pos_z.push(0.0);
-        atom.vel_x.push(0.0); atom.vel_y.push(0.0); atom.vel_z.push(0.0);
-        atom.force_x.push(0.0); atom.force_y.push(0.0); atom.force_z.push(0.0);
-        atom.torque_x.push(0.0); atom.torque_y.push(0.0); atom.torque_z.push(0.0);
+        atom.pos_x.push(0.0);
+        atom.pos_y.push(0.0);
+        atom.pos_z.push(0.0);
+        atom.vel_x.push(0.0);
+        atom.vel_y.push(0.0);
+        atom.vel_z.push(0.0);
+        atom.force_x.push(0.0);
+        atom.force_y.push(0.0);
+        atom.force_z.push(0.0);
+        atom.torque_x.push(0.0);
+        atom.torque_y.push(0.0);
+        atom.torque_z.push(0.0);
         atom.mass.push(mass);
         atom.tag.push(1);
         atom.atom_type.push(0);
@@ -108,13 +136,21 @@ mod tests {
         atom.is_collision.push(false);
         atom.skin.push(0.001);
         atom.quaterion.push(UnitQuaternion::identity());
-        atom.omega_x.push(0.0); atom.omega_y.push(0.0); atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0); atom.ang_mom_y.push(0.0); atom.ang_mom_z.push(0.0);
+        atom.omega_x.push(0.0);
+        atom.omega_y.push(0.0);
+        atom.omega_z.push(0.0);
+        atom.ang_mom_x.push(0.0);
+        atom.ang_mom_y.push(0.0);
+        atom.ang_mom_z.push(0.0);
         // nlocal stays 1, ghost is index 1
 
         let mut app = App::new();
         app.add_resource(atom);
-        app.add_resource(GravityConfig { gx: 0.0, gy: 0.0, gz });
+        app.add_resource(GravityConfig {
+            gx: 0.0,
+            gy: 0.0,
+            gz,
+        });
         app.add_update_system(apply_gravity, ScheduleSet::Force);
         app.organize_systems();
         app.run();

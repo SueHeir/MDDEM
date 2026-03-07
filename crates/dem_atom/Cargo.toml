@@ -1,9 +1,14 @@
 [package]
 name = "dem_atom"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Per-atom DEM data (radius, density) with pack/unpack and MaterialTable for MDDEM"
+keywords = ["dem", "atom", "material", "simulation"]
+categories = ["simulation", "science"]
 
 [dependencies]
-mddem_core = { path = "../mddem_core", default-features = false }
-mddem_app = { path = "../mddem_app" }
+mddem_core = { path = "../mddem_core", version = "0.1.0", default-features = false }
+mddem_app = { path = "../mddem_app", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }

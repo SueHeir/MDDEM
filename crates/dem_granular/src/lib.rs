@@ -1,10 +1,10 @@
 pub mod normal;
-pub mod tangential;
 pub mod rotational;
+pub mod tangential;
 
 pub use normal::HertzNormalForcePlugin;
-pub use tangential::MindlinTangentialForcePlugin;
 pub use rotational::RotationalDynamicsPlugin;
+pub use tangential::MindlinTangentialForcePlugin;
 
 use mddem_app::prelude::*;
 

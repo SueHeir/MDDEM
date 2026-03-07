@@ -1,11 +1,15 @@
-use serde::{Deserialize, Serialize};
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
+use serde::{Deserialize, Serialize};
 
-use crate::{Config, CommResource};
+use crate::{CommResource, Config};
 
-fn default_steps() -> u32 { 1000 }
-fn default_thermo() -> usize { 100 }
+fn default_steps() -> u32 {
+    1000
+}
+fn default_thermo() -> usize {
+    100
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct StageConfig {
@@ -53,7 +57,9 @@ impl RunConfig {
 
 impl Default for RunConfig {
     fn default() -> Self {
-        RunConfig { stages: vec![StageConfig::default()] }
+        RunConfig {
+            stages: vec![StageConfig::default()],
+        }
     }
 }
 
@@ -63,9 +69,19 @@ pub struct RunState {
     cycle_remaining: Vec<u32>,
 }
 
+impl Default for RunState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RunState {
     pub fn new() -> Self {
-        RunState { total_cycle: 0, cycle_count: Vec::new(), cycle_remaining: Vec::new() }
+        RunState {
+            total_cycle: 0,
+            cycle_count: Vec::new(),
+            cycle_remaining: Vec::new(),
+        }
     }
 }
 
@@ -82,16 +98,26 @@ impl Plugin for RunPlugin {
     }
 }
 
-pub fn run_read_input(config: Res<RunConfig>, scheduler_manager: Res<SchedulerManager>, comm: Res<CommResource>, mut run_state: ResMut<RunState>) {
+pub fn run_read_input(
+    config: Res<RunConfig>,
+    scheduler_manager: Res<SchedulerManager>,
+    comm: Res<CommResource>,
+    mut run_state: ResMut<RunState>,
+) {
     let index = scheduler_manager.index;
-    if index >= config.num_stages() { return; }
+    if index >= config.num_stages() {
+        return;
+    }
 
     let stage = config.current_stage(index);
     let stage_label = stage.name.as_deref().unwrap_or("(unnamed)");
 
     if comm.rank() == 0 {
         if config.num_stages() > 1 {
-            println!("Run stage {} [{}]: {} steps, thermo every {}", index, stage_label, stage.steps, stage.thermo);
+            println!(
+                "Run stage {} [{}]: {} steps, thermo every {}",
+                index, stage_label, stage.steps, stage.thermo
+            );
         } else {
             println!("Run: {} steps", stage.steps);
         }
@@ -100,7 +126,11 @@ pub fn run_read_input(config: Res<RunConfig>, scheduler_manager: Res<SchedulerMa
     run_state.cycle_remaining.push(stage.steps);
 }
 
-pub fn update_cycle(mut run_state: ResMut<RunState>, mut scheudler_manager: ResMut<SchedulerManager>, run_config: Res<RunConfig>) {
+pub fn update_cycle(
+    mut run_state: ResMut<RunState>,
+    mut scheudler_manager: ResMut<SchedulerManager>,
+    run_config: Res<RunConfig>,
+) {
     let index = scheudler_manager.index;
     run_state.cycle_count[index] += 1;
     run_state.total_cycle += 1;
