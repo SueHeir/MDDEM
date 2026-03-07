@@ -15,7 +15,7 @@ Configuration follows a **two-tier** approach:
 
 **Tier 1 — Declarative TOML config** for standard simulations. Named fields, typed values, validated at startup via `serde`. Each plugin owns its config section, and multi-stage runs are expressed as `[[run]]` arrays.
 
-**Tier 2 — Rust API** for complex simulations. The simulation is a library — `main.rs` composes plugins, and custom systems are real functions with full type safety, IDE autocomplete, and the entire Rust ecosystem.
+**Tier 2 — Rust API** for complex simulations. The simulation is a library — `main.rs` composes plugins, and custom systems are real functions with full type safety, IDE autocomplete, and the entire Rust ecosystem. For example, the [hopper](examples/hopper/) example adds a custom system that monitors kinetic energy and removes a wall when particles settle, using `run_if(in_state(...))` for phase-dependent logic.
 
 ## Building
 
@@ -148,10 +148,12 @@ Each stage can override `dump_interval`, `restart_interval`, and `vtp_interval` 
 | `[[particles.insert]]` | `radius` | Particle radius (m) |
 | `[[particles.insert]]` | `density` | Particle density (kg/m^3) |
 | `[[particles.insert]]` | `velocity` | Initial RMS velocity (m/s, Gaussian per component) |
+| `[[particles.insert]]` | `velocity_x/y/z` | Directional initial velocity components (m/s, additive with random) |
 | `[[particles.insert]]` | `region_x/y/z_low/high` | Insertion sub-region bounds (optional, defaults to domain) |
 | `[gravity]` | `gx`, `gy`, `gz` | Gravitational acceleration components (m/s^2, default 0, 0, -9.81) |
 | `[[wall]]` | `point_x/y/z` | A point on the wall plane (m) |
 | `[[wall]]` | `normal_x/y/z` | Inward normal vector (normalized internally) |
+| `[[wall]]` | `bound_x/y/z_low/high` | Optional bounding box to clip wall to a finite region |
 | `[[wall]]` | `material` | Material name for contact properties |
 | `[[wall]]` | `name` | Optional wall name (for runtime toggling) |
 | `[run]` or `[[run]]` | `name` | Stage name for logging (optional) |
