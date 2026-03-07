@@ -11,6 +11,7 @@ pub use sub_app::*;
 /// This includes the most common types in this crate, re-exported for your convenience.
 pub mod prelude {
     pub use crate::{
-        app::App, sub_app::SubApp, Plugin, PluginGroup, PluginGroupBuilder, StatesPlugin,
+        app::App, app::ConfigSnippets, app::GenerateConfigFlag, sub_app::SubApp, Plugin,
+        PluginGroup, PluginGroupBuilder, StatesPlugin,
     };
 }

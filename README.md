@@ -52,6 +52,12 @@ Pass `--schedule` to print the compiled schedule and write a Graphviz DOT file:
 cargo run --example granular_basic -- examples/granular_basic/config.toml --schedule
 ```
 
+Pass `--generate-config` to print a complete TOML config file with all default values from the registered plugins. Each plugin contributes its own config section with comments, so custom plugins automatically participate:
+
+```bash
+cargo run --example granular_basic -- --generate-config
+```
+
 ## Input
 
 Parameters are organized into TOML sections, each owned by its plugin:

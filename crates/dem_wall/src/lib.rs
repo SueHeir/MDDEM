@@ -89,6 +89,27 @@ impl Walls {
 pub struct WallPlugin;
 
 impl Plugin for WallPlugin {
+    fn default_config(&self) -> Option<&str> {
+        Some(
+            r#"# Wall definitions (uncomment to add walls)
+# [[wall]]
+# point_x = 0.0
+# point_y = 0.0
+# point_z = 0.0
+# normal_x = 0.0
+# normal_y = 0.0
+# normal_z = 1.0
+# material = "glass"        # must match a [[dem.materials]] name
+# name = "floor"            # optional name for runtime enable/disable
+# bound_x_low = -inf        # optional spatial bounds
+# bound_x_high = inf
+# bound_y_low = -inf
+# bound_y_high = inf
+# bound_z_low = -inf
+# bound_z_high = inf"#,
+        )
+    }
+
     fn build(&self, app: &mut App) {
         let walls = {
             let config = app

@@ -40,6 +40,27 @@ pub struct ParticlesConfig {
 pub struct DemAtomInsertPlugin;
 
 impl Plugin for DemAtomInsertPlugin {
+    fn default_config(&self) -> Option<&str> {
+        Some(
+            r#"# Particle insertion blocks (one per material/group)
+[[particles.insert]]
+material = "glass"          # must match a [[dem.materials]] name
+count = 100
+radius = 0.001
+density = 2500.0
+# velocity = 0.1            # random velocity magnitude (Gaussian)
+# velocity_x = 0.0          # directional velocity (additive with random)
+# velocity_y = 0.0
+# velocity_z = 0.0
+# region_x_low = 0.0        # insertion region (defaults to domain bounds)
+# region_x_high = 1.0
+# region_y_low = 0.0
+# region_y_high = 1.0
+# region_z_low = 0.0
+# region_z_high = 1.0"#,
+        )
+    }
+
     fn build(&self, app: &mut App) {
         Config::load::<ParticlesConfig>(app, "particles");
 

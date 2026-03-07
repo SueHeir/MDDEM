@@ -8,6 +8,14 @@ use mddem_scheduler::{IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetu
 
 use crate::{Plugin, Plugins, SubApp, SubApps};
 
+/// Collected TOML snippets from all plugins that implement `default_config()`.
+pub struct ConfigSnippets {
+    pub snippets: Vec<String>,
+}
+
+/// Marker resource: when present, `App::start()` prints config snippets and exits.
+pub struct GenerateConfigFlag;
+
 pub struct App {
     pub(crate) sub_apps: SubApps,
     cleanup_fns: Vec<Box<dyn FnOnce()>>,
@@ -55,6 +63,20 @@ impl App {
         }
 
         plugin.build(self);
+
+        if let Some(snippet) = plugin.default_config() {
+            let snippet = snippet.to_string();
+            if let Some(cell) = self.get_mut_resource(TypeId::of::<ConfigSnippets>()) {
+                let mut borrow = cell.borrow_mut();
+                let snippets = borrow.downcast_mut::<ConfigSnippets>().unwrap();
+                snippets.snippets.push(snippet);
+            } else {
+                self.add_resource(ConfigSnippets {
+                    snippets: vec![snippet],
+                });
+            }
+        }
+
         self.main_mut().plugin_registry.push(plugin);
         self.main_mut().plugin_build_depth += 1;
         Ok(self)
@@ -120,6 +142,20 @@ impl App {
     }
 
     pub fn start(&mut self) {
+        if self.get_resource_ref::<GenerateConfigFlag>().is_some() {
+            if let Some(snippets) = self.get_resource_ref::<ConfigSnippets>() {
+                println!("# MDDEM generated configuration");
+                println!("# Default values for all registered plugins\n");
+                for snippet in &snippets.snippets {
+                    println!("{}", snippet.trim());
+                    println!();
+                }
+            }
+            for f in self.cleanup_fns.drain(..) {
+                f();
+            }
+            return;
+        }
         self.sub_apps.main.start();
         for f in self.cleanup_fns.drain(..) {
             f();

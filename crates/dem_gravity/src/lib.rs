@@ -31,6 +31,16 @@ fn default_gz() -> f64 {
 pub struct GravityPlugin;
 
 impl Plugin for GravityPlugin {
+    fn default_config(&self) -> Option<&str> {
+        Some(
+            r#"[gravity]
+# Gravitational acceleration components (m/s^2)
+gx = 0.0
+gy = 0.0
+gz = -9.81"#,
+        )
+    }
+
     fn build(&self, app: &mut App) {
         Config::load::<GravityConfig>(app, "gravity");
         app.add_update_system(apply_gravity, ScheduleSet::Force);

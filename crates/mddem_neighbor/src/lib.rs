@@ -82,6 +82,16 @@ pub struct NeighborPlugin {
 }
 
 impl Plugin for NeighborPlugin {
+    fn default_config(&self) -> Option<&str> {
+        Some(
+            r#"[neighbor]
+# Skin fraction multiplier for neighbor list cutoff
+skin_fraction = 1.0
+# Bin size for bin-based neighbor list
+bin_size = 1.0"#,
+        )
+    }
+
     fn build(&self, app: &mut App) {
         Config::load::<NeighborConfig>(app, "neighbor");
 

@@ -88,6 +88,30 @@ impl RunState {
 pub struct RunPlugin;
 
 impl Plugin for RunPlugin {
+    fn default_config(&self) -> Option<&str> {
+        Some(
+            r#"# Single-stage run:
+[run]
+steps = 1000
+thermo = 100
+# name = "my_stage"          # optional stage name
+# dump_interval = 0          # override dump interval for this stage
+# restart_interval = 0       # override restart interval for this stage
+# vtp_interval = 0           # override VTP interval for this stage
+
+# Multi-stage run (use [[run]] instead of [run]):
+# [[run]]
+# name = "settling"
+# steps = 1000
+# thermo = 100
+#
+# [[run]]
+# name = "production"
+# steps = 5000
+# thermo = 500"#,
+        )
+    }
+
     fn build(&self, app: &mut App) {
         let run_config = Config::load_run_config(app);
         app.add_resource(run_config);

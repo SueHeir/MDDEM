@@ -217,6 +217,26 @@ mod tests {
 pub struct DemAtomPlugin;
 
 impl Plugin for DemAtomPlugin {
+    fn default_config(&self) -> Option<&str> {
+        Some(
+            r#"# Material definitions for DEM particles
+[[dem.materials]]
+name = "glass"
+youngs_mod = 8.7e9
+poisson_ratio = 0.3
+restitution = 0.95
+friction = 0.4
+
+# Additional materials can be added:
+# [[dem.materials]]
+# name = "steel"
+# youngs_mod = 200e9
+# poisson_ratio = 0.28
+# restitution = 0.8
+# friction = 0.3"#,
+        )
+    }
+
     fn build(&self, app: &mut App) {
         app.add_plugins(AtomPlugin);
 

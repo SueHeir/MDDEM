@@ -126,6 +126,16 @@ impl CommBackend for SingleProcessComm {
 pub struct SingleProcessCommPlugin;
 
 impl Plugin for SingleProcessCommPlugin {
+    fn default_config(&self) -> Option<&str> {
+        Some(
+            r#"[comm]
+# Number of MPI processors in each dimension
+processors_x = 1
+processors_y = 1
+processors_z = 1"#,
+        )
+    }
+
     fn build(&self, app: &mut App) {
         Config::load::<CommConfig>(app, "comm");
 
@@ -290,6 +300,16 @@ pub struct CommunicationPlugin;
 
 #[cfg(feature = "mpi_backend")]
 impl Plugin for CommunicationPlugin {
+    fn default_config(&self) -> Option<&str> {
+        Some(
+            r#"[comm]
+# Number of MPI processors in each dimension
+processors_x = 1
+processors_y = 1
+processors_z = 1"#,
+        )
+    }
+
     fn build(&self, app: &mut App) {
         Config::load::<CommConfig>(app, "comm");
 

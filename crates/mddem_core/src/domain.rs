@@ -159,6 +159,23 @@ impl Default for DomainPlugin {
 }
 
 impl Plugin for DomainPlugin {
+    fn default_config(&self) -> Option<&str> {
+        Some(
+            r#"[domain]
+# Simulation box boundaries
+x_low = 0.0
+x_high = 1.0
+y_low = 0.0
+y_high = 1.0
+z_low = 0.0
+z_high = 1.0
+# Periodic boundary conditions per axis
+periodic_x = true
+periodic_y = true
+periodic_z = true"#,
+        )
+    }
+
     fn build(&self, app: &mut App) {
         Config::load::<DomainConfig>(app, "domain");
 

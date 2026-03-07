@@ -132,6 +132,28 @@ pub struct VtpConfig {
 pub struct PrintPlugin;
 
 impl Plugin for PrintPlugin {
+    fn default_config(&self) -> Option<&str> {
+        Some(
+            r#"[dump]
+# Dump output interval (0 = disabled)
+interval = 0
+# Dump format: "text" (CSV) or "binary"
+format = "text"
+
+[restart]
+# Restart file write interval (0 = disabled)
+interval = 0
+# Restart format: "bincode" or "json"
+format = "bincode"
+# Whether to read restart files at startup
+read = false
+
+[vtp]
+# VTP (ParaView) output interval (0 = disabled)
+interval = 0"#,
+        )
+    }
+
     fn build(&self, app: &mut App) {
         Config::load::<DumpConfig>(app, "dump");
         Config::load::<RestartConfig>(app, "restart");

@@ -24,8 +24,17 @@ impl Plugin for InputPlugin {
         }
 
         let args: Vec<String> = env::args().collect();
+
+        if args.iter().any(|a| a == "--generate-config") {
+            print_banner();
+            app.add_resource(Config { table: toml::Table::new() });
+            app.add_resource(Input { filename: String::new(), output_dir: None });
+            app.add_resource(GenerateConfigFlag);
+            return;
+        }
+
         let input_file = args.get(1).cloned().unwrap_or_else(|| {
-            eprintln!("Usage: mddem <input.toml> [--schedule]");
+            eprintln!("Usage: mddem <input.toml> [--schedule] [--generate-config]");
             std::process::exit(1);
         });
         let schedule = args.iter().any(|a| a == "--schedule");

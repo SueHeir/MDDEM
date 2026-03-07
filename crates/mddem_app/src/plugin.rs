@@ -23,6 +23,12 @@ pub trait Plugin: Downcast + Any + Send + Sync {
     fn is_unique(&self) -> bool {
         true
     }
+
+    /// Return a TOML snippet showing this plugin's config section with defaults.
+    /// Used by `--generate-config` to print a complete example config file.
+    fn default_config(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl_downcast!(Plugin);

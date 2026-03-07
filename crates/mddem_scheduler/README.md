@@ -182,7 +182,7 @@ cargo run --example granular_basic -- examples/granular_basic/config.toml --sche
 This produces `schedule.dot` in the working directory. Generate an image with:
 
 ```bash
-dot -Tpng schedule.dot -o output.png
+dot -Tpng schedule.dot -o schedule.png
 ```
 
 The DOT output includes:
@@ -194,4 +194,4 @@ The DOT output includes:
 
 Example output:
 
-<img src="../../output.png">
+<img src="../../schedule.png">
