@@ -8,16 +8,52 @@ fn default_steps() -> u32 { 1000 }
 fn default_thermo() -> usize { 100 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct RunConfig {
+pub struct StageConfig {
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default = "default_steps")]
     pub steps: u32,
     #[serde(default = "default_thermo")]
     pub thermo: usize,
+    #[serde(default)]
+    pub dump_interval: Option<usize>,
+    #[serde(default)]
+    pub restart_interval: Option<usize>,
+    #[serde(default)]
+    pub vtp_interval: Option<usize>,
+}
+
+impl Default for StageConfig {
+    fn default() -> Self {
+        StageConfig {
+            name: None,
+            steps: 1000,
+            thermo: 100,
+            dump_interval: None,
+            restart_interval: None,
+            vtp_interval: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RunConfig {
+    pub stages: Vec<StageConfig>,
+}
+
+impl RunConfig {
+    pub fn current_stage(&self, index: usize) -> &StageConfig {
+        &self.stages[index.min(self.stages.len() - 1)]
+    }
+
+    pub fn num_stages(&self) -> usize {
+        self.stages.len()
+    }
 }
 
 impl Default for RunConfig {
     fn default() -> Self {
-        RunConfig { steps: 1000, thermo: 100 }
+        RunConfig { stages: vec![StageConfig::default()] }
     }
 }
 
@@ -37,7 +73,8 @@ pub struct RunPlugin;
 
 impl Plugin for RunPlugin {
     fn build(&self, app: &mut App) {
-        Config::load::<RunConfig>(app, "run");
+        let run_config = Config::load_run_config(app);
+        app.add_resource(run_config);
 
         app.add_resource(RunState::new())
             .add_setup_system(run_read_input, ScheduleSetupSet::Setup)
@@ -46,10 +83,21 @@ impl Plugin for RunPlugin {
 }
 
 pub fn run_read_input(config: Res<RunConfig>, scheduler_manager: Res<SchedulerManager>, comm: Res<CommResource>, mut run_state: ResMut<RunState>) {
-    if scheduler_manager.index != 0 { return; }
-    if comm.rank() == 0 { println!("Run: {} steps", config.steps); }
+    let index = scheduler_manager.index;
+    if index >= config.num_stages() { return; }
+
+    let stage = config.current_stage(index);
+    let stage_label = stage.name.as_deref().unwrap_or("(unnamed)");
+
+    if comm.rank() == 0 {
+        if config.num_stages() > 1 {
+            println!("Run stage {} [{}]: {} steps, thermo every {}", index, stage_label, stage.steps, stage.thermo);
+        } else {
+            println!("Run: {} steps", stage.steps);
+        }
+    }
     run_state.cycle_count.push(0);
-    run_state.cycle_remaining.push(config.steps);
+    run_state.cycle_remaining.push(stage.steps);
 }
 
 pub fn update_cycle(mut run_state: ResMut<RunState>, mut scheudler_manager: ResMut<SchedulerManager>) {

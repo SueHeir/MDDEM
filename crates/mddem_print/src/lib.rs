@@ -119,8 +119,10 @@ impl Plugin for PrintPlugin {
 
 // ── Thermo systems ──────────────────────────────────────────────────────────
 
-pub fn setup_thermo(config: Res<RunConfig>, comm: Res<CommResource>, run_state: Res<RunState>, mut thermo: ResMut<Thermo>) {
-    thermo.interval = config.thermo;
+pub fn setup_thermo(config: Res<RunConfig>, scheduler_manager: Res<SchedulerManager>, comm: Res<CommResource>, run_state: Res<RunState>, mut thermo: ResMut<Thermo>) {
+    let index = scheduler_manager.index;
+    if index >= config.num_stages() { return; }
+    thermo.interval = config.current_stage(index).thermo;
     thermo.start_time = Instant::now();
     thermo.last_printed_step = run_state.total_cycle;
     if comm.rank() == 0 {
@@ -154,10 +156,12 @@ pub fn print_thermo(atoms: Res<Atom>, run_state: Res<RunState>, comm: Res<CommRe
 
 // ── VTP output ──────────────────────────────────────────────────────────────
 
-pub fn print_vtp(atoms: Res<Atom>, run_state: Res<RunState>, comm: Res<CommResource>, input: Res<Input>, vtp_config: Res<VtpConfig>) {
+pub fn print_vtp(atoms: Res<Atom>, run_state: Res<RunState>, comm: Res<CommResource>, input: Res<Input>, vtp_config: Res<VtpConfig>, run_config: Res<RunConfig>, scheduler_manager: Res<SchedulerManager>) {
     let count = run_state.total_cycle;
     let rank = comm.rank();
-    if vtp_config.interval == 0 || count % vtp_config.interval != 0 { return }
+    let stage = run_config.current_stage(scheduler_manager.index);
+    let interval = stage.vtp_interval.unwrap_or(vtp_config.interval);
+    if interval == 0 || count % interval != 0 { return }
     let base_dir = match input.output_dir.as_deref() { Some(dir) => format!("./{}/vtp", dir), None => "./vtp".to_string() };
     let filename = format!("{}/{}CYCLE_{}RANK.vtp", base_dir, count, rank);
     let result = fs::create_dir_all(&base_dir);
@@ -241,10 +245,14 @@ pub fn dump_atoms(
     comm: Res<CommResource>,
     input: Res<Input>,
     dump_config: Res<DumpConfig>,
+    run_config: Res<RunConfig>,
+    scheduler_manager: Res<SchedulerManager>,
 ) {
-    if dump_config.interval == 0 { return; }
+    let stage = run_config.current_stage(scheduler_manager.index);
+    let interval = stage.dump_interval.unwrap_or(dump_config.interval);
+    if interval == 0 { return; }
     let step = run_state.total_cycle;
-    if step % dump_config.interval != 0 { return; }
+    if step % interval != 0 { return; }
 
     let rank = comm.rank();
     let nlocal = atoms.nlocal as usize;
@@ -307,10 +315,14 @@ pub fn write_restart(
     comm: Res<CommResource>,
     input: Res<Input>,
     restart_config: Res<RestartConfig>,
+    run_config: Res<RunConfig>,
+    scheduler_manager: Res<SchedulerManager>,
 ) {
-    if restart_config.interval == 0 { return; }
+    let stage = run_config.current_stage(scheduler_manager.index);
+    let interval = stage.restart_interval.unwrap_or(restart_config.interval);
+    if interval == 0 { return; }
     let step = run_state.total_cycle;
-    if step % restart_config.interval != 0 { return; }
+    if step % interval != 0 { return; }
 
     let rank = comm.rank();
     let nlocal = atoms.nlocal as usize;

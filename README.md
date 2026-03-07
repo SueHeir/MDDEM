@@ -35,6 +35,58 @@ Pass `--schedule` to print the compiled schedule and write a Graphviz DOT file:
 mpiexec -n 1 ./target/release/MDDEM ./examples/granular_basic/config.toml --schedule
 ```
 
+## Design Philosophy
+
+MDDEM avoids the pitfalls of LAMMPS-style scripting through a deliberate two-tier design.
+
+LAMMPS input scripts occupy the worst possible design point: complex enough to require programming (multi-stage runs, conditional logic, variable expressions), but implemented as a weak scripting language with positional numeric arguments, order-dependent commands, arcane variable syntax (`${x}` vs `v_x` vs `$(v_x)`), and `fix`/`unfix` lifecycle management. The result is 500-line scripts that nobody can debug.
+
+MDDEM replaces this with two clean tiers:
+
+### Tier 1: Declarative TOML Config
+
+For standard simulations, everything is specified in a TOML configuration file with named fields, typed values, and compile-time validation via `serde`. No positional arguments, no order dependence, no string-based ID management. Multi-stage simulations use `[[run]]` arrays:
+
+```toml
+[[run]]
+name = "settling"
+steps = 10000
+thermo = 100
+
+[[run]]
+name = "production"
+steps = 100000
+thermo = 1000
+dump_interval = 500
+```
+
+Each plugin owns its config section. Bad values produce clear serde error messages at startup, not silent wrong physics at step 50,000.
+
+### Tier 2: Rust API
+
+When TOML isn't enough, users write Rust directly. The simulation is a library — `main.rs` composes plugins, and custom systems are real functions with full type safety, IDE autocomplete, and the entire Rust ecosystem:
+
+```rust
+fn main() {
+    let mut app = App::new();
+    app.add_plugins(CorePlugins)
+       .add_plugins(GranularDefaultPlugins);
+
+    // Custom system with DI, type checking, and real programming constructs
+    app.add_update_system(
+        my_custom_force.run_if(in_state(Phase::Production)),
+        ScheduleSet::PostForce,
+    );
+    app.start();
+}
+
+fn my_custom_force(mut atoms: ResMut<Atom>, domain: Res<Domain>) {
+    // Real code in a real language
+}
+```
+
+There is no middle-ground scripting language. Simple things stay simple (TOML). Complex things use a real language (Rust).
+
 ## Testing
 
 Tests run without MPI, using the single-process backend:
@@ -108,9 +160,22 @@ radius = 0.001
 density = 2500.0
 velocity = 0.5
 
+# Single-stage run (backwards compatible)
 [run]
 thermo = 100
 steps = 10000
+
+# Or multi-stage: use [[run]] for sequential stages
+# [[run]]
+# name = "settling"
+# steps = 10000
+# thermo = 100
+#
+# [[run]]
+# name = "production"
+# steps = 100000
+# thermo = 1000
+# dump_interval = 500
 
 [dump]
 interval = 1000
@@ -146,8 +211,12 @@ Materials are defined as named types under `[[dem.materials]]`. Particles refere
 | `[[particles.insert]]` | `radius` | Particle radius (m) |
 | `[[particles.insert]]` | `density` | Particle density (kg/m^3) |
 | `[[particles.insert]]` | `velocity` | Initial RMS velocity (m/s, Gaussian per component) |
-| `[run]` | `steps` | Number of timesteps |
-| `[run]` | `thermo` | Print thermodynamic output every N steps |
+| `[run]` or `[[run]]` | `name` | Stage name for logging (optional, multi-stage only) |
+| `[run]` or `[[run]]` | `steps` | Number of timesteps |
+| `[run]` or `[[run]]` | `thermo` | Print thermodynamic output every N steps |
+| `[[run]]` | `dump_interval` | Override dump interval for this stage (optional) |
+| `[[run]]` | `restart_interval` | Override restart interval for this stage (optional) |
+| `[[run]]` | `vtp_interval` | Override VTP interval for this stage (optional) |
 | `[dump]` | `interval` | Dump atom data every N steps (0 = disabled) |
 | `[dump]` | `format` | Dump format: `"text"` (CSV) or `"binary"` |
 | `[restart]` | `interval` | Write restart files every N steps (0 = disabled) |
@@ -268,3 +337,8 @@ Per-atom DEM data (radius, density) is stored in `DemAtom`, a typed extension re
 - **GPU readiness**: Flat neighbor list arrays; grid-based neighbor detection; f32 GPU kernels
 - **LEBC**: Lees-Edwards boundary conditions for shear flow
 - **Polydispersity**: Per-insert-block radii supported; continuous size distributions planned
+
+## Completed
+
+- **Multi-stage runs**: `[[run]]` TOML arrays for sequential simulation stages with per-stage thermo/dump/restart/vtp intervals
+- **SoA refactor**: Flat `Vec<f64>` per field for cache efficiency (~9x speedup)

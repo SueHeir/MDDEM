@@ -24,7 +24,7 @@ pub enum ScheduleSet {
 }
 ```
 
-Setup systems run once before the run loop, in order: `PreSetup`, `Setup`, `PostSetup`.
+Setup systems run before the run loop, in order: `PreSetup`, `Setup`, `PostSetup`. In multi-stage simulations (`[[run]]` config), setup systems re-run at each stage boundary as `SchedulerManager.index` advances.
 
 ## Resources: `Res<T>` and `ResMut<T>`
 

@@ -101,3 +101,57 @@ fn maybe_transition(run_state: Res<RunState>, mut next: ResMut<NextState<Phase>>
     }
 }
 ```
+
+## Multi-Stage Simulations
+
+MDDEM supports multi-stage runs via `[[run]]` TOML arrays. Each stage runs sequentially with its own step count, thermo interval, and optional output interval overrides:
+
+```toml
+[[run]]
+name = "settling"
+steps = 10000
+thermo = 100
+
+[[run]]
+name = "production"
+steps = 100000
+thermo = 1000
+dump_interval = 500
+vtp_interval = 1000
+```
+
+The scheduler executes stages sequentially, running `Setup -> Run -> Setup -> Run -> ... -> End`. Each stage transition increments `SchedulerManager.index`, and setup systems re-run to pick up the new stage's configuration. Systems that should only run once (e.g., particle insertion) guard with `if scheduler_manager.index != 0 { return; }`.
+
+Single-stage `[run]` (table syntax) is still supported for backwards compatibility.
+
+### Combining with StatesPlugin
+
+`StatesPlugin` provides finer-grained control within or across stages. For example, a system can be active only during a specific named state regardless of which `[[run]]` stage is executing:
+
+```rust
+app.add_update_system(
+    apply_shear_boundary
+        .run_if(in_state(Phase::Shearing)),
+    ScheduleSet::PreExchange,
+);
+```
+
+### Programmatic multi-stage setup
+
+For complex workflows beyond what TOML can express, construct `RunConfig` directly in Rust:
+
+```rust
+use mddem::prelude::*;
+
+fn main() {
+    let mut app = App::new();
+    app.add_resource(RunConfig {
+        stages: vec![
+            StageConfig { name: Some("settle".into()), steps: 10000, thermo: 100, ..Default::default() },
+            StageConfig { name: Some("run".into()), steps: 50000, thermo: 500, ..Default::default() },
+        ],
+    });
+    app.add_plugins(CorePlugins).add_plugins(GranularDefaultPlugins);
+    app.start();
+}
+```
