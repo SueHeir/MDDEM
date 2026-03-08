@@ -138,49 +138,75 @@ pub fn zero_virial(mut virial: ResMut<VirialAccumulator>) {
     virial.virial_sum = 0.0;
 }
 
+#[inline(always)]
+fn lj_pair(
+    atoms: &mut Atom,
+    xyz: &[f64],
+    i: usize,
+    j: usize,
+    sigma2: f64,
+    cutoff2: f64,
+    eps24: f64,
+    virial: &mut VirialAccumulator,
+    scale: f64,
+) {
+    let j3 = j * 3;
+    let dx = xyz[j3] - atoms.pos_x[i];
+    let dy = xyz[j3 + 1] - atoms.pos_y[i];
+    let dz = xyz[j3 + 2] - atoms.pos_z[i];
+    let r2 = dx * dx + dy * dy + dz * dz;
+
+    if r2 >= cutoff2 || r2 < 1e-20 {
+        return;
+    }
+
+    let sr2 = sigma2 / r2;
+    let sr6 = sr2 * sr2 * sr2;
+    let f_over_r = eps24 / r2 * (2.0 * sr6 * sr6 - sr6);
+
+    virial.virial_sum += f_over_r * r2 * scale;
+
+    let fx = f_over_r * dx * scale;
+    let fy = f_over_r * dy * scale;
+    let fz = f_over_r * dz * scale;
+
+    atoms.force_x[i] -= fx;
+    atoms.force_y[i] -= fy;
+    atoms.force_z[i] -= fz;
+    atoms.force_x[j] += fx;
+    atoms.force_y[j] += fy;
+    atoms.force_z[j] += fz;
+}
+
 pub fn lj_force(
     mut atoms: ResMut<Atom>,
     neighbor: Res<Neighbor>,
     lj: Res<LJConfig>,
+    _domain: Res<Domain>,
     mut virial: ResMut<VirialAccumulator>,
 ) {
     let sigma2 = lj.sigma * lj.sigma;
     let cutoff2 = (lj.cutoff * lj.sigma).powi(2);
-    let eps = lj.epsilon;
-    let eps24 = 24.0 * eps;
+    let eps24 = 24.0 * lj.epsilon;
 
-    for &(i, j) in &neighbor.neighbor_list {
-        let dx = atoms.pos_x[j] - atoms.pos_x[i];
-        let dy = atoms.pos_y[j] - atoms.pos_y[i];
-        let dz = atoms.pos_z[j] - atoms.pos_z[i];
-        let r2 = dx * dx + dy * dy + dz * dz;
+    let nlocal = atoms.nlocal as usize;
+    let total = atoms.len();
 
-        if r2 >= cutoff2 || r2 < 1e-20 {
-            continue;
+    // Build interleaved position cache [x0,y0,z0, x1,y1,z1, ...] for cache-friendly j access
+    let mut xyz = Vec::with_capacity(total * 3);
+    for i in 0..total {
+        xyz.push(atoms.pos_x[i]);
+        xyz.push(atoms.pos_y[i]);
+        xyz.push(atoms.pos_z[i]);
+    }
+
+    for i in 0..nlocal {
+        for k in neighbor.neighbor_offsets[i] as usize..neighbor.neighbor_offsets[i + 1] as usize {
+            let j = neighbor.neighbor_indices[k] as usize;
+            // Forward stencil guarantees each pair is found exactly once.
+            // Full force applied to both i and j (ghost forces returned via reverse_comm).
+            lj_pair(&mut atoms, &xyz, i, j, sigma2, cutoff2, eps24, &mut virial, 1.0);
         }
-
-        let sr2 = sigma2 / r2;
-        let sr6 = sr2 * sr2 * sr2;
-        let f_over_r = eps24 / r2 * (2.0 * sr6 * sr6 - sr6);
-
-        virial.virial_sum += f_over_r * r2;
-
-        let scale = if atoms.is_ghost[i] || atoms.is_ghost[j] {
-            0.5
-        } else {
-            1.0
-        };
-
-        let fx = f_over_r * dx * scale;
-        let fy = f_over_r * dy * scale;
-        let fz = f_over_r * dz * scale;
-
-        atoms.force_x[i] -= fx;
-        atoms.force_y[i] -= fy;
-        atoms.force_z[i] -= fz;
-        atoms.force_x[j] += fx;
-        atoms.force_y[j] += fy;
-        atoms.force_z[j] += fz;
     }
 }
 
@@ -189,8 +215,6 @@ pub fn lj_force(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nalgebra::Vector3;
-
     fn push_atom(atom: &mut Atom, tag: u32, x: f64, y: f64, z: f64, mass: f64) {
         use nalgebra::{Quaternion, UnitQuaternion};
         atom.tag.push(tag);
@@ -233,6 +257,7 @@ mod tests {
         };
         app.add_resource(lj_config);
         app.add_resource(VirialAccumulator::default());
+        app.add_resource(Domain::default());
 
         let mut atom = Atom::new();
         push_atom(&mut atom, 0, 0.0, 0.0, 0.0, 1.0);
@@ -243,6 +268,9 @@ mod tests {
 
         let mut neighbor = Neighbor::new();
         neighbor.neighbor_list.push((0, 1));
+        // CSR format: offsets for 2 local atoms
+        neighbor.neighbor_offsets = vec![0, 1, 1]; // atom 0 has 1 neighbor, atom 1 has 0
+        neighbor.neighbor_indices = vec![1];        // atom 0's neighbor is atom 1
         app.add_resource(neighbor);
 
         app.add_update_system(lj_force, ScheduleSet::Force);

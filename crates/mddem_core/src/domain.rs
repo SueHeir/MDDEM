@@ -59,6 +59,8 @@ pub struct Domain {
     pub volume: f64,
     pub size: Vector3<f64>,
     pub is_periodic: Vector3<bool>,
+    /// Ghost atom communication cutoff. 0 = use per-atom skin * 4.0 (DEM default).
+    pub ghost_cutoff: f64,
 }
 
 impl Default for Domain {
@@ -78,6 +80,7 @@ impl Domain {
             size: Vector3::new(1.0, 1.0, 1.0),
             is_periodic: Vector3::new(false, false, false),
             volume: 1.0,
+            ghost_cutoff: 0.0,
         }
     }
 }
@@ -125,6 +128,7 @@ impl DomainDecomposition for CartesianDecomposition {
             size,
             is_periodic,
             volume: size.x * size.y * size.z,
+            ghost_cutoff: 0.0,
         }
     }
 }
@@ -215,48 +219,57 @@ pub fn domain_read_input(
 }
 
 pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataRegistry>) {
-    for i in (0..atoms.len()).rev() {
-        if domain.is_periodic.x {
-            while atoms.pos_x[i] < domain.boundaries_low.x {
-                atoms.pos_x[i] += domain.size.x
-            }
-            while atoms.pos_x[i] >= domain.boundaries_high.x {
-                atoms.pos_x[i] -= domain.size.x
-            }
-        } else if atoms.pos_x[i] < domain.boundaries_low.x
-            || atoms.pos_x[i] >= domain.boundaries_high.x
-        {
-            atoms.swap_remove(i);
-            registry.swap_remove_all(i);
-            continue;
+    let all_periodic = domain.is_periodic.x && domain.is_periodic.y && domain.is_periodic.z;
+
+    if all_periodic {
+        // Fast path: fully periodic, no removals possible — forward iteration
+        let low_x = domain.boundaries_low.x;
+        let low_y = domain.boundaries_low.y;
+        let low_z = domain.boundaries_low.z;
+        let sx = domain.size.x;
+        let sy = domain.size.y;
+        let sz = domain.size.z;
+        for i in 0..atoms.len() {
+            atoms.pos_x[i] = ((atoms.pos_x[i] - low_x) % sx + sx) % sx + low_x;
+            atoms.pos_y[i] = ((atoms.pos_y[i] - low_y) % sy + sy) % sy + low_y;
+            atoms.pos_z[i] = ((atoms.pos_z[i] - low_z) % sz + sz) % sz + low_z;
         }
-        if domain.is_periodic.y {
-            while atoms.pos_y[i] < domain.boundaries_low.y {
-                atoms.pos_y[i] += domain.size.y
+    } else {
+        // Slow path: non-periodic axes may require removal
+        for i in (0..atoms.len()).rev() {
+            if domain.is_periodic.x {
+                let low = domain.boundaries_low.x;
+                let s = domain.size.x;
+                atoms.pos_x[i] = ((atoms.pos_x[i] - low) % s + s) % s + low;
+            } else if atoms.pos_x[i] < domain.boundaries_low.x
+                || atoms.pos_x[i] >= domain.boundaries_high.x
+            {
+                atoms.swap_remove(i);
+                registry.swap_remove_all(i);
+                continue;
             }
-            while atoms.pos_y[i] >= domain.boundaries_high.y {
-                atoms.pos_y[i] -= domain.size.y
+            if domain.is_periodic.y {
+                let low = domain.boundaries_low.y;
+                let s = domain.size.y;
+                atoms.pos_y[i] = ((atoms.pos_y[i] - low) % s + s) % s + low;
+            } else if atoms.pos_y[i] < domain.boundaries_low.y
+                || atoms.pos_y[i] >= domain.boundaries_high.y
+            {
+                atoms.swap_remove(i);
+                registry.swap_remove_all(i);
+                continue;
             }
-        } else if atoms.pos_y[i] < domain.boundaries_low.y
-            || atoms.pos_y[i] >= domain.boundaries_high.y
-        {
-            atoms.swap_remove(i);
-            registry.swap_remove_all(i);
-            continue;
-        }
-        if domain.is_periodic.z {
-            while atoms.pos_z[i] < domain.boundaries_low.z {
-                atoms.pos_z[i] += domain.size.z
+            if domain.is_periodic.z {
+                let low = domain.boundaries_low.z;
+                let s = domain.size.z;
+                atoms.pos_z[i] = ((atoms.pos_z[i] - low) % s + s) % s + low;
+            } else if atoms.pos_z[i] < domain.boundaries_low.z
+                || atoms.pos_z[i] >= domain.boundaries_high.z
+            {
+                atoms.swap_remove(i);
+                registry.swap_remove_all(i);
+                continue;
             }
-            while atoms.pos_z[i] >= domain.boundaries_high.z {
-                atoms.pos_z[i] -= domain.size.z
-            }
-        } else if atoms.pos_z[i] < domain.boundaries_low.z
-            || atoms.pos_z[i] >= domain.boundaries_high.z
-        {
-            atoms.swap_remove(i);
-            registry.swap_remove_all(i);
-            continue;
         }
     }
 }

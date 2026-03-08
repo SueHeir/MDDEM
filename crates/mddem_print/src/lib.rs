@@ -216,7 +216,7 @@ pub fn print_thermo(
             0.5 * atoms.mass[i] * (vx * vx + vy * vy + vz * vz)
         })
         .sum();
-    let local_neighbors = neighbor.neighbor_list.len() as f64;
+    let local_neighbors = neighbor.neighbor_indices.len() as f64;
     let global_ke = comm.all_reduce_sum_f64(local_ke);
     let global_neighbors_f = comm.all_reduce_sum_f64(local_neighbors);
     let global_neighbors = global_neighbors_f as usize;

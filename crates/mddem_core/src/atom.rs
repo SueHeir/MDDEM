@@ -475,6 +475,36 @@ impl Atom {
         self.ang_mom_z.push(0.0);
     }
 
+    pub fn reserve(&mut self, additional: usize) {
+        self.tag.reserve(additional);
+        self.atom_type.reserve(additional);
+        self.origin_index.reserve(additional);
+        self.pos_x.reserve(additional);
+        self.pos_y.reserve(additional);
+        self.pos_z.reserve(additional);
+        self.vel_x.reserve(additional);
+        self.vel_y.reserve(additional);
+        self.vel_z.reserve(additional);
+        self.quaterion.reserve(additional);
+        self.omega_x.reserve(additional);
+        self.omega_y.reserve(additional);
+        self.omega_z.reserve(additional);
+        self.ang_mom_x.reserve(additional);
+        self.ang_mom_y.reserve(additional);
+        self.ang_mom_z.reserve(additional);
+        self.torque_x.reserve(additional);
+        self.torque_y.reserve(additional);
+        self.torque_z.reserve(additional);
+        self.force_x.reserve(additional);
+        self.force_y.reserve(additional);
+        self.force_z.reserve(additional);
+        self.skin.reserve(additional);
+        self.mass.reserve(additional);
+        self.is_collision.reserve(additional);
+        self.is_ghost.reserve(additional);
+        self.has_ghost.reserve(additional);
+    }
+
     pub fn truncate_to_nlocal(&mut self) {
         let n = self.nlocal as usize;
         self.tag.truncate(n);

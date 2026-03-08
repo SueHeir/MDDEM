@@ -42,6 +42,15 @@ path = "examples/hopper/main.rs"
 name = "lj_argon"
 path = "examples/lj_argon/main.rs"
 
+[[example]]
+name = "lj_performance"
+path = "examples/lj_performance/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
 [dependencies]
 mddem = { path = "./crates/mddem", default-features = false }
 # Force libffi-sys to use system libffi (via pkg-config) instead of building

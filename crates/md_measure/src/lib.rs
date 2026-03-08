@@ -74,7 +74,6 @@ impl RdfAccumulator {
     }
 }
 
-#[derive(Default)]
 pub struct MsdTracker {
     pub ref_x: Vec<f64>,
     pub ref_y: Vec<f64>,
@@ -85,9 +84,32 @@ pub struct MsdTracker {
     pub prev_x: Vec<f64>,
     pub prev_y: Vec<f64>,
     pub prev_z: Vec<f64>,
+    pub has_entry: Vec<bool>,
     pub ref_step: usize,
     pub msd_values: Vec<(usize, f64)>,
     pub initialized: bool,
+    pub n_tracked: f64,
+}
+
+impl Default for MsdTracker {
+    fn default() -> Self {
+        MsdTracker {
+            ref_x: Vec::new(),
+            ref_y: Vec::new(),
+            ref_z: Vec::new(),
+            unwrapped_x: Vec::new(),
+            unwrapped_y: Vec::new(),
+            unwrapped_z: Vec::new(),
+            prev_x: Vec::new(),
+            prev_y: Vec::new(),
+            prev_z: Vec::new(),
+            has_entry: Vec::new(),
+            ref_step: 0,
+            msd_values: Vec::new(),
+            initialized: false,
+            n_tracked: 0.0,
+        }
+    }
 }
 
 
@@ -144,31 +166,69 @@ pub fn accumulate_rdf(
     let nlocal = atoms.nlocal as usize;
     let n_bins = rdf.bins.len();
     let dr = rdf.dr;
-    let cutoff2 = rdf.cutoff * rdf.cutoff;
+
+    // Cap RDF cutoff at ghost_cutoff on multi-proc to avoid missing pairs
+    let effective_cutoff = if comm.size() > 1 && neighbor.ghost_cutoff > 0.0 {
+        if rdf.cutoff > neighbor.ghost_cutoff && step == config.rdf_interval {
+            if comm.rank() == 0 {
+                println!(
+                    "WARNING: RDF cutoff ({:.3}) > ghost_cutoff ({:.3}). Capping to ghost_cutoff.",
+                    rdf.cutoff, neighbor.ghost_cutoff
+                );
+            }
+        }
+        rdf.cutoff.min(neighbor.ghost_cutoff)
+    } else {
+        rdf.cutoff
+    };
+    let cutoff2 = effective_cutoff * effective_cutoff;
 
     let mut local_hist = vec![0.0f64; n_bins];
 
-    // Use neighbor list for efficiency
-    for &(i, j) in &neighbor.neighbor_list {
-        let dx = atoms.pos_x[j] - atoms.pos_x[i];
-        let dy = atoms.pos_y[j] - atoms.pos_y[i];
-        let dz = atoms.pos_z[j] - atoms.pos_z[i];
-        let r2 = dx * dx + dy * dy + dz * dz;
+    // Brute-force pair counting with minimum-image convention
+    let lx = domain.size.x;
+    let ly = domain.size.y;
+    let lz = domain.size.z;
+    let half_lx = lx * 0.5;
+    let half_ly = ly * 0.5;
+    let half_lz = lz * 0.5;
+    let total = atoms.len();
 
-        if r2 >= cutoff2 || r2 < 1e-20 {
-            continue;
+    for i in 0..nlocal {
+        // Local-local pairs (i < j to avoid double counting)
+        for j in (i + 1)..nlocal {
+            let mut dx = atoms.pos_x[j] - atoms.pos_x[i];
+            let mut dy = atoms.pos_y[j] - atoms.pos_y[i];
+            let mut dz = atoms.pos_z[j] - atoms.pos_z[i];
+
+            if domain.is_periodic.x {
+                if dx > half_lx { dx -= lx; } else if dx < -half_lx { dx += lx; }
+            }
+            if domain.is_periodic.y {
+                if dy > half_ly { dy -= ly; } else if dy < -half_ly { dy += ly; }
+            }
+            if domain.is_periodic.z {
+                if dz > half_lz { dz -= lz; } else if dz < -half_lz { dz += lz; }
+            }
+
+            let r2 = dx * dx + dy * dy + dz * dz;
+            if r2 >= cutoff2 || r2 < 1e-20 { continue; }
+            let bin = (r2.sqrt() / dr) as usize;
+            if bin < n_bins { local_hist[bin] += 1.0; }
         }
+        // Local-ghost pairs (weight 0.5 — each cross-boundary pair seen by both ranks)
+        // Skip on single-process: minimum-image local-local loop already finds all pairs
+        if comm.size() > 1 {
+            for j in nlocal..total {
+                let dx = atoms.pos_x[j] - atoms.pos_x[i];
+                let dy = atoms.pos_y[j] - atoms.pos_y[i];
+                let dz = atoms.pos_z[j] - atoms.pos_z[i];
 
-        let r = r2.sqrt();
-        let bin = (r / dr) as usize;
-        if bin < n_bins {
-            // Count pair once for local-local, half for ghost pairs
-            let weight = if atoms.is_ghost[i] || atoms.is_ghost[j] {
-                0.5
-            } else {
-                1.0
-            };
-            local_hist[bin] += weight;
+                let r2 = dx * dx + dy * dy + dz * dz;
+                if r2 >= cutoff2 || r2 < 1e-20 { continue; }
+                let bin = (r2.sqrt() / dr) as usize;
+                if bin < n_bins { local_hist[bin] += 0.5; }
+            }
         }
     }
 
@@ -181,7 +241,6 @@ pub fn accumulate_rdf(
     let v = domain.volume;
 
     // Normalize: g(r) = hist[k] * V / (N*(N-1)/2 * 4*pi*r^2*dr)
-    // The neighbor list gives each pair once, so denominator uses N*(N-1)/2
     let n_pairs = n_total * (n_total - 1.0) / 2.0;
     for (k, (hist_val, rdf_bin)) in local_hist.iter().zip(rdf.bins.iter_mut()).enumerate() {
         let r_low = k as f64 * dr;
@@ -202,31 +261,47 @@ pub fn track_msd(
     comm: Res<CommResource>,
     mut msd: ResMut<MsdTracker>,
 ) {
-    if comm.rank() != 0 {
-        return;
-    }
-
     let step = run_state.total_cycle;
     let nlocal = atoms.nlocal as usize;
 
     if !msd.initialized && nlocal > 0 {
-        // Initialize reference and unwrapped positions
-        msd.ref_x = atoms.pos_x[..nlocal].to_vec();
-        msd.ref_y = atoms.pos_y[..nlocal].to_vec();
-        msd.ref_z = atoms.pos_z[..nlocal].to_vec();
-        msd.unwrapped_x = msd.ref_x.clone();
-        msd.unwrapped_y = msd.ref_y.clone();
-        msd.unwrapped_z = msd.ref_z.clone();
-        msd.prev_x = msd.ref_x.clone();
-        msd.prev_y = msd.ref_y.clone();
-        msd.prev_z = msd.ref_z.clone();
+        // Find max tag to size the dense arrays
+        let max_tag = atoms.tag[..nlocal].iter().cloned().max().unwrap_or(0) as usize;
+        let size = max_tag + 1;
+        msd.ref_x.resize(size, 0.0);
+        msd.ref_y.resize(size, 0.0);
+        msd.ref_z.resize(size, 0.0);
+        msd.unwrapped_x.resize(size, 0.0);
+        msd.unwrapped_y.resize(size, 0.0);
+        msd.unwrapped_z.resize(size, 0.0);
+        msd.prev_x.resize(size, 0.0);
+        msd.prev_y.resize(size, 0.0);
+        msd.prev_z.resize(size, 0.0);
+        msd.has_entry.resize(size, false);
+
+        for i in 0..nlocal {
+            let idx = atoms.tag[i] as usize;
+            msd.ref_x[idx] = atoms.pos_x[i];
+            msd.ref_y[idx] = atoms.pos_y[i];
+            msd.ref_z[idx] = atoms.pos_z[i];
+            msd.unwrapped_x[idx] = atoms.pos_x[i];
+            msd.unwrapped_y[idx] = atoms.pos_y[i];
+            msd.unwrapped_z[idx] = atoms.pos_z[i];
+            msd.prev_x[idx] = atoms.pos_x[i];
+            msd.prev_y[idx] = atoms.pos_y[i];
+            msd.prev_z[idx] = atoms.pos_z[i];
+            msd.has_entry[idx] = true;
+        }
+        msd.n_tracked = comm.all_reduce_sum_f64(nlocal as f64);
         msd.ref_step = step;
         msd.initialized = true;
-        msd.msd_values.push((0, 0.0));
+        if comm.rank() == 0 {
+            msd.msd_values.push((0, 0.0));
+        }
         return;
     }
 
-    if !msd.initialized || nlocal != msd.prev_x.len() {
+    if !msd.initialized {
         return;
     }
 
@@ -239,54 +314,64 @@ pub fn track_msd(
     let half_lz = lz * 0.5;
 
     for i in 0..nlocal {
-        let dx = atoms.pos_x[i] - msd.prev_x[i];
-        let dy = atoms.pos_y[i] - msd.prev_y[i];
-        let dz = atoms.pos_z[i] - msd.prev_z[i];
-
-        // Detect boundary crossing
-        let mut ux = dx;
-        let mut uy = dy;
-        let mut uz = dz;
-        if ux > half_lx {
-            ux -= lx;
-        } else if ux < -half_lx {
-            ux += lx;
-        }
-        if uy > half_ly {
-            uy -= ly;
-        } else if uy < -half_ly {
-            uy += ly;
-        }
-        if uz > half_lz {
-            uz -= lz;
-        } else if uz < -half_lz {
-            uz += lz;
+        let idx = atoms.tag[i] as usize;
+        // Grow arrays if a new tag exceeds current size (e.g. atom migrated in)
+        if idx >= msd.prev_x.len() {
+            let new_size = idx + 1;
+            msd.ref_x.resize(new_size, 0.0);
+            msd.ref_y.resize(new_size, 0.0);
+            msd.ref_z.resize(new_size, 0.0);
+            msd.unwrapped_x.resize(new_size, 0.0);
+            msd.unwrapped_y.resize(new_size, 0.0);
+            msd.unwrapped_z.resize(new_size, 0.0);
+            msd.prev_x.resize(new_size, 0.0);
+            msd.prev_y.resize(new_size, 0.0);
+            msd.prev_z.resize(new_size, 0.0);
+            msd.has_entry.resize(new_size, false);
         }
 
-        msd.unwrapped_x[i] += ux;
-        msd.unwrapped_y[i] += uy;
-        msd.unwrapped_z[i] += uz;
+        if msd.has_entry[idx] {
+            let mut dx = atoms.pos_x[i] - msd.prev_x[idx];
+            let mut dy = atoms.pos_y[i] - msd.prev_y[idx];
+            let mut dz = atoms.pos_z[i] - msd.prev_z[idx];
+
+            // Detect PBC boundary crossing
+            if dx > half_lx { dx -= lx; } else if dx < -half_lx { dx += lx; }
+            if dy > half_ly { dy -= ly; } else if dy < -half_ly { dy += ly; }
+            if dz > half_lz { dz -= lz; } else if dz < -half_lz { dz += lz; }
+
+            msd.unwrapped_x[idx] += dx;
+            msd.unwrapped_y[idx] += dy;
+            msd.unwrapped_z[idx] += dz;
+        }
+        msd.prev_x[idx] = atoms.pos_x[i];
+        msd.prev_y[idx] = atoms.pos_y[i];
+        msd.prev_z[idx] = atoms.pos_z[i];
+        msd.has_entry[idx] = true;
     }
-
-    msd.prev_x = atoms.pos_x[..nlocal].to_vec();
-    msd.prev_y = atoms.pos_y[..nlocal].to_vec();
-    msd.prev_z = atoms.pos_z[..nlocal].to_vec();
 
     if step == 0 || !step.is_multiple_of(config.msd_interval) {
         return;
     }
 
-    // Compute MSD = <|r_unwrap(t) - r_ref|^2>
-    let mut msd_sum = 0.0;
+    // Compute MSD = <|r_unwrap(t) - r_ref|^2> for atoms we can track
+    let mut local_msd_sum = 0.0;
     for i in 0..nlocal {
-        let dx = msd.unwrapped_x[i] - msd.ref_x[i];
-        let dy = msd.unwrapped_y[i] - msd.ref_y[i];
-        let dz = msd.unwrapped_z[i] - msd.ref_z[i];
-        msd_sum += dx * dx + dy * dy + dz * dz;
+        let idx = atoms.tag[i] as usize;
+        if idx < msd.has_entry.len() && msd.has_entry[idx] {
+            let dx = msd.unwrapped_x[idx] - msd.ref_x[idx];
+            let dy = msd.unwrapped_y[idx] - msd.ref_y[idx];
+            let dz = msd.unwrapped_z[idx] - msd.ref_z[idx];
+            local_msd_sum += dx * dx + dy * dy + dz * dz;
+        }
     }
-    let msd_avg = msd_sum / nlocal as f64;
-    let ref_step = msd.ref_step;
-    msd.msd_values.push((step - ref_step, msd_avg));
+    let global_msd_sum = comm.all_reduce_sum_f64(local_msd_sum);
+    let msd_avg = if msd.n_tracked > 0.0 { global_msd_sum / msd.n_tracked } else { 0.0 };
+
+    if comm.rank() == 0 {
+        let ref_step = msd.ref_step;
+        msd.msd_values.push((step - ref_step, msd_avg));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

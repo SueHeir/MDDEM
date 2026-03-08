@@ -142,7 +142,8 @@ processors_z = 1"#,
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
 
         app.add_setup_system(comm_read_input, ScheduleSetupSet::PreSetup)
-            .add_update_system(single_process_borders, ScheduleSet::PreNeighbor);
+            .add_update_system(single_process_borders.label("single_process_borders"), ScheduleSet::PreNeighbor)
+            .add_update_system(single_process_reverse_force, ScheduleSet::PostForce);
 
         app.add_cleanup(finalize_mpi);
     }
@@ -188,6 +189,7 @@ fn single_process_borders(
                 &domain,
                 &mut send_buff,
                 dim_scan_end,
+                domain.ghost_cutoff,
             );
 
             if count > 0 {
@@ -197,6 +199,19 @@ fn single_process_borders(
             }
         }
         scan_end = atoms.nlocal as usize + atoms.nghost as usize;
+    }
+}
+
+fn single_process_reverse_force(mut atoms: ResMut<Atom>, comm: Res<CommResource>) {
+    if comm.size() > 1 {
+        return;
+    }
+    let nlocal = atoms.nlocal as usize;
+    for i in nlocal..atoms.len() {
+        let origin = atoms.origin_index[i] as usize;
+        atoms.force_x[origin] += atoms.force_x[i];
+        atoms.force_y[origin] += atoms.force_y[i];
+        atoms.force_z[origin] += atoms.force_z[i];
     }
 }
 
@@ -337,7 +352,7 @@ processors_z = 1"#,
         app.add_setup_system(comm_read_input, ScheduleSetupSet::PreSetup)
             .add_setup_system(comm_setup, ScheduleSetupSet::PostSetup)
             .add_update_system(exchange, ScheduleSet::Exchange)
-            .add_update_system(borders, ScheduleSet::PreNeighbor)
+            .add_update_system(borders.label("borders"), ScheduleSet::PreNeighbor)
             .add_update_system(reverse_send_force, ScheduleSet::PostForce);
 
         app.add_cleanup(finalize_mpi);
@@ -402,14 +417,17 @@ fn pack_border_atoms(
     domain: &Domain,
     send_buff: &mut Vec<f64>,
     scan_end: usize,
+    ghost_cutoff: f64,
 ) -> i32 {
     let mut count = 0i32;
+    // Use ghost_cutoff if set (> 0), otherwise fall back to per-atom skin * 4.0 (DEM default)
     for i in 0..scan_end {
         let pos_dim = atoms.pos_component(i, dim);
+        let cut = if ghost_cutoff > 0.0 { ghost_cutoff } else { atoms.skin[i] * 4.0 };
         let in_skin = if swap == 0 {
-            pos_dim < domain.sub_domain_low[dim] + atoms.skin[i] * 4.0
+            pos_dim < domain.sub_domain_low[dim] + cut
         } else {
-            pos_dim >= domain.sub_domain_high[dim] - atoms.skin[i] * 4.0
+            pos_dim >= domain.sub_domain_high[dim] - cut
         };
         if in_skin {
             let mut change_pos = Vector3::zeros();
@@ -423,6 +441,7 @@ fn pack_border_atoms(
 }
 
 fn unpack_ghost_atoms(atoms: &mut Atom, registry: &AtomDataRegistry, buf: &[f64], count: usize) {
+    atoms.reserve(count);
     let data = &buf[..buf.len() - 1];
     let mut pos = 0;
     for _ in 0..count {
@@ -512,7 +531,6 @@ pub fn exchange(
     domain: Res<Domain>,
     registry: Res<AtomDataRegistry>,
 ) {
-    mpi.world.barrier();
     let size = comm.size();
     let rank = comm.rank();
     let proc_decomp = comm.processor_decomposition();
@@ -552,7 +570,6 @@ pub fn exchange(
         } else {
             mpi.world.process_at_rank(p).send(&atoms_buff[p as usize]);
         }
-        mpi.world.barrier();
     }
     mpi.world.barrier();
 }
@@ -600,6 +617,7 @@ pub fn borders(
                             &domain,
                             &mut send_buff,
                             dim_scan_end,
+                            domain.ghost_cutoff,
                         );
                         mpi.send_amount[swap][dim] = count;
                         send_buff.push(count as f64);
@@ -620,6 +638,7 @@ pub fn borders(
                         &domain,
                         &mut send_buff,
                         dim_scan_end,
+                        domain.ghost_cutoff,
                     );
                     mpi.send_amount[swap][dim] = count;
                     if from_proc != -1 {
@@ -643,6 +662,7 @@ pub fn borders(
                         &domain,
                         &mut send_buff,
                         dim_scan_end,
+                        domain.ghost_cutoff,
                     );
                     mpi.send_amount[swap][dim] = count;
                     if to_proc != rank {

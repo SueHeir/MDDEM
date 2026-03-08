@@ -52,7 +52,7 @@ impl PluginGroup for CorePlugins {
         builder
             .add(mddem_core::DomainPlugin::default())
             .add(mddem_neighbor::NeighborPlugin {
-                style: mddem_neighbor::NeighborStyle::SweepAndPrune,
+                style: mddem_neighbor::NeighborStyle::Bin,
             })
             .add(mddem_core::RunPlugin)
             .add(mddem_verlet::VelocityVerletPlugin)

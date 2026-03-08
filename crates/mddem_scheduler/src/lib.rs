@@ -17,15 +17,29 @@ macro_rules! impl_system {
                     FnMut($($params),*) +
                     FnMut($(<$params as SystemParam>::Item<'b>),*)
         {
-            fn run(&mut self, resources: &mut HashMap<TypeId, RefCell<Box<dyn Any>>>) {
+            fn run(&mut self, resources: &[RefCell<Box<dyn Any>>]) {
                 fn call_inner<$($params),*>(
                     mut f: impl FnMut($($params),*),
                     $($params: $params),*
                 ) { f($($params),*) }
 
                 let locals_ptr = &mut self.locals as *mut _;
-                $(let $params = $params::retrieve(resources, locals_ptr);)*
+                let mut _param_idx = 0usize;
+                $(
+                    let $params = $params::retrieve(resources, self.indices[_param_idx], locals_ptr);
+                    _param_idx += 1;
+                )*
                 call_inner(&mut self.f, $($params),*)
+            }
+
+            fn prepare(&mut self, index: &HashMap<TypeId, usize>) {
+                self.indices.clear();
+                $(
+                    let _idx = <$params as SystemParam>::resource_type_id()
+                        .and_then(|tid| index.get(&tid).copied())
+                        .unwrap_or(usize::MAX);
+                    self.indices.push(_idx);
+                )*
             }
 
             fn name(&self) -> &str { std::any::type_name::<F>() }
@@ -43,7 +57,7 @@ macro_rules! impl_into_system {
         {
             type System = FunctionSystem<($($params,)*), Self>;
             fn into_system(self) -> Self::System {
-                FunctionSystem { f: self, marker: Default::default(), locals: HashMap::new() }
+                FunctionSystem { f: self, marker: Default::default(), locals: HashMap::new(), indices: Vec::new() }
             }
         }
     }
@@ -60,15 +74,29 @@ macro_rules! impl_condition {
                     FnMut($($params),*) -> bool +
                     FnMut($(<$params as SystemParam>::Item<'b>),*) -> bool
         {
-            fn evaluate(&mut self, resources: &HashMap<TypeId, RefCell<Box<dyn Any>>>) -> bool {
+            fn evaluate(&mut self, resources: &[RefCell<Box<dyn Any>>]) -> bool {
                 fn call_inner<$($params),*>(
                     mut f: impl FnMut($($params),*) -> bool,
                     $($params: $params),*
                 ) -> bool { f($($params),*) }
 
                 let locals_ptr = &mut self.locals as *mut _;
-                $(let $params = $params::retrieve(resources, locals_ptr);)*
+                let mut _param_idx = 0usize;
+                $(
+                    let $params = $params::retrieve(resources, self.indices[_param_idx], locals_ptr);
+                    _param_idx += 1;
+                )*
                 call_inner(&mut self.f, $($params),*)
+            }
+
+            fn prepare(&mut self, index: &HashMap<TypeId, usize>) {
+                self.indices.clear();
+                $(
+                    let _idx = <$params as SystemParam>::resource_type_id()
+                        .and_then(|tid| index.get(&tid).copied())
+                        .unwrap_or(usize::MAX);
+                    self.indices.push(_idx);
+                )*
             }
         }
     }
@@ -84,7 +112,7 @@ macro_rules! impl_into_condition {
         {
             type Condition = FunctionCondition<($($params,)*), Self>;
             fn into_condition(self) -> Self::Condition {
-                FunctionCondition { f: self, marker: Default::default(), locals: HashMap::new() }
+                FunctionCondition { f: self, marker: Default::default(), locals: HashMap::new(), indices: Vec::new() }
             }
         }
     }
@@ -96,9 +124,13 @@ macro_rules! impl_into_condition {
 pub trait SystemParam {
     type Item<'new>;
     fn retrieve<'r>(
-        resources: &'r HashMap<TypeId, RefCell<Box<dyn Any>>>,
+        resources: &'r [RefCell<Box<dyn Any>>],
+        index: usize,
         locals: *mut HashMap<TypeId, Box<dyn Any>>,
     ) -> Self::Item<'r>;
+    fn resource_type_id() -> Option<TypeId> {
+        None
+    }
 }
 // ANCHOR_END: SystemParam
 
@@ -106,13 +138,17 @@ pub trait SystemParam {
 impl<'res, T: 'static> SystemParam for Res<'res, T> {
     type Item<'new> = Res<'new, T>;
     fn retrieve<'r>(
-        resources: &'r HashMap<TypeId, RefCell<Box<dyn Any>>>,
+        resources: &'r [RefCell<Box<dyn Any>>],
+        index: usize,
         _locals: *mut HashMap<TypeId, Box<dyn Any>>,
     ) -> Self::Item<'r> {
         Res {
-            value: resources.get(&TypeId::of::<T>()).unwrap().borrow(),
+            value: resources[index].borrow(),
             _marker: PhantomData,
         }
+    }
+    fn resource_type_id() -> Option<TypeId> {
+        Some(TypeId::of::<T>())
     }
 }
 // ANCHOR_END: ResSystemParam
@@ -121,13 +157,17 @@ impl<'res, T: 'static> SystemParam for Res<'res, T> {
 impl<'res, T: 'static> SystemParam for ResMut<'res, T> {
     type Item<'new> = ResMut<'new, T>;
     fn retrieve<'r>(
-        resources: &'r HashMap<TypeId, RefCell<Box<dyn Any>>>,
+        resources: &'r [RefCell<Box<dyn Any>>],
+        index: usize,
         _locals: *mut HashMap<TypeId, Box<dyn Any>>,
     ) -> Self::Item<'r> {
         ResMut {
-            value: resources.get(&TypeId::of::<T>()).unwrap().borrow_mut(),
+            value: resources[index].borrow_mut(),
             _marker: PhantomData,
         }
+    }
+    fn resource_type_id() -> Option<TypeId> {
+        Some(TypeId::of::<T>())
     }
 }
 // ANCHOR_END: ResMutSystemParam
@@ -179,7 +219,8 @@ pub struct Local<'a, T: Default + 'static> {
 impl<'res, T: Default + 'static> SystemParam for Local<'res, T> {
     type Item<'new> = Local<'new, T>;
     fn retrieve<'r>(
-        _resources: &'r HashMap<TypeId, RefCell<Box<dyn Any>>>,
+        _resources: &'r [RefCell<Box<dyn Any>>],
+        _index: usize,
         locals: *mut HashMap<TypeId, Box<dyn Any>>,
     ) -> Self::Item<'r> {
         // SAFETY: locals points to FunctionSystem::locals, exclusively owned by this
@@ -212,7 +253,8 @@ impl<T: Default + 'static> DerefMut for Local<'_, T> {
 
 // ANCHOR: System
 pub trait System {
-    fn run(&mut self, resources: &mut HashMap<TypeId, RefCell<Box<dyn Any>>>);
+    fn run(&mut self, resources: &[RefCell<Box<dyn Any>>]);
+    fn prepare(&mut self, _index: &HashMap<TypeId, usize>) {}
     fn name(&self) -> &str {
         "unknown"
     }
@@ -224,6 +266,8 @@ pub struct FunctionSystem<Input, F> {
     marker: PhantomData<fn() -> Input>,
     /// Per-system-instance local state, keyed by TypeId.
     locals: HashMap<TypeId, Box<dyn Any>>,
+    /// Cached resource indices resolved during prepare().
+    indices: Vec<usize>,
 }
 
 pub trait IntoSystem<Input> {
@@ -259,13 +303,15 @@ impl_into_system!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
 
 /// A DI-injected function that returns `bool`, used with `.run_if()`.
 pub trait Condition {
-    fn evaluate(&mut self, resources: &HashMap<TypeId, RefCell<Box<dyn Any>>>) -> bool;
+    fn evaluate(&mut self, resources: &[RefCell<Box<dyn Any>>]) -> bool;
+    fn prepare(&mut self, _index: &HashMap<TypeId, usize>) {}
 }
 
 pub struct FunctionCondition<Input, F> {
     f: F,
     marker: PhantomData<fn() -> Input>,
     locals: HashMap<TypeId, Box<dyn Any>>,
+    indices: Vec<usize>,
 }
 
 pub trait IntoCondition<Input> {
@@ -296,10 +342,14 @@ pub struct ConditionalSystem<S: System, C: Condition> {
 }
 
 impl<S: System, C: Condition> System for ConditionalSystem<S, C> {
-    fn run(&mut self, resources: &mut HashMap<TypeId, RefCell<Box<dyn Any>>>) {
+    fn run(&mut self, resources: &[RefCell<Box<dyn Any>>]) {
         if self.condition.evaluate(resources) {
             self.system.run(resources);
         }
+    }
+    fn prepare(&mut self, index: &HashMap<TypeId, usize>) {
+        self.condition.prepare(index);
+        self.system.prepare(index);
     }
     fn name(&self) -> &str {
         self.system.name()
@@ -614,8 +664,11 @@ fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, ScheduleSet)>) {
 pub struct Scheduler {
     setup_systems: Vec<(StoredSystemEntry, ScheduleSetupSet)>,
     update_systems: Vec<(StoredSystemEntry, ScheduleSet)>,
-    pub resources: HashMap<TypeId, RefCell<Box<dyn Any>>>,
+    pub resources: Vec<RefCell<Box<dyn Any>>>,
+    resource_index: HashMap<TypeId, usize>,
     print_schedule: bool,
+    system_timings: HashMap<String, f64>,
+    timing_steps: usize,
 }
 // ANCHOR_END: Scheduler
 
@@ -626,8 +679,11 @@ impl Default for Scheduler {
         Scheduler {
             setup_systems: Vec::new(),
             update_systems: Vec::new(),
-            resources: HashMap::new(),
+            resources: Vec::new(),
+            resource_index: HashMap::new(),
             print_schedule: false,
+            system_timings: HashMap::new(),
+            timing_steps: 0,
         }
     }
 }
@@ -642,6 +698,10 @@ impl Scheduler {
         // Topo sort within each ScheduleSet group
         let all = std::mem::take(&mut self.update_systems);
         if all.is_empty() {
+            // Still prepare setup systems
+            for (entry, _) in &mut self.setup_systems {
+                entry.system.prepare(&self.resource_index);
+            }
             return;
         }
 
@@ -661,18 +721,30 @@ impl Scheduler {
             topo_sort_group(&mut group);
             self.update_systems.extend(group);
         }
+
+        // Prepare all systems with cached resource indices
+        for (entry, _) in &mut self.setup_systems {
+            entry.system.prepare(&self.resource_index);
+        }
+        for (entry, _) in &mut self.update_systems {
+            entry.system.prepare(&self.resource_index);
+        }
     }
 
     pub fn setup(&mut self) {
         for (entry, _set) in self.setup_systems.iter_mut() {
-            entry.system.run(&mut self.resources);
+            entry.system.run(&self.resources);
         }
     }
 
     pub fn run(&mut self) {
         for (entry, _set) in self.update_systems.iter_mut() {
-            entry.system.run(&mut self.resources);
+            let t0 = std::time::Instant::now();
+            entry.system.run(&self.resources);
+            let elapsed = t0.elapsed().as_secs_f64();
+            *self.system_timings.entry(entry.system.name().to_string()).or_insert(0.0) += elapsed;
         }
+        self.timing_steps += 1;
     }
 
     pub fn start(&mut self) {
@@ -687,11 +759,8 @@ impl Scheduler {
                 self.setup();
                 self.organize_systems(); // systems may be added during setup in the future
 
-                let mut binding = self
-                    .resources
-                    .get(&TypeId::of::<SchedulerManager>())
-                    .unwrap()
-                    .borrow_mut();
+                let sm_idx = self.resource_index[&TypeId::of::<SchedulerManager>()];
+                let mut binding = self.resources[sm_idx].borrow_mut();
                 let sm = binding.downcast_mut::<SchedulerManager>().unwrap();
                 sm.state = SchedulerState::Run;
             }
@@ -700,13 +769,26 @@ impl Scheduler {
                 self.run();
             }
 
-            let mut binding = self
-                .resources
-                .get(&TypeId::of::<SchedulerManager>())
-                .unwrap()
-                .borrow_mut();
+            let sm_idx = self.resource_index[&TypeId::of::<SchedulerManager>()];
+            let mut binding = self.resources[sm_idx].borrow_mut();
             let sm = binding.downcast_mut::<SchedulerManager>().unwrap();
             schedule_state = sm.state;
+        }
+
+        // Print per-system timing breakdown
+        if self.timing_steps > 0 && !self.system_timings.is_empty() {
+            let total: f64 = self.system_timings.values().sum();
+            let mut sorted: Vec<_> = self.system_timings.iter().collect();
+            sorted.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap());
+            println!("\n--- Per-system timing ({} steps) ---", self.timing_steps);
+            println!("{:<50} {:>10} {:>8}", "System", "Time(s)", "%");
+            println!("{}", "-".repeat(70));
+            for (name, time) in &sorted {
+                let pct = *time / total * 100.0;
+                println!("{:<50} {:>10.4} {:>7.1}%", name, time, pct);
+            }
+            println!("{}", "-".repeat(70));
+            println!("{:<50} {:>10.4} {:>7.1}%", "TOTAL", total, 100.0);
         }
     }
 
@@ -743,18 +825,30 @@ impl Scheduler {
     }
 
     pub fn add_resource<R: 'static>(&mut self, res: R) {
-        self.resources
-            .insert(TypeId::of::<R>(), RefCell::new(Box::new(res)));
+        let type_id = TypeId::of::<R>();
+        if let Some(&idx) = self.resource_index.get(&type_id) {
+            self.resources[idx] = RefCell::new(Box::new(res));
+        } else {
+            let idx = self.resources.len();
+            self.resources.push(RefCell::new(Box::new(res)));
+            self.resource_index.insert(type_id, idx);
+        }
     }
 
     pub fn get_mut_resource(&mut self, res: TypeId) -> Option<&RefCell<Box<dyn Any>>> {
-        self.resources.get(&res)
+        self.resource_index
+            .get(&res)
+            .map(|&idx| &self.resources[idx])
     }
 
     pub fn get_resource_ref<R: 'static>(&self) -> Option<std::cell::Ref<'_, R>> {
-        self.resources
+        self.resource_index
             .get(&TypeId::of::<R>())
-            .map(|cell| std::cell::Ref::map(cell.borrow(), |b| b.downcast_ref::<R>().unwrap()))
+            .map(|&idx| {
+                std::cell::Ref::map(self.resources[idx].borrow(), |b| {
+                    b.downcast_ref::<R>().unwrap()
+                })
+            })
     }
 
     pub fn enable_schedule_print(&mut self) {

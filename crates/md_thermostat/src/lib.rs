@@ -118,14 +118,15 @@ fn compute_ke(atoms: &Atom) -> f64 {
 }
 
 /// Pre-initial integration: half-step NH thermostat
-/// 1. Compute KE
+/// 1. Compute KE (global reduction for MPI)
 /// 2. Update p_xi by half step
 /// 3. Rescale velocities by exp(-dt/2 * p_xi/Q)
-pub fn nh_pre_initial(mut atoms: ResMut<Atom>, mut nh: ResMut<NoseHooverState>) {
+pub fn nh_pre_initial(mut atoms: ResMut<Atom>, mut nh: ResMut<NoseHooverState>, comm: Res<CommResource>) {
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
 
-    let ke = compute_ke(&atoms);
+    let ke_local = compute_ke(&atoms);
+    let ke = comm.all_reduce_sum_f64(ke_local);
     nh.p_xi += (dt / 2.0) * (2.0 * ke - nh.ndof * nh.target_temp);
 
     let scale = (-dt / 2.0 * nh.p_xi / nh.q_mass).exp();
@@ -138,9 +139,9 @@ pub fn nh_pre_initial(mut atoms: ResMut<Atom>, mut nh: ResMut<NoseHooverState>) 
 
 /// Post-final integration: second half-step NH thermostat
 /// 1. Rescale velocities by exp(-dt/2 * p_xi/Q)
-/// 2. Recompute KE
+/// 2. Recompute KE (global reduction for MPI)
 /// 3. Update p_xi by half step
-pub fn nh_post_final(mut atoms: ResMut<Atom>, mut nh: ResMut<NoseHooverState>) {
+pub fn nh_post_final(mut atoms: ResMut<Atom>, mut nh: ResMut<NoseHooverState>, comm: Res<CommResource>) {
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
 
@@ -151,7 +152,8 @@ pub fn nh_post_final(mut atoms: ResMut<Atom>, mut nh: ResMut<NoseHooverState>) {
         atoms.vel_z[i] *= scale;
     }
 
-    let ke = compute_ke(&atoms);
+    let ke_local = compute_ke(&atoms);
+    let ke = comm.all_reduce_sum_f64(ke_local);
     nh.p_xi += (dt / 2.0) * (2.0 * ke - nh.ndof * nh.target_temp);
 }
 
@@ -223,6 +225,9 @@ mod tests {
         app.add_resource(config);
         app.add_resource(nh);
         app.add_resource(atom);
+        app.add_resource(CommResource(Box::new(
+            mddem_core::SingleProcessComm::new(),
+        )));
         app.add_update_system(nh_pre_initial, ScheduleSet::PreInitialIntegration);
         app.add_update_system(nh_post_final, ScheduleSet::PostFinalIntegration);
         app.organize_systems();
