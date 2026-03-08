@@ -214,13 +214,13 @@ Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). 
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
 |--------:|---------------:|----------------:|------:|
-|     108 |          4,490 |          30,580 |  6.8x |
-|   1,000 |            610 |           2,931 |  4.8x |
-|  10,000 |             65 |             295 |  4.5x |
-|  32,000 |             20 |              92 |  4.6x |
-| 100,000 |            6.9 |            28.2 |  4.1x |
+|     108 |          5,889 |          30,580 |  5.2x |
+|   1,000 |            712 |           2,931 |  4.1x |
+|  10,000 |             78 |             295 |  3.8x |
+|  32,000 |             26 |              92 |  3.6x |
+| 100,000 |            9.5 |            28.2 |  3.0x |
 
-LAMMPS is roughly 4-5x faster, with consistent scaling across system sizes. Both codes show the expected O(N) scaling for short-range pair potentials with neighbor lists. The remaining gap is split between the neighbor build (~54% of MDDEM runtime) and the force loop (~30%), where LAMMPS benefits from decades of hand-tuned inner loops, SIMD intrinsics, and cache-optimized data layouts. The benchmark configs are in [`examples/lj_benchmark/`](examples/lj_benchmark/).
+LAMMPS is roughly 3-5x faster, with consistent scaling across system sizes. Both codes show the expected O(N) scaling for short-range pair potentials with neighbor lists. The remaining gap is primarily in the neighbor build and force loop, where LAMMPS benefits from decades of hand-tuned inner loops, SIMD intrinsics, and cache-optimized data layouts. The benchmark configs are in [`examples/lj_benchmark/`](examples/lj_benchmark/).
 
 MDDEM uses bin-based neighbor lists with forward-only half-shell stencil, merged CSR storage, ghost atoms for periodic boundaries, and a two-phase inner loop (vectorizable distance computation followed by sequential neighbor collection). These optimizations brought single-core performance from ~2 step/s to ~20 step/s for 32k atoms. MPI domain decomposition provides additional scaling (e.g., 4-core MPI achieves ~1,370 step/s on the 864-atom lj_argon case vs ~620 step/s single-core).
 

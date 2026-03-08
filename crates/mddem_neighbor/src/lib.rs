@@ -622,11 +622,10 @@ pub fn bin_neighbor_list(
     // forward cells have positive offset so each pair appears once.
     // Ghost atoms in backward cells are found by the neighboring proc's
     // forward stencil; forces return via reverse_comm.
-    let stencil_other = neighbor.bin_stencil_forward.clone();
+    let stencil_other = std::mem::take(&mut neighbor.bin_stencil_forward);
     let has_self = neighbor.bin_stencil_self;
     let skin_fraction = neighbor.skin_fraction;
     let skin_fraction2 = skin_fraction * skin_fraction;
-    let total_cells_i32 = total_cells as i32;
 
     let uniform_skin = total > 0 && atoms.skin[..total].iter().all(|&s| s == atoms.skin[0]);
     let cutoff2_uniform = if uniform_skin {
@@ -645,68 +644,76 @@ pub fn bin_neighbor_list(
     // Scratch buffer for vectorizable distance computation
     let mut scratch_r2 = std::mem::take(&mut neighbor.scratch_r2);
 
+    // Raw pointers for unsafe inner loops.
+    // Safety: sorted_x/y/z and bin_start have length >= total and total_cells+1 respectively,
+    // and all cell indices from atom_cell + stencil offsets land within the ghost-padded grid.
+    let sx_ptr = sorted_x.as_ptr();
+    let sy_ptr = sorted_y.as_ptr();
+    let sz_ptr = sorted_z.as_ptr();
+    let sa_ptr = sorted_atoms.as_ptr();
+    let bs_ptr = bin_start.as_ptr();
+
     if uniform_skin {
         for i in 0..nlocal {
             let off = neighbor.neighbor_indices.len() as u32;
             neighbor.neighbor_offsets.push(off);
 
-            let my_cell = atom_cell[i] as i32;
+            let my_cell = atom_cell[i] as usize;
             let xi = atoms.pos_x[i];
             let yi = atoms.pos_y[i];
             let zi = atoms.pos_z[i];
 
             // Self cell: j > i dedup (ghost j always > i since j >= nlocal > i)
             if has_self {
-                let c = my_cell as usize;
-                let start = bin_start[c] as usize;
-                let end = bin_start[c + 1] as usize;
+                let start = unsafe { *bs_ptr.add(my_cell) } as usize;
+                let end = unsafe { *bs_ptr.add(my_cell + 1) } as usize;
                 let count = end - start;
 
                 // Phase 1: compute all r2 values (auto-vectorizable)
                 scratch_r2.resize(count, 0.0);
                 for k in 0..count {
                     let m = start + k;
-                    let dx = sorted_x[m] - xi;
-                    let dy = sorted_y[m] - yi;
-                    let dz = sorted_z[m] - zi;
-                    scratch_r2[k] = dx * dx + dy * dy + dz * dz;
+                    unsafe {
+                        let dx = *sx_ptr.add(m) - xi;
+                        let dy = *sy_ptr.add(m) - yi;
+                        let dz = *sz_ptr.add(m) - zi;
+                        *scratch_r2.get_unchecked_mut(k) = dx * dx + dy * dy + dz * dz;
+                    }
                 }
 
                 // Phase 2: collect passing neighbors (sequential)
                 for k in 0..count {
-                    let j = sorted_atoms[start + k] as usize;
+                    let j = unsafe { *sa_ptr.add(start + k) } as usize;
                     if j <= i { continue; }
-                    if scratch_r2[k] < cutoff2_uniform {
+                    if unsafe { *scratch_r2.get_unchecked(k) } < cutoff2_uniform {
                         neighbor.neighbor_indices.push(j as u32);
                     }
                 }
             }
 
-            // Other stencil cells: in single-proc forward-only (no dedup needed);
-            // in multi-proc full stencil, dedup local-local pairs with j > i
+            // Forward stencil cells: ghost layers guarantee all offsets land within grid
             for &offset in &stencil_other {
-                let nc = my_cell + offset;
-                if nc < 0 || nc >= total_cells_i32 { continue; }
-                let c = nc as usize;
-                let start = bin_start[c] as usize;
-                let end = bin_start[c + 1] as usize;
+                let c = (my_cell as i32 + offset) as usize;
+                let start = unsafe { *bs_ptr.add(c) } as usize;
+                let end = unsafe { *bs_ptr.add(c + 1) } as usize;
                 let count = end - start;
 
                 // Phase 1: compute all r2 values (auto-vectorizable)
                 scratch_r2.resize(count, 0.0);
                 for k in 0..count {
                     let m = start + k;
-                    let dx = sorted_x[m] - xi;
-                    let dy = sorted_y[m] - yi;
-                    let dz = sorted_z[m] - zi;
-                    scratch_r2[k] = dx * dx + dy * dy + dz * dz;
+                    unsafe {
+                        let dx = *sx_ptr.add(m) - xi;
+                        let dy = *sy_ptr.add(m) - yi;
+                        let dz = *sz_ptr.add(m) - zi;
+                        *scratch_r2.get_unchecked_mut(k) = dx * dx + dy * dy + dz * dz;
+                    }
                 }
 
-                // Phase 2: collect passing neighbors (sequential)
-                // Forward stencil: all atoms included (no dedup needed)
+                // Phase 2: collect passing neighbors
                 for k in 0..count {
-                    if scratch_r2[k] < cutoff2_uniform {
-                        let j = sorted_atoms[start + k] as usize;
+                    if unsafe { *scratch_r2.get_unchecked(k) } < cutoff2_uniform {
+                        let j = unsafe { *sa_ptr.add(start + k) } as usize;
                         neighbor.neighbor_indices.push(j as u32);
                     }
                 }
@@ -717,41 +724,46 @@ pub fn bin_neighbor_list(
             let off = neighbor.neighbor_indices.len() as u32;
             neighbor.neighbor_offsets.push(off);
 
-            let my_cell = atom_cell[i] as i32;
+            let my_cell = atom_cell[i] as usize;
             let xi = atoms.pos_x[i];
             let yi = atoms.pos_y[i];
             let zi = atoms.pos_z[i];
             let si = atoms.skin[i];
 
             if has_self {
-                let c = my_cell as usize;
-                for m in bin_start[c] as usize..bin_start[c + 1] as usize {
-                    let j = sorted_atoms[m] as usize;
+                let start = unsafe { *bs_ptr.add(my_cell) } as usize;
+                let end = unsafe { *bs_ptr.add(my_cell + 1) } as usize;
+                for m in start..end {
+                    let j = unsafe { *sa_ptr.add(m) } as usize;
                     if j <= i { continue; }
-                    let dx = sorted_x[m] - xi;
-                    let dy = sorted_y[m] - yi;
-                    let dz = sorted_z[m] - zi;
-                    let r2 = dx * dx + dy * dy + dz * dz;
-                    let cutoff = si + atoms.skin[j];
-                    if r2 < cutoff * cutoff * skin_fraction2 {
-                        neighbor.neighbor_indices.push(j as u32);
+                    unsafe {
+                        let dx = *sx_ptr.add(m) - xi;
+                        let dy = *sy_ptr.add(m) - yi;
+                        let dz = *sz_ptr.add(m) - zi;
+                        let r2 = dx * dx + dy * dy + dz * dz;
+                        let cutoff = si + atoms.skin[j];
+                        if r2 < cutoff * cutoff * skin_fraction2 {
+                            neighbor.neighbor_indices.push(j as u32);
+                        }
                     }
                 }
             }
 
             for &offset in &stencil_other {
-                let nc = my_cell + offset;
-                if nc < 0 || nc >= total_cells_i32 { continue; }
-                let c = nc as usize;
-                for m in bin_start[c] as usize..bin_start[c + 1] as usize {
-                    let j = sorted_atoms[m] as usize;
-                    let dx = sorted_x[m] - xi;
-                    let dy = sorted_y[m] - yi;
-                    let dz = sorted_z[m] - zi;
-                    let r2 = dx * dx + dy * dy + dz * dz;
-                    let cutoff = si + atoms.skin[j];
-                    if r2 < cutoff * cutoff * skin_fraction2 {
-                        neighbor.neighbor_indices.push(j as u32);
+                let c = (my_cell as i32 + offset) as usize;
+                let start = unsafe { *bs_ptr.add(c) } as usize;
+                let end = unsafe { *bs_ptr.add(c + 1) } as usize;
+                for m in start..end {
+                    let j = unsafe { *sa_ptr.add(m) } as usize;
+                    unsafe {
+                        let dx = *sx_ptr.add(m) - xi;
+                        let dy = *sy_ptr.add(m) - yi;
+                        let dz = *sz_ptr.add(m) - zi;
+                        let r2 = dx * dx + dy * dy + dz * dz;
+                        let cutoff = si + atoms.skin[j];
+                        if r2 < cutoff * cutoff * skin_fraction2 {
+                            neighbor.neighbor_indices.push(j as u32);
+                        }
                     }
                 }
             }
@@ -760,7 +772,8 @@ pub fn bin_neighbor_list(
     let final_off = neighbor.neighbor_indices.len() as u32;
     neighbor.neighbor_offsets.push(final_off);
 
-    // Return scratch buffers
+    // Return borrowed vectors
+    neighbor.bin_stencil_forward = stencil_other;
     neighbor.scratch_r2 = scratch_r2;
 
     // Return scratch buffers for reuse

@@ -43,11 +43,15 @@ impl Default for LJConfig {
 
 pub struct VirialAccumulator {
     pub virial_sum: f64,
+    pub active: bool,
 }
 
 impl Default for VirialAccumulator {
     fn default() -> Self {
-        VirialAccumulator { virial_sum: 0.0 }
+        VirialAccumulator {
+            virial_sum: 0.0,
+            active: true,
+        }
     }
 }
 
@@ -138,25 +142,24 @@ pub fn zero_virial(mut virial: ResMut<VirialAccumulator>) {
     virial.virial_sum = 0.0;
 }
 
+/// Kept for tests — production code uses the inlined version in `lj_force`.
+#[cfg(test)]
 #[inline(always)]
 fn lj_pair(
     atoms: &mut Atom,
-    xyz: &[f64],
     i: usize,
     j: usize,
     sigma2: f64,
     cutoff2: f64,
     eps24: f64,
     virial: &mut VirialAccumulator,
-    scale: f64,
 ) {
-    let j3 = j * 3;
-    let dx = xyz[j3] - atoms.pos_x[i];
-    let dy = xyz[j3 + 1] - atoms.pos_y[i];
-    let dz = xyz[j3 + 2] - atoms.pos_z[i];
+    let dx = atoms.pos_x[j] - atoms.pos_x[i];
+    let dy = atoms.pos_y[j] - atoms.pos_y[i];
+    let dz = atoms.pos_z[j] - atoms.pos_z[i];
     let r2 = dx * dx + dy * dy + dz * dz;
 
-    if r2 >= cutoff2 || r2 < 1e-20 {
+    if r2 >= cutoff2 {
         return;
     }
 
@@ -164,11 +167,11 @@ fn lj_pair(
     let sr6 = sr2 * sr2 * sr2;
     let f_over_r = eps24 / r2 * (2.0 * sr6 * sr6 - sr6);
 
-    virial.virial_sum += f_over_r * r2 * scale;
+    virial.virial_sum += f_over_r * r2;
 
-    let fx = f_over_r * dx * scale;
-    let fy = f_over_r * dy * scale;
-    let fz = f_over_r * dz * scale;
+    let fx = f_over_r * dx;
+    let fy = f_over_r * dy;
+    let fz = f_over_r * dz;
 
     atoms.force_x[i] -= fx;
     atoms.force_y[i] -= fy;
@@ -190,23 +193,67 @@ pub fn lj_force(
     let eps24 = 24.0 * lj.epsilon;
 
     let nlocal = atoms.nlocal as usize;
-    let total = atoms.len();
+    let compute_virial = virial.active;
+    let mut virial_sum = 0.0f64;
 
-    // Build interleaved position cache [x0,y0,z0, x1,y1,z1, ...] for cache-friendly j access
-    let mut xyz = Vec::with_capacity(total * 3);
-    for i in 0..total {
-        xyz.push(atoms.pos_x[i]);
-        xyz.push(atoms.pos_y[i]);
-        xyz.push(atoms.pos_z[i]);
+    let pos_x = atoms.pos_x.as_ptr();
+    let pos_y = atoms.pos_y.as_ptr();
+    let pos_z = atoms.pos_z.as_ptr();
+    let force_x = atoms.force_x.as_mut_ptr();
+    let force_y = atoms.force_y.as_mut_ptr();
+    let force_z = atoms.force_z.as_mut_ptr();
+    let offsets = neighbor.neighbor_offsets.as_ptr();
+    let indices = neighbor.neighbor_indices.as_ptr();
+
+    // Safety invariants:
+    // - i ranges over 0..nlocal, all valid atom indices
+    // - neighbor_offsets has length nlocal+1, so offsets[i] and offsets[i+1] are valid
+    // - k ranges over offsets[i]..offsets[i+1], bounded by neighbor_indices.len()
+    // - j comes from neighbor_indices which contains valid atom indices (0..total)
+    // - pos_x/y/z and force_x/y/z have length >= total (nlocal + nghost)
+    for i in 0..nlocal {
+        unsafe {
+            let xi = *pos_x.add(i);
+            let yi = *pos_y.add(i);
+            let zi = *pos_z.add(i);
+            let mut fix = 0.0f64;
+            let mut fiy = 0.0f64;
+            let mut fiz = 0.0f64;
+            let start = *offsets.add(i) as usize;
+            let end = *offsets.add(i + 1) as usize;
+            for k in start..end {
+                let j = *indices.add(k) as usize;
+                let dx = *pos_x.add(j) - xi;
+                let dy = *pos_y.add(j) - yi;
+                let dz = *pos_z.add(j) - zi;
+                let r2 = dx * dx + dy * dy + dz * dz;
+                if r2 >= cutoff2 {
+                    continue;
+                }
+                let sr2 = sigma2 / r2;
+                let sr6 = sr2 * sr2 * sr2;
+                let f_over_r = eps24 / r2 * (2.0 * sr6 * sr6 - sr6);
+                if compute_virial {
+                    virial_sum += f_over_r * r2;
+                }
+                let fx = f_over_r * dx;
+                let fy = f_over_r * dy;
+                let fz = f_over_r * dz;
+                fix -= fx;
+                fiy -= fy;
+                fiz -= fz;
+                *force_x.add(j) += fx;
+                *force_y.add(j) += fy;
+                *force_z.add(j) += fz;
+            }
+            *force_x.add(i) += fix;
+            *force_y.add(i) += fiy;
+            *force_z.add(i) += fiz;
+        }
     }
 
-    for i in 0..nlocal {
-        for k in neighbor.neighbor_offsets[i] as usize..neighbor.neighbor_offsets[i + 1] as usize {
-            let j = neighbor.neighbor_indices[k] as usize;
-            // Forward stencil guarantees each pair is found exactly once.
-            // Full force applied to both i and j (ghost forces returned via reverse_comm).
-            lj_pair(&mut atoms, &xyz, i, j, sigma2, cutoff2, eps24, &mut virial, 1.0);
-        }
+    if compute_virial {
+        virial.virial_sum = virial_sum;
     }
 }
 
@@ -273,6 +320,7 @@ mod tests {
         neighbor.neighbor_indices = vec![1];        // atom 0's neighbor is atom 1
         app.add_resource(neighbor);
 
+        app.add_update_system(zero_virial, ScheduleSet::PostInitialIntegration);
         app.add_update_system(lj_force, ScheduleSet::Force);
         app.organize_systems();
         app

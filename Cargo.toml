@@ -46,6 +46,7 @@ path = "examples/lj_argon/main.rs"
 name = "lj_performance"
 path = "examples/lj_performance/main.rs"
 
+
 [profile.release]
 opt-level = 3
 lto = "fat"
