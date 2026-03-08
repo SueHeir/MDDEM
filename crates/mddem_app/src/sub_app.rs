@@ -1,34 +1,26 @@
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::HashSet,
 };
-
-use crate::Plugin;
 
 use mddem_scheduler::{
     IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetupSet, Scheduler, System,
 };
 
+/// Holds one [`Scheduler`] instance with its resource store and system lists.
 pub struct SubApp {
     pub(crate) scheduler: Scheduler,
-    /// List of plugins that have been added.
-    pub(crate) plugin_registry: Vec<Box<dyn Plugin>>,
     /// The names of plugins that have been added to this app. (used to track duplicates and
     /// already-registered plugins)
     pub(crate) plugin_names: HashSet<String>,
-    /// Panics if an update is attempted while plugins are building.
-    pub(crate) plugin_build_depth: usize,
 }
 
 impl Default for SubApp {
     fn default() -> Self {
-        let scheduler = Scheduler::default();
         Self {
-            scheduler,
-            plugin_registry: Vec::default(),
+            scheduler: Scheduler::default(),
             plugin_names: HashSet::default(),
-            plugin_build_depth: 0,
         }
     }
 }
@@ -92,6 +84,4 @@ impl SubApp {
 pub struct SubApps {
     /// The primary sub-app that contains the "main" world.
     pub main: SubApp,
-    /// Other, labeled sub-apps.
-    pub sub_apps: HashMap<String, SubApp>,
 }

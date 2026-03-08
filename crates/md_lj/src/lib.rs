@@ -1,3 +1,5 @@
+//! Lennard-Jones 12-6 pair force with virial accumulator and tail corrections.
+
 use std::f64::consts::PI;
 
 use mddem_app::prelude::*;
@@ -20,11 +22,16 @@ fn default_cutoff() -> f64 {
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+/// TOML `[lj]` — Lennard-Jones potential parameters.
 pub struct LJConfig {
+    /// Well depth (energy units).
     #[serde(default = "default_epsilon")]
     pub epsilon: f64,
+    /// Particle diameter (length units).
     #[serde(default = "default_sigma")]
     pub sigma: f64,
+    /// Cutoff distance in units of sigma.
     #[serde(default = "default_cutoff")]
     pub cutoff: f64,
 }
@@ -41,6 +48,7 @@ impl Default for LJConfig {
 
 // ── Resources ───────────────────────────────────────────────────────────────
 
+/// Accumulates pairwise virial contributions for pressure calculation.
 pub struct VirialAccumulator {
     pub virial_sum: f64,
     pub active: bool,
@@ -55,6 +63,7 @@ impl Default for VirialAccumulator {
     }
 }
 
+/// Long-range tail corrections for energy and pressure beyond the LJ cutoff.
 pub struct LJTailCorrections {
     pub energy_tail: f64,
     pub pressure_tail: f64,
@@ -71,6 +80,7 @@ impl Default for LJTailCorrections {
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
+/// Registers LJ 12-6 pair force, virial accumulator, and tail correction systems.
 pub struct LJForcePlugin;
 
 impl Plugin for LJForcePlugin {
@@ -142,45 +152,6 @@ pub fn zero_virial(mut virial: ResMut<VirialAccumulator>) {
     virial.virial_sum = 0.0;
 }
 
-/// Kept for tests — production code uses the inlined version in `lj_force`.
-#[cfg(test)]
-#[inline(always)]
-fn lj_pair(
-    atoms: &mut Atom,
-    i: usize,
-    j: usize,
-    sigma2: f64,
-    cutoff2: f64,
-    eps24: f64,
-    virial: &mut VirialAccumulator,
-) {
-    let dx = atoms.pos_x[j] - atoms.pos_x[i];
-    let dy = atoms.pos_y[j] - atoms.pos_y[i];
-    let dz = atoms.pos_z[j] - atoms.pos_z[i];
-    let r2 = dx * dx + dy * dy + dz * dz;
-
-    if r2 >= cutoff2 {
-        return;
-    }
-
-    let sr2 = sigma2 / r2;
-    let sr6 = sr2 * sr2 * sr2;
-    let f_over_r = eps24 / r2 * (2.0 * sr6 * sr6 - sr6);
-
-    virial.virial_sum += f_over_r * r2;
-
-    let fx = f_over_r * dx;
-    let fy = f_over_r * dy;
-    let fz = f_over_r * dz;
-
-    atoms.force_x[i] -= fx;
-    atoms.force_y[i] -= fy;
-    atoms.force_z[i] -= fz;
-    atoms.force_x[j] += fx;
-    atoms.force_y[j] += fy;
-    atoms.force_z[j] += fz;
-}
-
 pub fn lj_force(
     mut atoms: ResMut<Atom>,
     neighbor: Res<Neighbor>,
@@ -196,60 +167,34 @@ pub fn lj_force(
     let compute_virial = virial.active;
     let mut virial_sum = 0.0f64;
 
-    let pos_x = atoms.pos_x.as_ptr();
-    let pos_y = atoms.pos_y.as_ptr();
-    let pos_z = atoms.pos_z.as_ptr();
-    let force_x = atoms.force_x.as_mut_ptr();
-    let force_y = atoms.force_y.as_mut_ptr();
-    let force_z = atoms.force_z.as_mut_ptr();
-    let offsets = neighbor.neighbor_offsets.as_ptr();
-    let indices = neighbor.neighbor_indices.as_ptr();
+    for (i, j) in neighbor.pairs(nlocal) {
+        let dx = atoms.pos_x[j] - atoms.pos_x[i];
+        let dy = atoms.pos_y[j] - atoms.pos_y[i];
+        let dz = atoms.pos_z[j] - atoms.pos_z[i];
+        let r2 = dx * dx + dy * dy + dz * dz;
 
-    // Safety invariants:
-    // - i ranges over 0..nlocal, all valid atom indices
-    // - neighbor_offsets has length nlocal+1, so offsets[i] and offsets[i+1] are valid
-    // - k ranges over offsets[i]..offsets[i+1], bounded by neighbor_indices.len()
-    // - j comes from neighbor_indices which contains valid atom indices (0..total)
-    // - pos_x/y/z and force_x/y/z have length >= total (nlocal + nghost)
-    for i in 0..nlocal {
-        unsafe {
-            let xi = *pos_x.add(i);
-            let yi = *pos_y.add(i);
-            let zi = *pos_z.add(i);
-            let mut fix = 0.0f64;
-            let mut fiy = 0.0f64;
-            let mut fiz = 0.0f64;
-            let start = *offsets.add(i) as usize;
-            let end = *offsets.add(i + 1) as usize;
-            for k in start..end {
-                let j = *indices.add(k) as usize;
-                let dx = *pos_x.add(j) - xi;
-                let dy = *pos_y.add(j) - yi;
-                let dz = *pos_z.add(j) - zi;
-                let r2 = dx * dx + dy * dy + dz * dz;
-                if r2 >= cutoff2 {
-                    continue;
-                }
-                let sr2 = sigma2 / r2;
-                let sr6 = sr2 * sr2 * sr2;
-                let f_over_r = eps24 / r2 * (2.0 * sr6 * sr6 - sr6);
-                if compute_virial {
-                    virial_sum += f_over_r * r2;
-                }
-                let fx = f_over_r * dx;
-                let fy = f_over_r * dy;
-                let fz = f_over_r * dz;
-                fix -= fx;
-                fiy -= fy;
-                fiz -= fz;
-                *force_x.add(j) += fx;
-                *force_y.add(j) += fy;
-                *force_z.add(j) += fz;
-            }
-            *force_x.add(i) += fix;
-            *force_y.add(i) += fiy;
-            *force_z.add(i) += fiz;
+        if r2 >= cutoff2 {
+            continue;
         }
+
+        let sr2 = sigma2 / r2;
+        let sr6 = sr2 * sr2 * sr2;
+        let f_over_r = eps24 / r2 * (2.0 * sr6 * sr6 - sr6);
+
+        if compute_virial {
+            virial_sum += f_over_r * r2;
+        }
+
+        let fx = f_over_r * dx;
+        let fy = f_over_r * dy;
+        let fz = f_over_r * dz;
+
+        atoms.force_x[i] -= fx;
+        atoms.force_y[i] -= fy;
+        atoms.force_z[i] -= fz;
+        atoms.force_x[j] += fx;
+        atoms.force_y[j] += fy;
+        atoms.force_z[j] += fz;
     }
 
     if compute_virial {
@@ -263,35 +208,8 @@ pub fn lj_force(
 mod tests {
     use super::*;
     fn push_atom(atom: &mut Atom, tag: u32, x: f64, y: f64, z: f64, mass: f64) {
-        use nalgebra::{Quaternion, UnitQuaternion};
-        atom.tag.push(tag);
-        atom.atom_type.push(0);
-        atom.origin_index.push(0);
-        atom.pos_x.push(x);
-        atom.pos_y.push(y);
-        atom.pos_z.push(z);
-        atom.vel_x.push(0.0);
-        atom.vel_y.push(0.0);
-        atom.vel_z.push(0.0);
-        atom.force_x.push(0.0);
-        atom.force_y.push(0.0);
-        atom.force_z.push(0.0);
-        atom.torque_x.push(0.0);
-        atom.torque_y.push(0.0);
-        atom.torque_z.push(0.0);
-        atom.omega_x.push(0.0);
-        atom.omega_y.push(0.0);
-        atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0);
-        atom.ang_mom_y.push(0.0);
-        atom.ang_mom_z.push(0.0);
-        atom.mass.push(mass);
-        atom.skin.push(0.5);
-        atom.is_ghost.push(false);
-        atom.has_ghost.push(false);
-        atom.is_collision.push(false);
-        atom.quaterion
-            .push(UnitQuaternion::from_quaternion(Quaternion::identity()));
+        use nalgebra::Vector3;
+        atom.push_test_atom(tag, Vector3::new(x, y, z), 0.5, mass);
     }
 
     fn make_two_atom_app(distance: f64) -> App {

@@ -1,7 +1,10 @@
-use std::any::{Any, TypeId};
+//! DEM atom properties: named material types, per-pair mixing tables, and per-atom radius/density.
+
+use std::any::TypeId;
 use std::f64::consts::PI;
 
 use mddem_app::prelude::*;
+use mddem_derive::AtomData;
 use serde::Deserialize;
 
 use mddem_core::{AtomData, AtomDataRegistry, AtomPlugin, Config};
@@ -13,15 +16,23 @@ fn default_friction() -> f64 {
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+/// A single material definition from `[[dem.materials]]`.
 pub struct MaterialConfig {
+    /// Material name, referenced by particle insert blocks.
     pub name: String,
+    /// Young's modulus (Pa).
     pub youngs_mod: f64,
+    /// Poisson's ratio (dimensionless, 0–0.5).
     pub poisson_ratio: f64,
+    /// Coefficient of restitution (0–1).
     pub restitution: f64,
+    /// Coulomb friction coefficient.
     #[serde(default = "default_friction")]
     pub friction: f64,
 }
 
+/// TOML `[dem]` — top-level DEM configuration containing material definitions.
 #[derive(Deserialize, Clone, Default)]
 pub struct DemConfig {
     pub materials: Option<Vec<MaterialConfig>>,
@@ -29,6 +40,7 @@ pub struct DemConfig {
 
 // ── MaterialTable — per-material and per-pair precomputed properties ────────
 
+/// Per-material properties and per-pair precomputed mixing tables (geometric-mean).
 pub struct MaterialTable {
     pub names: Vec<String>,
     pub youngs_mod: Vec<f64>,
@@ -99,6 +111,8 @@ impl MaterialTable {
 
 // ── DemAtom per-atom data ────────────────────────────────────────────────────
 
+/// Per-atom DEM extension data: particle radius and density.
+#[derive(AtomData)]
 pub struct DemAtom {
     pub radius: Vec<f64>,
     pub density: Vec<f64>,
@@ -116,36 +130,6 @@ impl DemAtom {
             radius: Vec::new(),
             density: Vec::new(),
         }
-    }
-}
-
-impl AtomData for DemAtom {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn truncate(&mut self, n: usize) {
-        self.radius.truncate(n);
-        self.density.truncate(n);
-    }
-
-    fn swap_remove(&mut self, i: usize) {
-        self.radius.swap_remove(i);
-        self.density.swap_remove(i);
-    }
-
-    fn pack(&self, i: usize, buf: &mut Vec<f64>) {
-        buf.push(self.radius[i]);
-        buf.push(self.density[i]);
-    }
-
-    fn unpack(&mut self, buf: &[f64]) -> usize {
-        self.radius.push(buf[0]);
-        self.density.push(buf[1]);
-        2
     }
 }
 
@@ -214,6 +198,7 @@ mod tests {
 
 // ── Plugin ───────────────────────────────────────────────────────────────────
 
+/// Registers [`DemAtom`] extension and [`MaterialTable`] from `[[dem.materials]]` config.
 pub struct DemAtomPlugin;
 
 impl Plugin for DemAtomPlugin {

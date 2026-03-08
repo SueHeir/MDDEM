@@ -1,3 +1,6 @@
+//! Measurement tools: radial distribution function (RDF), mean square displacement (MSD),
+//! and virial pressure.
+
 use std::f64::consts::PI;
 use std::fs;
 use std::io::Write;
@@ -29,15 +32,22 @@ fn default_output_interval() -> usize {
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+/// TOML `[measure]` — RDF, MSD, and pressure measurement settings.
 pub struct MeasureConfig {
+    /// Number of histogram bins for RDF.
     #[serde(default = "default_rdf_bins")]
     pub rdf_bins: usize,
+    /// RDF cutoff distance.
     #[serde(default = "default_rdf_cutoff")]
     pub rdf_cutoff: f64,
+    /// Sample RDF every N steps.
     #[serde(default = "default_rdf_interval")]
     pub rdf_interval: usize,
+    /// Sample MSD every N steps.
     #[serde(default = "default_msd_interval")]
     pub msd_interval: usize,
+    /// Write measurement output files every N steps.
     #[serde(default = "default_output_interval")]
     pub output_interval: usize,
 }
@@ -56,6 +66,7 @@ impl Default for MeasureConfig {
 
 // ── Resources ───────────────────────────────────────────────────────────────
 
+/// Accumulates radial distribution function histogram samples.
 pub struct RdfAccumulator {
     pub bins: Vec<f64>,
     pub n_samples: usize,
@@ -74,6 +85,7 @@ impl RdfAccumulator {
     }
 }
 
+/// Tracks reference positions for mean square displacement calculation.
 pub struct MsdTracker {
     pub ref_x: Vec<f64>,
     pub ref_y: Vec<f64>,
@@ -120,6 +132,7 @@ pub struct PressureHistory {
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
+/// Registers RDF, MSD, and virial pressure measurement systems.
 pub struct MeasurePlugin;
 
 impl Plugin for MeasurePlugin {

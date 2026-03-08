@@ -53,3 +53,11 @@ mpiexec -n 4 ./target/release/examples/hopper examples/hopper/config.toml
 | Blocker wall | z = 0.015 m (removed when KE < 1e-8 J) |
 | Total steps | 150,000, thermo 500 |
 | KE check | Every 100 steps after step 1000 |
+
+## Validation
+
+`validate.py` checks physics sanity: no NaN/Inf, non-negative temperature, bounded energy (no explosion). Run via `./validate.sh` or directly:
+
+```bash
+python3 examples/hopper/validate.py
+```

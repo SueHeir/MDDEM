@@ -8,7 +8,7 @@ Per-atom DEM data and material property management for [MDDEM](https://github.co
 - `radius: Vec<f64>` — particle radius
 - `density: Vec<f64>` — particle density
 
-Implements the `AtomData` trait for automatic MPI pack/unpack during ghost atom communication.
+Implements the `AtomData` trait (via `#[derive(AtomData)]`) for automatic MPI pack/unpack, bin-sort reordering, and restart serialization.
 
 ## MaterialTable
 

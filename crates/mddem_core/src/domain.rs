@@ -13,7 +13,10 @@ fn default_true() -> bool {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+/// TOML `[domain]` — simulation box boundaries and periodic flags.
 pub struct DomainConfig {
+    /// Lower x boundary of the simulation box.
     #[serde(default)]
     pub x_low: f64,
     #[serde(default = "default_one_f64")]
@@ -50,6 +53,7 @@ impl Default for DomainConfig {
     }
 }
 
+/// Simulation box geometry: global boundaries, sub-domain bounds, and periodicity.
 pub struct Domain {
     pub boundaries_low: Vector3<f64>,
     pub boundaries_high: Vector3<f64>,
@@ -87,10 +91,12 @@ impl Domain {
 
 // ── DomainDecomposition trait ────────────────────────────────────────────────
 
+/// Computes sub-domain bounds from config and processor grid.
 pub trait DomainDecomposition: Send + Sync + 'static {
     fn decompose(&self, config: &DomainConfig, comm: &dyn CommBackend) -> Domain;
 }
 
+/// Uniform Cartesian grid decomposition (default).
 pub struct CartesianDecomposition;
 
 impl DomainDecomposition for CartesianDecomposition {
@@ -135,6 +141,7 @@ impl DomainDecomposition for CartesianDecomposition {
 
 // ── Plugin ───────────────────────────────────────────────────────────────────
 
+/// Wraps a [`DomainDecomposition`] implementation, used as `Res<DecompositionResource>`.
 pub struct DecompositionResource(pub Box<dyn DomainDecomposition>);
 
 impl std::ops::Deref for DecompositionResource {
@@ -144,6 +151,7 @@ impl std::ops::Deref for DecompositionResource {
     }
 }
 
+/// Registers [`Domain`] resource and periodic boundary condition system.
 pub struct DomainPlugin {
     decomposition: std::sync::Mutex<Option<Box<dyn DomainDecomposition>>>,
 }
@@ -218,58 +226,42 @@ pub fn domain_read_input(
     *domain = decomp.decompose(&config, &**comm);
 }
 
-pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataRegistry>) {
-    let all_periodic = domain.is_periodic.x && domain.is_periodic.y && domain.is_periodic.z;
+/// Wrap a position into [low, low+size) with periodic boundaries.
+#[inline]
+fn wrap_periodic(pos: f64, low: f64, size: f64) -> f64 {
+    ((pos - low) % size + size) % size + low
+}
 
-    if all_periodic {
-        // Fast path: fully periodic, no removals possible — forward iteration
-        let low_x = domain.boundaries_low.x;
-        let low_y = domain.boundaries_low.y;
-        let low_z = domain.boundaries_low.z;
-        let sx = domain.size.x;
-        let sy = domain.size.y;
-        let sz = domain.size.z;
+pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataRegistry>) {
+    let low = domain.boundaries_low;
+    let high = domain.boundaries_high;
+    let size = domain.size;
+    let periodic = domain.is_periodic;
+
+    if periodic.x && periodic.y && periodic.z {
+        // Fast path: fully periodic, no removals possible
         for i in 0..atoms.len() {
-            atoms.pos_x[i] = ((atoms.pos_x[i] - low_x) % sx + sx) % sx + low_x;
-            atoms.pos_y[i] = ((atoms.pos_y[i] - low_y) % sy + sy) % sy + low_y;
-            atoms.pos_z[i] = ((atoms.pos_z[i] - low_z) % sz + sz) % sz + low_z;
+            atoms.pos_x[i] = wrap_periodic(atoms.pos_x[i], low.x, size.x);
+            atoms.pos_y[i] = wrap_periodic(atoms.pos_y[i], low.y, size.y);
+            atoms.pos_z[i] = wrap_periodic(atoms.pos_z[i], low.z, size.z);
         }
     } else {
         // Slow path: non-periodic axes may require removal
-        for i in (0..atoms.len()).rev() {
-            if domain.is_periodic.x {
-                let low = domain.boundaries_low.x;
-                let s = domain.size.x;
-                atoms.pos_x[i] = ((atoms.pos_x[i] - low) % s + s) % s + low;
-            } else if atoms.pos_x[i] < domain.boundaries_low.x
-                || atoms.pos_x[i] >= domain.boundaries_high.x
-            {
-                atoms.swap_remove(i);
-                registry.swap_remove_all(i);
-                continue;
+        'outer: for i in (0..atoms.len()).rev() {
+            macro_rules! handle_dim {
+                ($pos:expr, $is_periodic:expr, $lo:expr, $hi:expr, $sz:expr) => {
+                    if $is_periodic {
+                        $pos = wrap_periodic($pos, $lo, $sz);
+                    } else if $pos < $lo || $pos >= $hi {
+                        atoms.swap_remove(i);
+                        registry.swap_remove_all(i);
+                        continue 'outer;
+                    }
+                };
             }
-            if domain.is_periodic.y {
-                let low = domain.boundaries_low.y;
-                let s = domain.size.y;
-                atoms.pos_y[i] = ((atoms.pos_y[i] - low) % s + s) % s + low;
-            } else if atoms.pos_y[i] < domain.boundaries_low.y
-                || atoms.pos_y[i] >= domain.boundaries_high.y
-            {
-                atoms.swap_remove(i);
-                registry.swap_remove_all(i);
-                continue;
-            }
-            if domain.is_periodic.z {
-                let low = domain.boundaries_low.z;
-                let s = domain.size.z;
-                atoms.pos_z[i] = ((atoms.pos_z[i] - low) % s + s) % s + low;
-            } else if atoms.pos_z[i] < domain.boundaries_low.z
-                || atoms.pos_z[i] >= domain.boundaries_high.z
-            {
-                atoms.swap_remove(i);
-                registry.swap_remove_all(i);
-                continue;
-            }
+            handle_dim!(atoms.pos_x[i], periodic.x, low.x, high.x, size.x);
+            handle_dim!(atoms.pos_y[i], periodic.y, low.y, high.y, size.y);
+            handle_dim!(atoms.pos_z[i], periodic.z, low.z, high.z, size.z);
         }
     }
 }

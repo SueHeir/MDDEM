@@ -1,4 +1,4 @@
-# Benchmark: Haff's Cooling Law
+# Granular Gas Benchmark: Haff's Cooling Law
 
 Granular gas benchmark validating energy dissipation against Haff's cooling law.
 
@@ -18,6 +18,8 @@ The cooling curve should span ~2 decades in temperature and ~2 decades in time, 
 - `config.toml` -- MDDEM input
 - `in.lammps` -- Equivalent LAMMPS input using `pair_style granular` with `hertz/material`
 - `haff_analysis.py` -- Analysis script (reads `GranularTemp.txt`, produces `haff_comparison.png`)
+- `validate.py` -- Automated physics validation (no NaN, cooling trend, no energy explosion)
+- `validate_config.toml` / `validate_long_config.toml` -- Short/long configs for `validate.sh`
 
 ## Parameters
 
@@ -39,17 +41,17 @@ The cooling curve should span ~2 decades in temperature and ~2 decades in time, 
 
 ```bash
 # Single-process
-cargo run --example benchmark -- examples/benchmark/config.toml
+cargo run --example granular_gas_benchmark -- examples/granular_gas_benchmark/config.toml
 
 # With MPI
 cargo build-examples
-mpiexec -n 4 ./target/release/examples/benchmark examples/benchmark/config.toml
+mpiexec -n 4 ./target/release/examples/granular_gas_benchmark examples/granular_gas_benchmark/config.toml
 
 # LAMMPS (for comparison)
-mpirun -n 4 lmp -in ./examples/benchmark/in.lammps
+mpirun -n 4 lmp -in ./examples/granular_gas_benchmark/in.lammps
 
 # Analyse results (run from this directory)
-cd examples/benchmark
+cd examples/granular_gas_benchmark
 python haff_analysis.py
 ```
 

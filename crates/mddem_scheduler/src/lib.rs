@@ -1,3 +1,8 @@
+//! Dependency-injection scheduler with [`Res`]/[`ResMut`] resource access and ordered system execution.
+//!
+//! Systems are plain functions whose parameters implement [`SystemParam`]. The scheduler resolves
+//! resource indices at startup and executes systems in [`ScheduleSet`] order each timestep.
+
 #![allow(clippy::too_many_arguments)]
 // ANCHOR: All
 use std::any::{Any, TypeId};
@@ -121,6 +126,7 @@ macro_rules! impl_into_condition {
 // ─── SystemParam ──────────────────────────────────────────────────────────────
 
 // ANCHOR: SystemParam
+/// Types that can be injected as parameters into system functions.
 pub trait SystemParam {
     type Item<'new>;
     fn retrieve<'r>(
@@ -175,6 +181,7 @@ impl<'res, T: 'static> SystemParam for ResMut<'res, T> {
 // ─── Res / ResMut / Local ─────────────────────────────────────────────────────
 
 // ANCHOR: Res
+/// Shared immutable reference to resource `T`, injected into systems.
 pub struct Res<'a, T: 'static> {
     value: Ref<'a, Box<dyn Any>>,
     _marker: PhantomData<&'a T>,
@@ -189,6 +196,7 @@ impl<T: 'static> Deref for Res<'_, T> {
 }
 
 // ANCHOR: ResMut
+/// Exclusive mutable reference to resource `T`, injected into systems.
 pub struct ResMut<'a, T: 'static> {
     value: RefMut<'a, Box<dyn Any>>,
     _marker: PhantomData<&'a mut T>,
@@ -252,6 +260,7 @@ impl<T: Default + 'static> DerefMut for Local<'_, T> {
 // ─── System trait & FunctionSystem ───────────────────────────────────────────
 
 // ANCHOR: System
+/// A runnable unit of work that receives resources via dependency injection.
 pub trait System {
     fn run(&mut self, resources: &[RefCell<Box<dyn Any>>]);
     fn prepare(&mut self, _index: &HashMap<TypeId, usize>) {}
@@ -514,6 +523,7 @@ pub struct StoredSystemEntry {
 
 // ─── Schedule sets ────────────────────────────────────────────────────────────
 
+/// Execution phase within each timestep (run loop).
 #[derive(Debug)]
 pub enum ScheduleSet {
     Setup,
@@ -532,6 +542,7 @@ pub enum ScheduleSet {
     PostFinalIntegration,
 }
 
+/// Execution phase during one-time setup (before the run loop).
 #[derive(Debug)]
 pub enum ScheduleSetupSet {
     PreSetup,
@@ -661,6 +672,7 @@ fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, ScheduleSet)>) {
 // ─── Scheduler ────────────────────────────────────────────────────────────────
 
 // ANCHOR: Scheduler
+/// Manages system registration, resource storage, ordering, and per-step execution.
 pub struct Scheduler {
     setup_systems: Vec<(StoredSystemEntry, ScheduleSetupSet)>,
     update_systems: Vec<(StoredSystemEntry, ScheduleSet)>,
@@ -1112,6 +1124,7 @@ pub enum SchedulerState {
     End,
 }
 
+/// Tracks the current run stage index and scheduler state (Setup/Run/End).
 pub struct SchedulerManager {
     pub state: SchedulerState,
     pub index: usize,

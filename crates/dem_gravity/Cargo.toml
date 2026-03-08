@@ -10,8 +10,8 @@ keywords = ["dem", "gravity", "simulation"]
 categories = ["simulation", "science"]
 
 [dependencies]
-mddem_core = { path = "../mddem_core", version = "0.1.0", default-features = false }
-mddem_app = { path = "../mddem_app", version = "0.1.0" }
-mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.0" }
+mddem_core = { path = "../mddem_core", version = "0.1.1", default-features = false }
+mddem_app = { path = "../mddem_app", version = "0.1.1" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.1" }
 serde = { version = "1", features = ["derive"] }
 nalgebra = "0.33"

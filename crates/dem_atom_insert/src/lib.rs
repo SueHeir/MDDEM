@@ -1,3 +1,5 @@
+//! Random particle insertion for DEM simulations from `[[particles.insert]]` config blocks.
+
 use std::f64::consts::PI;
 
 use mddem_app::prelude::*;
@@ -13,6 +15,8 @@ use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, Domain};
 // ── Config structs ──────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+/// A single particle insertion block from `[[particles.insert]]`.
 pub struct InsertConfig {
     pub material: String,
     pub count: u32,
@@ -30,6 +34,7 @@ pub struct InsertConfig {
     pub region_z_high: Option<f64>,
 }
 
+/// TOML `[particles]` — contains a list of insertion blocks.
 #[derive(Deserialize, Clone, Default)]
 pub struct ParticlesConfig {
     pub insert: Option<Vec<InsertConfig>>,
@@ -37,6 +42,7 @@ pub struct ParticlesConfig {
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
+/// Inserts DEM particles at setup time based on `[[particles.insert]]` config blocks.
 pub struct DemAtomInsertPlugin;
 
 impl Plugin for DemAtomInsertPlugin {
@@ -88,20 +94,22 @@ pub fn dem_insert_atoms(
     // Insert particles per insert block
     if let Some(ref inserts) = particles_config.insert {
         if comm.rank() == 0 {
-            let mut dem_data = registry.get_mut::<DemAtom>().unwrap();
+            let mut dem_data = registry.expect_mut::<DemAtom>("dem_insert_atoms");
             let mut rng = rand::rng();
             let mut max_tag = atom.get_max_tag();
 
             for insert in inserts {
                 // Find material config by name
-                let mat_idx = material_table
-                    .find_material(&insert.material)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "Unknown material '{}' in [[particles.insert]]",
-                            insert.material
-                        )
-                    });
+                let mat_idx = match material_table.find_material(&insert.material) {
+                    Some(idx) => idx,
+                    None => {
+                        eprintln!(
+                            "ERROR: Unknown material '{}' in [[particles.insert]]. Available: {:?}",
+                            insert.material, material_table.names
+                        );
+                        std::process::exit(1);
+                    }
+                };
 
                 let radius = insert.radius;
                 let density = insert.density;
@@ -145,15 +153,14 @@ pub fn dem_insert_atoms(
                         atom.skin.push(radius);
                         atom.is_collision.push(false);
                         atom.is_ghost.push(false);
-                        atom.has_ghost.push(false);
-                        max_tag += 1;
+                                                max_tag += 1;
                         atom.pos_x.push(x);
                         atom.pos_y.push(y);
                         atom.pos_z.push(z);
                         atom.vel_x.push(0.0);
                         atom.vel_y.push(0.0);
                         atom.vel_z.push(0.0);
-                        atom.quaterion.push(UnitQuaternion::identity());
+                        atom.quaternion.push(UnitQuaternion::identity());
                         atom.omega_x.push(0.0);
                         atom.omega_y.push(0.0);
                         atom.omega_z.push(0.0);
@@ -178,6 +185,10 @@ pub fn dem_insert_atoms(
                 let total_len = atom.vel_x.len();
                 let start = total_len - insert.count as usize;
                 if let Some(rand_vel) = insert.velocity {
+                    if rand_vel < 0.0 {
+                        eprintln!("ERROR: velocity in [[particles.insert]] must be non-negative, got {}", rand_vel);
+                        std::process::exit(1);
+                    }
                     let normal = Normal::new(0.0, rand_vel).unwrap();
                     for i in start..total_len {
                         atom.vel_x[i] = normal.sample(&mut rng);
@@ -211,7 +222,7 @@ fn calculate_delta_time(
     if scheduler_manager.index != 0 {
         return;
     }
-    let dem = registry.get::<DemAtom>().unwrap();
+    let dem = registry.expect::<DemAtom>("calculate_delta_time");
     let mut dt: f64 = 0.001;
 
     for i in 0..dem.radius.len() {

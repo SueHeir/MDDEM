@@ -5,6 +5,7 @@ use mddem_app::prelude::*;
 mod toml_input;
 pub use toml_input::Config;
 
+/// CLI arguments: input filename and output directory path.
 pub struct Input {
     pub filename: String,
     pub output_dir: Option<String>,

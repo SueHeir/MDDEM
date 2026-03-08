@@ -4,15 +4,10 @@ use mddem_scheduler::{apply_state_transitions, CurrentState, NextState, Schedule
 use crate::App;
 use core::any::Any;
 
+/// A self-contained module that registers resources and systems with an [`App`].
 pub trait Plugin: Downcast + Any + Send + Sync {
     /// Configures the [`App`] to which this plugin is added.
     fn build(&self, app: &mut App);
-
-    fn ready(&self, _app: &App) -> bool {
-        true
-    }
-    fn finish(&self, _app: &mut App) {}
-    fn cleanup(&self, _app: &mut App) {}
 
     fn name(&self) -> &str {
         core::any::type_name::<Self>()
@@ -39,15 +34,6 @@ impl<T: Fn(&mut App) + Send + Sync + 'static> Plugin for T {
     }
 }
 
-/// Plugins state in the application
-#[derive(PartialEq, Eq, Debug, Clone, Copy, PartialOrd, Ord)]
-pub enum PluginsState {
-    Adding,
-    Ready,
-    Finished,
-    Cleaned,
-}
-
 // ─── PluginGroup ──────────────────────────────────────────────────────────────
 
 /// A collection of plugins that can be added to an [`App`] as a single unit.
@@ -69,9 +55,6 @@ pub enum PluginsState {
 /// ```
 pub trait PluginGroup: Sized {
     fn build(self) -> PluginGroupBuilder;
-    fn name() -> &'static str {
-        core::any::type_name::<Self>()
-    }
 }
 
 /// Builder for a [`PluginGroup`]. Add plugins in order; they will be registered in that order.

@@ -1,20 +1,104 @@
-use std::collections::{HashMap, HashSet};
+use std::any::{Any, TypeId};
+use std::collections::HashSet;
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use nalgebra::Vector3;
 
 use dem_atom::{DemAtom, MaterialTable};
-use mddem_core::{Atom, AtomDataRegistry};
+use mddem_core::{Atom, AtomData, AtomDataRegistry};
 use mddem_neighbor::Neighbor;
 
 // sqrt(5/3) — damping coefficient constant shared with Hertz normal model
 const SQRT_5_3: f64 = 0.9128709291752768;
 
+// ── ContactHistoryStore ─────────────────────────────────────────────────────
+
+/// Stores per-atom tangential spring displacement history for Mindlin contacts.
+pub struct ContactHistoryStore {
+    /// Per-atom list of (partner_tag, spring_displacement).
+    /// The spring displacement is stored in canonical form (lower tag's perspective).
+    pub contacts: Vec<Vec<(u32, Vector3<f64>)>>,
+}
+
+impl ContactHistoryStore {
+    pub fn new() -> Self {
+        ContactHistoryStore {
+            contacts: Vec::new(),
+        }
+    }
+}
+
+impl AtomData for ContactHistoryStore {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn truncate(&mut self, n: usize) {
+        // Grow if needed (atoms may have been inserted without going through unpack)
+        self.contacts.resize_with(n, Vec::new);
+        self.contacts.truncate(n);
+    }
+
+    fn swap_remove(&mut self, i: usize) {
+        if i < self.contacts.len() {
+            self.contacts.swap_remove(i);
+        }
+    }
+
+    fn apply_permutation(&mut self, perm: &[usize], n: usize) {
+        let new_contacts: Vec<Vec<(u32, Vector3<f64>)>> =
+            perm.iter().map(|&p| self.contacts[p].clone()).collect();
+        self.contacts[..n].clone_from_slice(&new_contacts);
+    }
+
+    fn pack(&self, i: usize, buf: &mut Vec<f64>) {
+        if i < self.contacts.len() {
+            let list = &self.contacts[i];
+            buf.push(list.len() as f64);
+            for &(tag, ref s) in list {
+                buf.push(tag as f64);
+                buf.push(s.x);
+                buf.push(s.y);
+                buf.push(s.z);
+            }
+        } else {
+            buf.push(0.0); // no contacts
+        }
+    }
+
+    fn unpack(&mut self, buf: &[f64]) -> usize {
+        let count = buf[0] as usize;
+        let mut list = Vec::with_capacity(count);
+        let mut pos = 1;
+        for _ in 0..count {
+            let tag = buf[pos] as u32;
+            let s = Vector3::new(buf[pos + 1], buf[pos + 2], buf[pos + 3]);
+            list.push((tag, s));
+            pos += 4;
+        }
+        self.contacts.push(list);
+        pos
+    }
+}
+
+// ── Plugin ──────────────────────────────────────────────────────────────────
+
+/// Mindlin spring-history tangential force with Coulomb friction cap and torque accumulation.
 pub struct MindlinTangentialForcePlugin;
 
 impl Plugin for MindlinTangentialForcePlugin {
     fn build(&self, app: &mut App) {
+        if let Some(registry_option) = app.get_mut_resource(TypeId::of::<AtomDataRegistry>()) {
+            let mut registry_binder = registry_option.borrow_mut();
+            let registry = registry_binder.downcast_mut::<AtomDataRegistry>().unwrap();
+            registry.register(ContactHistoryStore::new());
+        } else {
+            panic!("AtomDataRegistry not found — AtomPlugin must be added first");
+        }
         app.add_update_system(
             mindlin_tangential_force
                 .label("mindlin_tangential")
@@ -24,137 +108,149 @@ impl Plugin for MindlinTangentialForcePlugin {
     }
 }
 
+// ── Force system ────────────────────────────────────────────────────────────
+
 pub fn mindlin_tangential_force(
     mut atoms: ResMut<Atom>,
     neighbor: Res<Neighbor>,
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
-    mut history: Local<HashMap<(u32, u32), Vector3<f64>>>,
 ) {
-    let dem = registry.get::<DemAtom>().unwrap();
+    let dem = registry.expect::<DemAtom>("mindlin_tangential_force");
+    let mut history = registry.expect_mut::<ContactHistoryStore>("mindlin_tangential_force");
     let dt = atoms.dt;
 
-    let mut active: HashSet<(u32, u32)> = HashSet::new();
-    for &(i, j) in &neighbor.neighbor_list {
-        let dx = atoms.pos_x[j] - atoms.pos_x[i];
-        let dy = atoms.pos_y[j] - atoms.pos_y[i];
-        let dz = atoms.pos_z[j] - atoms.pos_z[i];
-        let d = (dx * dx + dy * dy + dz * dz).sqrt();
-        if d < dem.radius[i] + dem.radius[j] {
-            let ti = atoms.tag[i].min(atoms.tag[j]);
-            let tj = atoms.tag[i].max(atoms.tag[j]);
-            active.insert((ti, tj));
-        }
+    // Ensure contacts vec covers all atoms (local + ghost).
+    // New atoms from insertion or ghost unpacking may not have entries yet.
+    while history.contacts.len() < atoms.len() {
+        history.contacts.push(Vec::new());
     }
-    history.retain(|k, _| active.contains(k));
 
-    for &(i, j) in &neighbor.neighbor_list {
-        let r1 = dem.radius[i];
-        let r2 = dem.radius[j];
+    let nlocal = atoms.nlocal as usize;
 
-        let diff = Vector3::new(
-            atoms.pos_x[j] - atoms.pos_x[i],
-            atoms.pos_y[j] - atoms.pos_y[i],
-            atoms.pos_z[j] - atoms.pos_z[i],
-        );
-        let distance = diff.norm();
+    // Track which partner tags are active per local atom for pruning
+    let mut active_partners: Vec<HashSet<u32>> = (0..nlocal).map(|_| HashSet::new()).collect();
 
-        if distance >= r1 + r2 || distance == 0.0 {
-            continue;
-        }
+    for (i, j) in neighbor.pairs(nlocal) {
+            let r1 = dem.radius[i];
+            let r2 = dem.radius[j];
 
-        let mat_i = atoms.atom_type[i] as usize;
-        let mat_j = atoms.atom_type[j] as usize;
-        let mu = material_table.friction_ij[mat_i][mat_j];
-        let beta = material_table.beta_ij[mat_i][mat_j];
+            let diff = Vector3::new(
+                atoms.pos_x[j] - atoms.pos_x[i],
+                atoms.pos_y[j] - atoms.pos_y[i],
+                atoms.pos_z[j] - atoms.pos_z[i],
+            );
+            let distance = diff.norm();
 
-        let n = diff / distance;
-        let delta = (r1 + r2) - distance;
+            if distance >= r1 + r2 || distance == 0.0 {
+                continue;
+            }
 
-        let r_eff = (r1 * r2) / (r1 + r2);
-        let e_eff = 1.0
-            / ((1.0 - material_table.poisson_ratio[mat_i].powi(2))
-                / material_table.youngs_mod[mat_i]
-                + (1.0 - material_table.poisson_ratio[mat_j].powi(2))
-                    / material_table.youngs_mod[mat_j]);
-        let g_eff = 1.0
-            / (2.0
-                * (2.0 - material_table.poisson_ratio[mat_i])
-                * (1.0 + material_table.poisson_ratio[mat_i])
-                / material_table.youngs_mod[mat_i]
-                + 2.0
-                    * (2.0 - material_table.poisson_ratio[mat_j])
-                    * (1.0 + material_table.poisson_ratio[mat_j])
-                    / material_table.youngs_mod[mat_j]);
+            let mat_i = atoms.atom_type[i] as usize;
+            let mat_j = atoms.atom_type[j] as usize;
+            let mu = material_table.friction_ij[mat_i][mat_j];
+            let beta = material_table.beta_ij[mat_i][mat_j];
 
-        let sqrt_dr = (delta * r_eff).sqrt();
-        let s_n = 2.0 * e_eff * sqrt_dr;
-        let k_n = 4.0 / 3.0 * e_eff * sqrt_dr;
-        let k_t = 8.0 * g_eff * sqrt_dr;
+            let n = diff / distance;
+            let delta = (r1 + r2) - distance;
 
-        let m_r = (atoms.mass[i] * atoms.mass[j]) / (atoms.mass[i] + atoms.mass[j]);
+            let r_eff = (r1 * r2) / (r1 + r2);
+            let e_eff = 1.0
+                / ((1.0 - material_table.poisson_ratio[mat_i].powi(2))
+                    / material_table.youngs_mod[mat_i]
+                    + (1.0 - material_table.poisson_ratio[mat_j].powi(2))
+                        / material_table.youngs_mod[mat_j]);
+            let g_eff = 1.0
+                / (2.0
+                    * (2.0 - material_table.poisson_ratio[mat_i])
+                    * (1.0 + material_table.poisson_ratio[mat_i])
+                    / material_table.youngs_mod[mat_i]
+                    + 2.0
+                        * (2.0 - material_table.poisson_ratio[mat_j])
+                        * (1.0 + material_table.poisson_ratio[mat_j])
+                        / material_table.youngs_mod[mat_j]);
 
-        let vel_i = Vector3::new(atoms.vel_x[i], atoms.vel_y[i], atoms.vel_z[i]);
-        let vel_j = Vector3::new(atoms.vel_x[j], atoms.vel_y[j], atoms.vel_z[j]);
-        let omega_i = Vector3::new(atoms.omega_x[i], atoms.omega_y[i], atoms.omega_z[i]);
-        let omega_j = Vector3::new(atoms.omega_x[j], atoms.omega_y[j], atoms.omega_z[j]);
+            let sqrt_dr = (delta * r_eff).sqrt();
+            let s_n = 2.0 * e_eff * sqrt_dr;
+            let k_n = 4.0 / 3.0 * e_eff * sqrt_dr;
+            let k_t = 8.0 * g_eff * sqrt_dr;
 
-        let v_contact_i = vel_i + omega_i.cross(&(r1 * n));
-        let v_contact_j = vel_j + omega_j.cross(&(-r2 * n));
-        let v_rel = v_contact_j - v_contact_i;
-        let v_n_scalar = v_rel.dot(&n);
-        let v_t = v_rel - v_n_scalar * n;
+            let m_r = (atoms.mass[i] * atoms.mass[j]) / (atoms.mass[i] + atoms.mass[j]);
 
-        let f_diss_n = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n_scalar;
-        let f_n_mag = (k_n * delta - f_diss_n).max(0.0);
+            let vel_i = Vector3::new(atoms.vel_x[i], atoms.vel_y[i], atoms.vel_z[i]);
+            let vel_j = Vector3::new(atoms.vel_x[j], atoms.vel_y[j], atoms.vel_z[j]);
+            let omega_i = Vector3::new(atoms.omega_x[i], atoms.omega_y[i], atoms.omega_z[i]);
+            let omega_j = Vector3::new(atoms.omega_x[j], atoms.omega_y[j], atoms.omega_z[j]);
 
-        let tag_i = atoms.tag[i];
-        let tag_j = atoms.tag[j];
-        let canonical_key = (tag_i.min(tag_j), tag_i.max(tag_j));
-        let sign: f64 = if tag_i < tag_j { 1.0 } else { -1.0 };
+            let v_contact_i = vel_i + omega_i.cross(&(r1 * n));
+            let v_contact_j = vel_j + omega_j.cross(&(-r2 * n));
+            let v_rel = v_contact_j - v_contact_i;
+            let v_n_scalar = v_rel.dot(&n);
+            let v_t = v_rel - v_n_scalar * n;
 
-        let stored = history.entry(canonical_key).or_insert_with(Vector3::zeros);
-        let mut s = sign * *stored;
+            let f_diss_n = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n_scalar;
+            let f_n_mag = (k_n * delta - f_diss_n).max(0.0);
 
-        s -= s.dot(&n) * n;
+            let tag_i = atoms.tag[i];
+            let tag_j = atoms.tag[j];
+            let sign: f64 = if tag_i < tag_j { 1.0 } else { -1.0 };
 
-        s += v_t * dt;
+            // Look up existing spring in atom i's contact list by partner tag.
+            // The spring is stored in canonical form (from lower tag's perspective).
+            let stored_spring = history.contacts[i]
+                .iter()
+                .find(|(t, _)| *t == tag_j)
+                .map(|(_, s)| *s)
+                .unwrap_or_else(Vector3::zeros);
 
-        let f_t_spring_mag = k_t * s.norm();
-        let f_t_max = mu * f_n_mag;
-        if f_t_spring_mag > f_t_max && f_t_spring_mag > 1e-30 {
-            s *= f_t_max / f_t_spring_mag;
-        }
+            let mut s = sign * stored_spring;
 
-        let gamma_t = -2.0 * SQRT_5_3 * beta * (k_t * m_r).sqrt();
-        let mut f_t = k_t * s - gamma_t * v_t;
-        let f_t_mag = f_t.norm();
-        if f_t_mag > f_t_max && f_t_mag > 1e-30 {
-            f_t *= f_t_max / f_t_mag;
-        }
+            s -= s.dot(&n) * n;
+            s += v_t * dt;
 
-        let torque_i = (r1 * n).cross(&f_t);
-        let torque_j = (-r2 * n).cross(&(-f_t));
+            let f_t_spring_mag = k_t * s.norm();
+            let f_t_max = mu * f_n_mag;
+            if f_t_spring_mag > f_t_max && f_t_spring_mag > 1e-30 {
+                s *= f_t_max / f_t_spring_mag;
+            }
 
-        let scale = if atoms.is_ghost[i] || atoms.is_ghost[j] {
-            0.5
-        } else {
-            1.0
-        };
-        atoms.force_x[i] += f_t.x * scale;
-        atoms.force_y[i] += f_t.y * scale;
-        atoms.force_z[i] += f_t.z * scale;
-        atoms.force_x[j] -= f_t.x * scale;
-        atoms.force_y[j] -= f_t.y * scale;
-        atoms.force_z[j] -= f_t.z * scale;
-        atoms.torque_x[i] += torque_i.x * scale;
-        atoms.torque_y[i] += torque_i.y * scale;
-        atoms.torque_z[i] += torque_i.z * scale;
-        atoms.torque_x[j] += torque_j.x * scale;
-        atoms.torque_y[j] += torque_j.y * scale;
-        atoms.torque_z[j] += torque_j.z * scale;
+            let gamma_t = -2.0 * SQRT_5_3 * beta * (k_t * m_r).sqrt();
+            let mut f_t = k_t * s - gamma_t * v_t;
+            let f_t_mag = f_t.norm();
+            if f_t_mag > f_t_max && f_t_mag > 1e-30 {
+                f_t *= f_t_max / f_t_mag;
+            }
 
-        *stored = sign * s;
+            let torque_i = (r1 * n).cross(&f_t);
+            let torque_j = (-r2 * n).cross(&(-f_t));
+
+            atoms.force_x[i] += f_t.x;
+            atoms.force_y[i] += f_t.y;
+            atoms.force_z[i] += f_t.z;
+            atoms.force_x[j] -= f_t.x;
+            atoms.force_y[j] -= f_t.y;
+            atoms.force_z[j] -= f_t.z;
+            atoms.torque_x[i] += torque_i.x;
+            atoms.torque_y[i] += torque_i.y;
+            atoms.torque_z[i] += torque_i.z;
+            atoms.torque_x[j] += torque_j.x;
+            atoms.torque_y[j] += torque_j.y;
+            atoms.torque_z[j] += torque_j.z;
+
+            // Store updated spring back (canonical form)
+            let new_spring = sign * s;
+            if let Some(entry) = history.contacts[i].iter_mut().find(|(t, _)| *t == tag_j) {
+                entry.1 = new_spring;
+            } else {
+                history.contacts[i].push((tag_j, new_spring));
+            }
+            active_partners[i].insert(tag_j);
+    }
+
+    // Prune stale contacts for local atoms
+    for i in 0..nlocal {
+        let active = &active_partners[i];
+        history.contacts[i].retain(|(partner_tag, _)| active.contains(partner_tag));
     }
 }
 
@@ -164,7 +260,7 @@ mod tests {
     use dem_atom::{DemAtom, MaterialTable};
     use mddem_core::{Atom, AtomDataRegistry};
     use mddem_neighbor::Neighbor;
-    use nalgebra::{UnitQuaternion, Vector3};
+    use nalgebra::Vector3;
     use std::f64::consts::PI;
 
     fn make_material_table() -> MaterialTable {
@@ -177,41 +273,17 @@ mod tests {
     fn push_test_atom(
         atom: &mut Atom,
         dem: &mut DemAtom,
+        history: &mut ContactHistoryStore,
         tag: u32,
         pos: Vector3<f64>,
         radius: f64,
     ) {
         let density = 2500.0;
         let mass = density * 4.0 / 3.0 * PI * radius.powi(3);
-        atom.tag.push(tag);
-        atom.atom_type.push(0);
-        atom.origin_index.push(0);
-        atom.pos_x.push(pos.x);
-        atom.pos_y.push(pos.y);
-        atom.pos_z.push(pos.z);
-        atom.vel_x.push(0.0);
-        atom.vel_y.push(0.0);
-        atom.vel_z.push(0.0);
-        atom.force_x.push(0.0);
-        atom.force_y.push(0.0);
-        atom.force_z.push(0.0);
-        atom.torque_x.push(0.0);
-        atom.torque_y.push(0.0);
-        atom.torque_z.push(0.0);
-        atom.mass.push(mass);
-        atom.skin.push(radius);
-        atom.is_ghost.push(false);
-        atom.has_ghost.push(false);
-        atom.is_collision.push(false);
-        atom.quaterion.push(UnitQuaternion::identity());
-        atom.omega_x.push(0.0);
-        atom.omega_y.push(0.0);
-        atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0);
-        atom.ang_mom_y.push(0.0);
-        atom.ang_mom_z.push(0.0);
+        atom.push_test_atom(tag, pos, radius, mass);
         dem.radius.push(radius);
         dem.density.push(density);
+        history.contacts.push(Vec::new());
     }
 
     #[test]
@@ -220,12 +292,14 @@ mod tests {
         let radius = 0.001;
         let mut atom = Atom::new();
         let mut dem = DemAtom::new();
+        let mut hist = ContactHistoryStore::new();
         atom.dt = 1e-7;
 
-        push_test_atom(&mut atom, &mut dem, 0, Vector3::new(0.0, 0.0, 0.0), radius);
+        push_test_atom(&mut atom, &mut dem, &mut hist, 0, Vector3::new(0.0, 0.0, 0.0), radius);
         push_test_atom(
             &mut atom,
             &mut dem,
+            &mut hist,
             1,
             Vector3::new(0.0019, 0.0, 0.0),
             radius,
@@ -235,10 +309,12 @@ mod tests {
         atom.natoms = 2;
 
         let mut neighbor = Neighbor::new();
-        neighbor.neighbor_list.push((0, 1));
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
 
         let mut registry = AtomDataRegistry::new();
         registry.register(dem);
+        registry.register(hist);
 
         app.add_resource(atom);
         app.add_resource(neighbor);
@@ -272,12 +348,14 @@ mod tests {
         let radius = 0.001;
         let mut atom = Atom::new();
         let mut dem = DemAtom::new();
+        let mut hist = ContactHistoryStore::new();
         atom.dt = 1e-7;
 
-        push_test_atom(&mut atom, &mut dem, 0, Vector3::new(0.0, 0.0, 0.0), radius);
+        push_test_atom(&mut atom, &mut dem, &mut hist, 0, Vector3::new(0.0, 0.0, 0.0), radius);
         push_test_atom(
             &mut atom,
             &mut dem,
+            &mut hist,
             1,
             Vector3::new(0.0019, 0.0, 0.0),
             radius,
@@ -287,12 +365,14 @@ mod tests {
         atom.natoms = 2;
 
         let mut neighbor = Neighbor::new();
-        neighbor.neighbor_list.push((0, 1));
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
 
         let mt = make_material_table();
 
         let mut registry = AtomDataRegistry::new();
         registry.register(dem);
+        registry.register(hist);
 
         app.add_resource(atom);
         app.add_resource(neighbor);
@@ -317,12 +397,14 @@ mod tests {
         let radius = 0.001;
         let mut atom = Atom::new();
         let mut dem = DemAtom::new();
+        let mut hist = ContactHistoryStore::new();
         atom.dt = 1e-7;
 
-        push_test_atom(&mut atom, &mut dem, 0, Vector3::new(0.0, 0.0, 0.0), radius);
+        push_test_atom(&mut atom, &mut dem, &mut hist, 0, Vector3::new(0.0, 0.0, 0.0), radius);
         push_test_atom(
             &mut atom,
             &mut dem,
+            &mut hist,
             1,
             Vector3::new(0.003, 0.0, 0.0),
             radius,
@@ -332,10 +414,12 @@ mod tests {
         atom.natoms = 2;
 
         let mut neighbor = Neighbor::new();
-        neighbor.neighbor_list.push((0, 1));
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
 
         let mut registry = AtomDataRegistry::new();
         registry.register(dem);
+        registry.register(hist);
 
         app.add_resource(atom);
         app.add_resource(neighbor);

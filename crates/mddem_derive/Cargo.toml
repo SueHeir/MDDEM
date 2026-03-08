@@ -1,0 +1,17 @@
+[package]
+name = "mddem_derive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Derive macro for AtomData trait in MDDEM"
+keywords = ["dem", "derive", "macro", "simulation"]
+categories = ["simulation", "science"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

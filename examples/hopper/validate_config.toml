@@ -1,0 +1,123 @@
+# Short validation config for hopper (5000 steps)
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[domain]
+x_low = 0.0
+x_high = 0.04
+y_low = 0.0
+y_high = 0.02
+z_low = 0.0
+z_high = 0.08
+periodic_x = false
+periodic_y = true
+periodic_z = false
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.005
+
+[gravity]
+gz = -90.81
+
+[[dem.materials]]
+name = "glass"
+youngs_mod = 8.7e9
+poisson_ratio = 0.3
+restitution = 0.3
+friction = 0.5
+
+[[particles.insert]]
+material = "glass"
+count = 200
+radius = 0.001
+density = 2500.0
+velocity_z = -1.0
+region_x_low = 0.005
+region_x_high = 0.035
+region_z_low = 0.055
+region_z_high = 0.075
+
+# Left side wall (x = 0, normal +x)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 1.0
+normal_y = 0.0
+normal_z = 0.0
+material = "glass"
+
+# Right side wall (x = 0.04, normal -x)
+[[wall]]
+point_x = 0.04
+point_y = 0.0
+point_z = 0.0
+normal_x = -1.0
+normal_y = 0.0
+normal_z = 0.0
+material = "glass"
+
+# Ceiling (z = 0.08, normal -z)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.08
+normal_x = 0.0
+normal_y = 0.0
+normal_z = -1.0
+material = "glass"
+
+# Floor (z = 0, normal +z)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "glass"
+
+# Left funnel wall
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.05
+normal_x = 0.035
+normal_y = 0.0
+normal_z = 0.015
+material = "glass"
+bound_z_low = 0.014
+bound_z_high = 0.052
+
+# Right funnel wall
+[[wall]]
+point_x = 0.04
+point_y = 0.0
+point_z = 0.05
+normal_x = -0.035
+normal_y = 0.0
+normal_z = 0.015
+material = "glass"
+bound_z_low = 0.014
+bound_z_high = 0.052
+
+# Blocker wall
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.015
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "glass"
+name = "blocker"
+
+[vtp]
+interval = 0
+
+[run]
+steps = 5000
+thermo = 500

@@ -1,7 +1,6 @@
 use std::{
     any::{Any, TypeId},
     cell::{Ref, RefCell, RefMut},
-    collections::HashMap,
     ops::{Index, IndexMut},
 };
 
@@ -16,6 +15,7 @@ pub const ATOM_PACK_SIZE: usize = 28;
 
 // ── AtomData trait ───────────────────────────────────────────────────────────
 
+/// Per-atom extension data (e.g. radius, density). Supports pack/unpack for MPI communication.
 pub trait AtomData: Any {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -23,12 +23,14 @@ pub trait AtomData: Any {
     fn swap_remove(&mut self, i: usize);
     fn pack(&self, i: usize, buf: &mut Vec<f64>);
     fn unpack(&mut self, buf: &[f64]) -> usize;
+    fn apply_permutation(&mut self, perm: &[usize], n: usize);
 }
 
 // ── AtomDataRegistry ─────────────────────────────────────────────────────────
 
+/// Dynamic registry of [`AtomData`] extensions, keyed by `TypeId`.
 pub struct AtomDataRegistry {
-    stores: HashMap<TypeId, RefCell<Box<dyn AtomData>>>,
+    stores: Vec<(TypeId, RefCell<Box<dyn AtomData>>)>,
 }
 
 impl Default for AtomDataRegistry {
@@ -40,53 +42,114 @@ impl Default for AtomDataRegistry {
 impl AtomDataRegistry {
     pub fn new() -> Self {
         AtomDataRegistry {
-            stores: HashMap::new(),
+            stores: Vec::new(),
         }
     }
 
     pub fn register<T: AtomData + 'static>(&mut self, data: T) {
-        self.stores
-            .insert(TypeId::of::<T>(), RefCell::new(Box::new(data)));
+        let id = TypeId::of::<T>();
+        for (existing_id, _) in &self.stores {
+            if *existing_id == id {
+                panic!("AtomData type already registered");
+            }
+        }
+        self.stores.push((id, RefCell::new(Box::new(data))));
     }
 
     pub fn get<T: AtomData + 'static>(&self) -> Option<Ref<'_, T>> {
+        let id = TypeId::of::<T>();
         self.stores
-            .get(&TypeId::of::<T>())
-            .map(|cell| Ref::map(cell.borrow(), |b| b.as_any().downcast_ref::<T>().unwrap()))
+            .iter()
+            .find(|(tid, _)| *tid == id)
+            .map(|(_, cell)| Ref::map(cell.borrow(), |b| b.as_any().downcast_ref::<T>().unwrap()))
     }
 
     pub fn get_mut<T: AtomData + 'static>(&self) -> Option<RefMut<'_, T>> {
-        self.stores.get(&TypeId::of::<T>()).map(|cell| {
-            RefMut::map(cell.borrow_mut(), |b| {
-                b.as_any_mut().downcast_mut::<T>().unwrap()
+        let id = TypeId::of::<T>();
+        self.stores
+            .iter()
+            .find(|(tid, _)| *tid == id)
+            .map(|(_, cell)| {
+                RefMut::map(cell.borrow_mut(), |b| {
+                    b.as_any_mut().downcast_mut::<T>().unwrap()
+                })
             })
+    }
+
+    pub fn expect<T: AtomData + 'static>(&self, context: &str) -> Ref<'_, T> {
+        self.get::<T>().unwrap_or_else(|| {
+            panic!(
+                "{}: '{}' not registered. Ensure the plugin is added.",
+                context,
+                std::any::type_name::<T>()
+            )
+        })
+    }
+
+    pub fn expect_mut<T: AtomData + 'static>(&self, context: &str) -> RefMut<'_, T> {
+        self.get_mut::<T>().unwrap_or_else(|| {
+            panic!(
+                "{}: '{}' not registered. Ensure the plugin is added.",
+                context,
+                std::any::type_name::<T>()
+            )
         })
     }
 
     pub fn truncate_all(&self, n: usize) {
-        for cell in self.stores.values() {
+        for (_, cell) in &self.stores {
             cell.borrow_mut().truncate(n);
         }
     }
 
     pub fn swap_remove_all(&self, i: usize) {
-        for cell in self.stores.values() {
+        for (_, cell) in &self.stores {
             cell.borrow_mut().swap_remove(i);
         }
     }
 
     pub fn pack_all(&self, i: usize, buf: &mut Vec<f64>) {
-        for cell in self.stores.values() {
+        for (_, cell) in &self.stores {
             cell.borrow().pack(i, buf);
         }
     }
 
     pub fn unpack_all(&self, buf: &[f64]) -> usize {
         let mut pos = 0;
-        for cell in self.stores.values() {
+        for (_, cell) in &self.stores {
             pos += cell.borrow_mut().unpack(&buf[pos..]);
         }
         pos
+    }
+
+    pub fn apply_permutation_all(&self, perm: &[usize], n: usize) {
+        for (_, cell) in &self.stores {
+            cell.borrow_mut().apply_permutation(perm, n);
+        }
+    }
+
+    pub fn pack_all_for_restart(&self, nlocal: usize) -> Vec<Vec<f64>> {
+        self.stores
+            .iter()
+            .map(|(_, cell)| {
+                let store = cell.borrow();
+                let mut buf = Vec::new();
+                for i in 0..nlocal {
+                    store.pack(i, &mut buf);
+                }
+                buf
+            })
+            .collect()
+    }
+
+    pub fn unpack_all_from_restart(&self, buffers: &[Vec<f64>]) {
+        for ((_, cell), buf) in self.stores.iter().zip(buffers.iter()) {
+            let mut store = cell.borrow_mut();
+            let mut pos = 0;
+            while pos < buf.len() {
+                pos += store.unpack(&buf[pos..]);
+            }
+        }
     }
 }
 
@@ -159,6 +222,7 @@ impl Quaternionf64MPI {
 
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "mpi_backend", derive(Equivalence))]
+/// MPI-serializable force + torque payload for ghost → local atom reduction.
 pub struct ForceMPI {
     pub tag: u32,
     pub origin_index: u32,
@@ -166,8 +230,48 @@ pub struct ForceMPI {
     pub force: Vector3f64MPI,
 }
 
+// ── Atom Vec field macro ─────────────────────────────────────────────────────
+
+/// Enumerates all per-atom Vec fields with their element types.
+/// Pass a callback macro name; it receives the full list as
+/// `(field, Type), ...` and can generate code uniformly.
+#[macro_export]
+macro_rules! for_each_atom_vec {
+    ($callback:ident) => {
+        $callback! {
+            (tag, u32),
+            (atom_type, u32),
+            (origin_index, i32),
+            (is_ghost, bool),
+            (is_collision, bool),
+            (pos_x, f64),
+            (pos_y, f64),
+            (pos_z, f64),
+            (vel_x, f64),
+            (vel_y, f64),
+            (vel_z, f64),
+            (quaternion, nalgebra::UnitQuaternion<f64>),
+            (omega_x, f64),
+            (omega_y, f64),
+            (omega_z, f64),
+            (ang_mom_x, f64),
+            (ang_mom_y, f64),
+            (ang_mom_z, f64),
+            (torque_x, f64),
+            (torque_y, f64),
+            (torque_z, f64),
+            (force_x, f64),
+            (force_y, f64),
+            (force_z, f64),
+            (skin, f64),
+            (mass, f64),
+        }
+    };
+}
+
 // ── Atom ──────────────────────────────────────────────────────────────────────
 
+/// Struct-of-arrays storage for all per-atom fields (position, velocity, force, etc.).
 pub struct Atom {
     pub natoms: u64,
     pub nlocal: u32,
@@ -179,7 +283,6 @@ pub struct Atom {
     pub atom_type: Vec<u32>,
     pub origin_index: Vec<i32>,
     pub is_ghost: Vec<bool>,
-    pub has_ghost: Vec<bool>,
     pub is_collision: Vec<bool>,
 
     // SoA position
@@ -191,7 +294,7 @@ pub struct Atom {
     pub vel_y: Vec<f64>,
     pub vel_z: Vec<f64>,
     // Quaternion (kept as-is, not in hot loops)
-    pub quaterion: Vec<UnitQuaternion<f64>>,
+    pub quaternion: Vec<UnitQuaternion<f64>>,
     // SoA angular velocity
     pub omega_x: Vec<f64>,
     pub omega_y: Vec<f64>,
@@ -219,42 +322,64 @@ impl Default for Atom {
     }
 }
 
-impl Atom {
-    pub fn new() -> Self {
-        Atom {
-            natoms: 0,
-            nlocal: 0,
-            nghost: 0,
-            dt: 1.0,
-            tag: Vec::new(),
-            atom_type: Vec::new(),
-            origin_index: Vec::new(),
-            is_ghost: Vec::new(),
-            has_ghost: Vec::new(),
-            is_collision: Vec::new(),
-            pos_x: Vec::new(),
-            pos_y: Vec::new(),
-            pos_z: Vec::new(),
-            vel_x: Vec::new(),
-            vel_y: Vec::new(),
-            vel_z: Vec::new(),
-            quaterion: Vec::new(),
-            omega_x: Vec::new(),
-            omega_y: Vec::new(),
-            omega_z: Vec::new(),
-            ang_mom_x: Vec::new(),
-            ang_mom_y: Vec::new(),
-            ang_mom_z: Vec::new(),
-            torque_x: Vec::new(),
-            torque_y: Vec::new(),
-            torque_z: Vec::new(),
-            force_x: Vec::new(),
-            force_y: Vec::new(),
-            force_z: Vec::new(),
-            skin: Vec::new(),
-            mass: Vec::new(),
+macro_rules! impl_atom_new {
+    ( $( ($field:ident, $ty:ty) ),* $(,)? ) => {
+        pub fn new() -> Self {
+            Atom {
+                natoms: 0,
+                nlocal: 0,
+                nghost: 0,
+                dt: 1.0,
+                $( $field: Vec::new(), )*
+            }
         }
-    }
+    };
+}
+
+macro_rules! impl_atom_swap_remove {
+    ( $( ($field:ident, $ty:ty) ),* $(,)? ) => {
+        pub fn swap_remove(&mut self, i: usize) {
+            $( self.$field.swap_remove(i); )*
+        }
+    };
+}
+
+macro_rules! impl_atom_truncate {
+    ( $( ($field:ident, $ty:ty) ),* $(,)? ) => {
+        pub fn truncate_to_nlocal(&mut self) {
+            let n = self.nlocal as usize;
+            $( self.$field.truncate(n); )*
+        }
+    };
+}
+
+macro_rules! impl_atom_reserve {
+    ( $( ($field:ident, $ty:ty) ),* $(,)? ) => {
+        pub fn reserve(&mut self, additional: usize) {
+            $( self.$field.reserve(additional); )*
+        }
+    };
+}
+
+macro_rules! impl_atom_apply_permutation {
+    ( $( ($field:ident, $ty:ty) ),* $(,)? ) => {
+        pub fn apply_permutation(&mut self, perm: &[usize], n: usize) {
+            $(
+                {
+                    let scratch: Vec<$ty> = perm.iter().map(|&p| self.$field[p].clone()).collect();
+                    self.$field[..n].clone_from_slice(&scratch);
+                }
+            )*
+        }
+    };
+}
+
+impl Atom {
+    for_each_atom_vec!(impl_atom_new);
+    for_each_atom_vec!(impl_atom_swap_remove);
+    for_each_atom_vec!(impl_atom_truncate);
+    for_each_atom_vec!(impl_atom_reserve);
+    for_each_atom_vec!(impl_atom_apply_permutation);
 
     /// Total number of atoms (local + ghost) currently stored.
     pub fn len(&self) -> usize {
@@ -281,9 +406,7 @@ impl Atom {
     }
 
     pub fn get_force_data(&mut self, i: usize) -> ForceMPI {
-        if !self.is_ghost[i] {
-            panic!();
-        }
+        debug_assert!(self.is_ghost[i], "get_force_data called on non-ghost atom {}", i);
         ForceMPI {
             tag: self.tag[i],
             origin_index: self.origin_index[i] as u32,
@@ -302,9 +425,11 @@ impl Atom {
 
     pub fn apply_force_data(&mut self, force_mpi: ForceMPI) {
         let i = force_mpi.origin_index as usize;
-        if force_mpi.tag != self.tag[i] {
-            panic!();
-        }
+        debug_assert_eq!(
+            force_mpi.tag, self.tag[i],
+            "apply_force_data: force tag {} != atom tag {} at index {}",
+            force_mpi.tag, self.tag[i], i
+        );
         let f = force_mpi.force;
         self.force_x[i] += f.x;
         self.force_y[i] += f.y;
@@ -326,7 +451,7 @@ impl Atom {
         buf.push(self.vel_x[i]);
         buf.push(self.vel_y[i]);
         buf.push(self.vel_z[i]);
-        let q = self.quaterion[i];
+        let q = self.quaternion[i];
         buf.push(q.w);
         buf.push(q.i);
         buf.push(q.j);
@@ -358,7 +483,7 @@ impl Atom {
         buf.push(self.vel_x[i]);
         buf.push(self.vel_y[i]);
         buf.push(self.vel_z[i]);
-        let q = self.quaterion[i];
+        let q = self.quaternion[i];
         buf.push(q.w);
         buf.push(q.i);
         buf.push(q.j);
@@ -377,7 +502,6 @@ impl Atom {
         buf.push(self.force_z[i]);
         buf.push(self.mass[i]);
         buf.push(if self.is_collision[i] { 0.0 } else { 1.0 });
-        self.has_ghost[i] = true;
     }
 
     pub fn unpack_atom(&mut self, buf: &[f64], is_ghost: bool) -> usize {
@@ -391,7 +515,7 @@ impl Atom {
         self.vel_x.push(buf[7]);
         self.vel_y.push(buf[8]);
         self.vel_z.push(buf[9]);
-        self.quaterion
+        self.quaternion
             .push(UnitQuaternion::from_quaternion(Quaternion::new(
                 buf[10], buf[11], buf[12], buf[13],
             )));
@@ -410,41 +534,9 @@ impl Atom {
         self.mass.push(buf[26]);
         self.is_collision.push(buf[27] == 0.0);
         self.is_ghost.push(is_ghost);
-        self.has_ghost.push(false);
         ATOM_PACK_SIZE
     }
 
-    pub fn swap_remove(&mut self, i: usize) {
-        self.tag.swap_remove(i);
-        self.atom_type.swap_remove(i);
-        self.origin_index.swap_remove(i);
-        self.pos_x.swap_remove(i);
-        self.pos_y.swap_remove(i);
-        self.pos_z.swap_remove(i);
-        self.vel_x.swap_remove(i);
-        self.vel_y.swap_remove(i);
-        self.vel_z.swap_remove(i);
-        self.quaterion.swap_remove(i);
-        self.omega_x.swap_remove(i);
-        self.omega_y.swap_remove(i);
-        self.omega_z.swap_remove(i);
-        self.ang_mom_x.swap_remove(i);
-        self.ang_mom_y.swap_remove(i);
-        self.ang_mom_z.swap_remove(i);
-        self.torque_x.swap_remove(i);
-        self.torque_y.swap_remove(i);
-        self.torque_z.swap_remove(i);
-        self.force_x.swap_remove(i);
-        self.force_y.swap_remove(i);
-        self.force_z.swap_remove(i);
-        self.skin.swap_remove(i);
-        self.mass.swap_remove(i);
-        self.is_collision.swap_remove(i);
-        self.is_ghost.swap_remove(i);
-        self.has_ghost.swap_remove(i);
-    }
-
-    #[cfg(test)]
     pub fn push_test_atom(&mut self, tag: u32, pos: Vector3<f64>, radius: f64, mass: f64) {
         self.tag.push(tag);
         self.atom_type.push(0);
@@ -464,9 +556,8 @@ impl Atom {
         self.mass.push(mass);
         self.skin.push(radius);
         self.is_ghost.push(false);
-        self.has_ghost.push(false);
         self.is_collision.push(false);
-        self.quaterion.push(UnitQuaternion::identity());
+        self.quaternion.push(UnitQuaternion::identity());
         self.omega_x.push(0.0);
         self.omega_y.push(0.0);
         self.omega_z.push(0.0);
@@ -474,71 +565,11 @@ impl Atom {
         self.ang_mom_y.push(0.0);
         self.ang_mom_z.push(0.0);
     }
-
-    pub fn reserve(&mut self, additional: usize) {
-        self.tag.reserve(additional);
-        self.atom_type.reserve(additional);
-        self.origin_index.reserve(additional);
-        self.pos_x.reserve(additional);
-        self.pos_y.reserve(additional);
-        self.pos_z.reserve(additional);
-        self.vel_x.reserve(additional);
-        self.vel_y.reserve(additional);
-        self.vel_z.reserve(additional);
-        self.quaterion.reserve(additional);
-        self.omega_x.reserve(additional);
-        self.omega_y.reserve(additional);
-        self.omega_z.reserve(additional);
-        self.ang_mom_x.reserve(additional);
-        self.ang_mom_y.reserve(additional);
-        self.ang_mom_z.reserve(additional);
-        self.torque_x.reserve(additional);
-        self.torque_y.reserve(additional);
-        self.torque_z.reserve(additional);
-        self.force_x.reserve(additional);
-        self.force_y.reserve(additional);
-        self.force_z.reserve(additional);
-        self.skin.reserve(additional);
-        self.mass.reserve(additional);
-        self.is_collision.reserve(additional);
-        self.is_ghost.reserve(additional);
-        self.has_ghost.reserve(additional);
-    }
-
-    pub fn truncate_to_nlocal(&mut self) {
-        let n = self.nlocal as usize;
-        self.tag.truncate(n);
-        self.atom_type.truncate(n);
-        self.origin_index.truncate(n);
-        self.pos_x.truncate(n);
-        self.pos_y.truncate(n);
-        self.pos_z.truncate(n);
-        self.vel_x.truncate(n);
-        self.vel_y.truncate(n);
-        self.vel_z.truncate(n);
-        self.quaterion.truncate(n);
-        self.omega_x.truncate(n);
-        self.omega_y.truncate(n);
-        self.omega_z.truncate(n);
-        self.ang_mom_x.truncate(n);
-        self.ang_mom_y.truncate(n);
-        self.ang_mom_z.truncate(n);
-        self.torque_x.truncate(n);
-        self.torque_y.truncate(n);
-        self.torque_z.truncate(n);
-        self.force_x.truncate(n);
-        self.force_y.truncate(n);
-        self.force_z.truncate(n);
-        self.skin.truncate(n);
-        self.mass.truncate(n);
-        self.is_collision.truncate(n);
-        self.is_ghost.truncate(n);
-        self.has_ghost.truncate(n);
-    }
 }
 
 // ── Plugin & systems ──────────────────────────────────────────────────────────
 
+/// Registers the [`Atom`] and [`AtomDataRegistry`] resources and per-step force zeroing.
 pub struct AtomPlugin;
 
 impl Plugin for AtomPlugin {
@@ -559,7 +590,6 @@ fn remove_ghost_atoms(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) 
 fn zero_all_forces(mut atoms: ResMut<Atom>) {
     for i in 0..atoms.len() {
         atoms.is_collision[i] = false;
-        atoms.has_ghost[i] = false;
         atoms.force_x[i] = 0.0;
         atoms.force_y[i] = 0.0;
         atoms.force_z[i] = 0.0;

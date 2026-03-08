@@ -1,9 +1,13 @@
+//! Neighbor list construction: brute-force, sweep-and-prune, and CSR bin-based algorithms.
+//!
+//! Provides displacement-based and periodic rebuild strategies with configurable skin fraction.
+
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
 
-use mddem_core::{Atom, CommResource, Config, Domain};
+use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, Domain};
 
 fn default_one_f64() -> f64 {
     1.0
@@ -16,9 +20,13 @@ fn default_true() -> bool {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+/// TOML `[neighbor]` — neighbor list rebuild and binning settings.
 pub struct NeighborConfig {
+    /// Multiplier on pairwise cutoff for neighbor skin distance.
     #[serde(default = "default_one_f64")]
     pub skin_fraction: f64,
+    /// Minimum bin size for bin-based neighbor lists.
     #[serde(default = "default_one_f64")]
     pub bin_size: f64,
     /// Rebuild every N steps (0 = displacement-based only)
@@ -40,12 +48,14 @@ impl Default for NeighborConfig {
     }
 }
 
+/// Algorithm used to build the neighbor list.
 pub enum NeighborStyle {
     BruteForce,
     SweepAndPrune,
     Bin,
 }
 
+/// Neighbor list state: pair lists, CSR indices, bin grid, and rebuild tracking.
 pub struct Neighbor {
     pub skin_fraction: f64,
     pub neighbor_list: Vec<(usize, usize)>,
@@ -70,16 +80,6 @@ pub struct Neighbor {
     pub every: usize,             // rebuild every N steps (0 = displacement only)
     pub check: bool,              // also check displacement when every > 0
     pub ghost_cutoff: f64,        // max distance for ghost atom communication
-    // Persistent scratch buffers (reused across rebuilds)
-    pub scratch_atom_cell: Vec<u32>,
-    pub scratch_bin_count: Vec<u32>,
-    pub scratch_bin_start: Vec<u32>,
-    pub scratch_write_pos: Vec<u32>,
-    pub scratch_sorted_atoms: Vec<u32>,
-    pub scratch_sorted_x: Vec<f64>,
-    pub scratch_sorted_y: Vec<f64>,
-    pub scratch_sorted_z: Vec<f64>,
-    pub scratch_r2: Vec<f64>,
 }
 
 impl Default for Neighbor {
@@ -88,7 +88,57 @@ impl Default for Neighbor {
     }
 }
 
+/// Iterator over `(i, j)` neighbor pairs from the CSR neighbor list.
+pub struct PairIter<'a> {
+    offsets: &'a [u32],
+    indices: &'a [u32],
+    nlocal: usize,
+    i: usize,
+    k: usize,
+    end: usize,
+}
+
+impl<'a> Iterator for PairIter<'a> {
+    type Item = (usize, usize);
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.k >= self.end {
+            self.i += 1;
+            if self.i >= self.nlocal {
+                return None;
+            }
+            self.k = self.offsets[self.i] as usize;
+            self.end = self.offsets[self.i + 1] as usize;
+        }
+        let j = self.indices[self.k] as usize;
+        self.k += 1;
+        Some((self.i, j))
+    }
+}
+
 impl Neighbor {
+    /// Iterate over all (i, j) pairs from the CSR neighbor list.
+    /// `nlocal` is the number of local atoms (only local atoms own neighbor lists).
+    pub fn pairs(&self, nlocal: usize) -> PairIter<'_> {
+        let end = if nlocal > 0 {
+            self.neighbor_offsets[1] as usize
+        } else {
+            0
+        };
+        PairIter {
+            offsets: &self.neighbor_offsets,
+            indices: &self.neighbor_indices,
+            nlocal,
+            i: 0,
+            k: if nlocal > 0 {
+                self.neighbor_offsets[0] as usize
+            } else {
+                0
+            },
+            end,
+        }
+    }
+
     pub fn new() -> Self {
         Neighbor {
             skin_fraction: 1.0,
@@ -113,19 +163,11 @@ impl Neighbor {
             every: 0,
             check: true,
             ghost_cutoff: 0.0,
-            scratch_atom_cell: Vec::new(),
-            scratch_bin_count: Vec::new(),
-            scratch_bin_start: Vec::new(),
-            scratch_write_pos: Vec::new(),
-            scratch_sorted_atoms: Vec::new(),
-            scratch_sorted_x: Vec::new(),
-            scratch_sorted_y: Vec::new(),
-            scratch_sorted_z: Vec::new(),
-            scratch_r2: Vec::new(),
         }
     }
 }
 
+/// Registers neighbor list construction and rebuild systems.
 pub struct NeighborPlugin {
     pub style: NeighborStyle,
 }
@@ -299,7 +341,7 @@ fn build_csr_from_pairs(neighbor: &mut Neighbor, nlocal: usize) {
 }
 
 /// Helper: save current positions for displacement-based rebuild check.
-/// Only saves local atoms — ghost atoms are ephemeral and must not affect rebuild decisions.
+/// Saves local atom positions and all atom tags (including ghosts) for identity tracking.
 fn save_build_positions(atoms: &Atom, neighbor: &mut Neighbor) {
     let nlocal = atoms.nlocal as usize;
     neighbor.last_build_pos_x.resize(nlocal, 0.0);
@@ -309,7 +351,7 @@ fn save_build_positions(atoms: &Atom, neighbor: &mut Neighbor) {
     neighbor.last_build_pos_y[..nlocal].copy_from_slice(&atoms.pos_y[..nlocal]);
     neighbor.last_build_pos_z[..nlocal].copy_from_slice(&atoms.pos_z[..nlocal]);
     neighbor.last_build_tags.clear();
-    neighbor.last_build_tags.extend_from_slice(&atoms.tag[..nlocal]);
+    neighbor.last_build_tags.extend_from_slice(&atoms.tag[..]);
     neighbor.last_build_total = atoms.len();
     neighbor.steps_since_build = 0;
 }
@@ -335,18 +377,19 @@ fn displacement_exceeded(atoms: &Atom, neighbor: &Neighbor) -> bool {
 }
 
 /// Helper: check if a rebuild is needed.
-/// Compares against local atoms only — ghost atoms are recreated every step.
+/// Compares local + ghost atom tags and local displacement to determine staleness.
 fn needs_rebuild(atoms: &Atom, neighbor: &Neighbor) -> bool {
     let nlocal = atoms.nlocal as usize;
     // Always rebuild on first call, local atom count change, or total count change
-    // (ghost atoms are recreated each step, so stale indices become invalid)
     if neighbor.last_build_pos_x.len() != nlocal || nlocal == 0 || neighbor.last_build_total != atoms.len() {
         return true;
     }
-    let tags_unchanged = atoms.tag[..nlocal]
-        .iter()
-        .zip(neighbor.last_build_tags.iter())
-        .all(|(t, lt)| t == lt);
+    // Check all tags (local + ghost) — ghost atoms are recreated each step and
+    // may have different identities even when the count is unchanged
+    let tags_unchanged = atoms.tag.len() == neighbor.last_build_tags.len()
+        && atoms.tag.iter()
+            .zip(neighbor.last_build_tags.iter())
+            .all(|(t, lt)| t == lt);
     if !tags_unchanged {
         return true;
     }
@@ -436,59 +479,7 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
     build_csr_from_pairs(&mut neighbor, nlocal);
 }
 
-fn permute_vec_f64(v: &mut Vec<f64>, perm: &[usize], n: usize) {
-    let scratch: Vec<f64> = perm.iter().map(|&p| v[p]).collect();
-    v[..n].copy_from_slice(&scratch);
-}
-
-fn permute_vec_u32(v: &mut Vec<u32>, perm: &[usize], n: usize) {
-    let scratch: Vec<u32> = perm.iter().map(|&p| v[p]).collect();
-    v[..n].copy_from_slice(&scratch);
-}
-
-fn permute_vec_i32(v: &mut Vec<i32>, perm: &[usize], n: usize) {
-    let scratch: Vec<i32> = perm.iter().map(|&p| v[p]).collect();
-    v[..n].copy_from_slice(&scratch);
-}
-
-fn permute_vec_bool(v: &mut Vec<bool>, perm: &[usize], n: usize) {
-    let scratch: Vec<bool> = perm.iter().map(|&p| v[p]).collect();
-    v[..n].copy_from_slice(&scratch);
-}
-
-fn apply_permutation_to_atoms(atoms: &mut Atom, perm: &[usize], n: usize) {
-    permute_vec_f64(&mut atoms.pos_x, perm, n);
-    permute_vec_f64(&mut atoms.pos_y, perm, n);
-    permute_vec_f64(&mut atoms.pos_z, perm, n);
-    permute_vec_f64(&mut atoms.vel_x, perm, n);
-    permute_vec_f64(&mut atoms.vel_y, perm, n);
-    permute_vec_f64(&mut atoms.vel_z, perm, n);
-    permute_vec_f64(&mut atoms.force_x, perm, n);
-    permute_vec_f64(&mut atoms.force_y, perm, n);
-    permute_vec_f64(&mut atoms.force_z, perm, n);
-    permute_vec_f64(&mut atoms.torque_x, perm, n);
-    permute_vec_f64(&mut atoms.torque_y, perm, n);
-    permute_vec_f64(&mut atoms.torque_z, perm, n);
-    permute_vec_f64(&mut atoms.omega_x, perm, n);
-    permute_vec_f64(&mut atoms.omega_y, perm, n);
-    permute_vec_f64(&mut atoms.omega_z, perm, n);
-    permute_vec_f64(&mut atoms.ang_mom_x, perm, n);
-    permute_vec_f64(&mut atoms.ang_mom_y, perm, n);
-    permute_vec_f64(&mut atoms.ang_mom_z, perm, n);
-    permute_vec_f64(&mut atoms.mass, perm, n);
-    permute_vec_f64(&mut atoms.skin, perm, n);
-    permute_vec_u32(&mut atoms.tag, perm, n);
-    permute_vec_u32(&mut atoms.atom_type, perm, n);
-    permute_vec_i32(&mut atoms.origin_index, perm, n);
-    permute_vec_bool(&mut atoms.is_ghost, perm, n);
-    permute_vec_bool(&mut atoms.has_ghost, perm, n);
-    permute_vec_bool(&mut atoms.is_collision, perm, n);
-    // Quaternion: Vec<UnitQuaternion> — use clone
-    let scratch_q: Vec<_> = perm.iter().map(|&p| atoms.quaterion[p].clone()).collect();
-    atoms.quaterion[..n].clone_from_slice(&scratch_q);
-}
-
-pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>, comm: Res<CommResource>) {
+pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>, comm: Res<CommResource>, registry: Res<AtomDataRegistry>) {
     // Skip sort in MPI mode — atom reordering interacts with ghost exchange
     if comm.size() > 1 {
         return;
@@ -532,7 +523,8 @@ pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>, comm:
         return;
     }
 
-    apply_permutation_to_atoms(&mut atoms, &perm, nlocal);
+    atoms.apply_permutation(&perm, nlocal);
+    registry.apply_permutation_all(&perm, nlocal);
 }
 
 pub fn bin_neighbor_list(
@@ -562,20 +554,9 @@ pub fn bin_neighbor_list(
     let bin_oy = neighbor.bin_origin.y;
     let bin_oz = neighbor.bin_origin.z;
 
-    // Step 1: Build CSR bin structure for ALL atoms (local + ghost)
-    // Use persistent scratch buffers to avoid repeated allocations
-    let mut atom_cell = std::mem::take(&mut neighbor.scratch_atom_cell);
-    let mut bin_count_arr = std::mem::take(&mut neighbor.scratch_bin_count);
-    let mut bin_start = std::mem::take(&mut neighbor.scratch_bin_start);
-    let mut sorted_atoms = std::mem::take(&mut neighbor.scratch_sorted_atoms);
-    let mut write_pos = std::mem::take(&mut neighbor.scratch_write_pos);
-    let mut sorted_x = std::mem::take(&mut neighbor.scratch_sorted_x);
-    let mut sorted_y = std::mem::take(&mut neighbor.scratch_sorted_y);
-    let mut sorted_z = std::mem::take(&mut neighbor.scratch_sorted_z);
-
-    atom_cell.resize(total, 0);
-    bin_count_arr.resize(total_cells, 0);
-    bin_count_arr.fill(0);
+    // Step 1: Assign each atom to a bin cell
+    let mut atom_cell = vec![0u32; total];
+    let mut bin_count_arr = vec![0u32; total_cells];
 
     for i in 0..total {
         let cx = ((atoms.pos_x[i] - bin_ox) * inv_bsx).floor() as i32;
@@ -589,238 +570,115 @@ pub fn bin_neighbor_list(
         bin_count_arr[cell as usize] += 1;
     }
 
-    // CSR offsets: bin_start[c]..bin_start[c+1]
-    bin_start.resize(total_cells + 1, 0);
-    bin_start[0] = 0;
+    // Step 2: Build CSR bin offsets
+    let mut bin_start = vec![0u32; total_cells + 1];
     for c in 0..total_cells {
         bin_start[c + 1] = bin_start[c] + bin_count_arr[c];
     }
 
-    // Place atoms into sorted order
-    sorted_atoms.resize(total, 0);
-    write_pos.resize(total_cells, 0);
-    write_pos.copy_from_slice(&bin_start[..total_cells]);
+    // Place atoms into sorted order by bin
+    let mut sorted_atoms = vec![0u32; total];
+    let mut write_pos = bin_start[..total_cells].to_vec();
     for i in 0..total {
         let c = atom_cell[i] as usize;
         sorted_atoms[write_pos[c] as usize] = i as u32;
         write_pos[c] += 1;
     }
 
-    // Step 2: Build sorted position arrays for cache-friendly inner loop
-    sorted_x.resize(total, 0.0);
-    sorted_y.resize(total, 0.0);
-    sorted_z.resize(total, 0.0);
-    for (m, &ai) in sorted_atoms.iter().enumerate() {
-        let a = ai as usize;
-        sorted_x[m] = atoms.pos_x[a];
-        sorted_y[m] = atoms.pos_y[a];
-        sorted_z[m] = atoms.pos_z[a];
-    }
-
     // Step 3: Build CSR neighbor lists using forward stencil.
     // Each pair is found exactly once: self cell uses j > i dedup,
     // forward cells have positive offset so each pair appears once.
-    // Ghost atoms in backward cells are found by the neighboring proc's
-    // forward stencil; forces return via reverse_comm.
-    let stencil_other = std::mem::take(&mut neighbor.bin_stencil_forward);
     let has_self = neighbor.bin_stencil_self;
     let skin_fraction = neighbor.skin_fraction;
-    let skin_fraction2 = skin_fraction * skin_fraction;
-
-    let uniform_skin = total > 0 && atoms.skin[..total].iter().all(|&s| s == atoms.skin[0]);
-    let cutoff2_uniform = if uniform_skin {
-        let c = 2.0 * atoms.skin[0] * skin_fraction;
-        c * c
-    } else {
-        0.0
-    };
+    // Take stencil to avoid borrow conflict with neighbor_indices
+    let stencil_forward = std::mem::take(&mut neighbor.bin_stencil_forward);
 
     let prev_count = neighbor.neighbor_indices.len();
-    neighbor.neighbor_offsets.clear();
-    neighbor.neighbor_indices.clear();
-    neighbor.neighbor_offsets.reserve(nlocal + 1);
-    neighbor.neighbor_indices.reserve(prev_count + prev_count / 4);
+    // Work with local vecs to avoid borrow conflicts through ResMut
+    let mut offsets = std::mem::take(&mut neighbor.neighbor_offsets);
+    let mut indices = std::mem::take(&mut neighbor.neighbor_indices);
+    offsets.clear();
+    indices.clear();
+    offsets.reserve(nlocal + 1);
+    indices.reserve(prev_count + prev_count / 4);
 
-    // Scratch buffer for vectorizable distance computation
-    let mut scratch_r2 = std::mem::take(&mut neighbor.scratch_r2);
+    // Track tags seen per atom i to avoid duplicate ghost pairs
+    // (multi-dimensional MPI decomposition can create multiple ghosts of the same atom)
+    let mut seen_tags: Vec<u32> = Vec::new();
 
-    // Raw pointers for unsafe inner loops.
-    // Safety: sorted_x/y/z and bin_start have length >= total and total_cells+1 respectively,
-    // and all cell indices from atom_cell + stencil offsets land within the ghost-padded grid.
-    let sx_ptr = sorted_x.as_ptr();
-    let sy_ptr = sorted_y.as_ptr();
-    let sz_ptr = sorted_z.as_ptr();
-    let sa_ptr = sorted_atoms.as_ptr();
-    let bs_ptr = bin_start.as_ptr();
+    for i in 0..nlocal {
+        offsets.push(indices.len() as u32);
 
-    if uniform_skin {
-        for i in 0..nlocal {
-            let off = neighbor.neighbor_indices.len() as u32;
-            neighbor.neighbor_offsets.push(off);
+        let my_cell = atom_cell[i] as usize;
+        let xi = atoms.pos_x[i];
+        let yi = atoms.pos_y[i];
+        let zi = atoms.pos_z[i];
+        let si = atoms.skin[i];
+        seen_tags.clear();
 
-            let my_cell = atom_cell[i] as usize;
-            let xi = atoms.pos_x[i];
-            let yi = atoms.pos_y[i];
-            let zi = atoms.pos_z[i];
-
-            // Self cell: j > i dedup (ghost j always > i since j >= nlocal > i)
-            if has_self {
-                let start = unsafe { *bs_ptr.add(my_cell) } as usize;
-                let end = unsafe { *bs_ptr.add(my_cell + 1) } as usize;
-                let count = end - start;
-
-                // Phase 1: compute all r2 values (auto-vectorizable)
-                scratch_r2.resize(count, 0.0);
-                for k in 0..count {
-                    let m = start + k;
-                    unsafe {
-                        let dx = *sx_ptr.add(m) - xi;
-                        let dy = *sy_ptr.add(m) - yi;
-                        let dz = *sz_ptr.add(m) - zi;
-                        *scratch_r2.get_unchecked_mut(k) = dx * dx + dy * dy + dz * dz;
-                    }
+        // Self cell: j > i dedup (ghost j always > i since j >= nlocal > i)
+        if has_self {
+            let start = bin_start[my_cell] as usize;
+            let end = bin_start[my_cell + 1] as usize;
+            for m in start..end {
+                let j = sorted_atoms[m] as usize;
+                if j <= i {
+                    continue;
                 }
-
-                // Phase 2: collect passing neighbors (sequential)
-                for k in 0..count {
-                    let j = unsafe { *sa_ptr.add(start + k) } as usize;
-                    if j <= i { continue; }
-                    if unsafe { *scratch_r2.get_unchecked(k) } < cutoff2_uniform {
-                        neighbor.neighbor_indices.push(j as u32);
-                    }
+                let tag_j = atoms.tag[j];
+                if seen_tags.contains(&tag_j) {
+                    continue;
                 }
-            }
-
-            // Forward stencil cells: ghost layers guarantee all offsets land within grid
-            for &offset in &stencil_other {
-                let c = (my_cell as i32 + offset) as usize;
-                let start = unsafe { *bs_ptr.add(c) } as usize;
-                let end = unsafe { *bs_ptr.add(c + 1) } as usize;
-                let count = end - start;
-
-                // Phase 1: compute all r2 values (auto-vectorizable)
-                scratch_r2.resize(count, 0.0);
-                for k in 0..count {
-                    let m = start + k;
-                    unsafe {
-                        let dx = *sx_ptr.add(m) - xi;
-                        let dy = *sy_ptr.add(m) - yi;
-                        let dz = *sz_ptr.add(m) - zi;
-                        *scratch_r2.get_unchecked_mut(k) = dx * dx + dy * dy + dz * dz;
-                    }
-                }
-
-                // Phase 2: collect passing neighbors
-                for k in 0..count {
-                    if unsafe { *scratch_r2.get_unchecked(k) } < cutoff2_uniform {
-                        let j = unsafe { *sa_ptr.add(start + k) } as usize;
-                        neighbor.neighbor_indices.push(j as u32);
-                    }
+                let dx = atoms.pos_x[j] - xi;
+                let dy = atoms.pos_y[j] - yi;
+                let dz = atoms.pos_z[j] - zi;
+                let r2 = dx * dx + dy * dy + dz * dz;
+                let cutoff = (si + atoms.skin[j]) * skin_fraction;
+                if r2 < cutoff * cutoff {
+                    indices.push(j as u32);
+                    seen_tags.push(tag_j);
                 }
             }
         }
-    } else {
-        for i in 0..nlocal {
-            let off = neighbor.neighbor_indices.len() as u32;
-            neighbor.neighbor_offsets.push(off);
 
-            let my_cell = atom_cell[i] as usize;
-            let xi = atoms.pos_x[i];
-            let yi = atoms.pos_y[i];
-            let zi = atoms.pos_z[i];
-            let si = atoms.skin[i];
-
-            if has_self {
-                let start = unsafe { *bs_ptr.add(my_cell) } as usize;
-                let end = unsafe { *bs_ptr.add(my_cell + 1) } as usize;
-                for m in start..end {
-                    let j = unsafe { *sa_ptr.add(m) } as usize;
-                    if j <= i { continue; }
-                    unsafe {
-                        let dx = *sx_ptr.add(m) - xi;
-                        let dy = *sy_ptr.add(m) - yi;
-                        let dz = *sz_ptr.add(m) - zi;
-                        let r2 = dx * dx + dy * dy + dz * dz;
-                        let cutoff = si + atoms.skin[j];
-                        if r2 < cutoff * cutoff * skin_fraction2 {
-                            neighbor.neighbor_indices.push(j as u32);
-                        }
-                    }
+        // Forward stencil cells
+        for &offset in &stencil_forward {
+            let c = (my_cell as i32 + offset) as usize;
+            let start = bin_start[c] as usize;
+            let end = bin_start[c + 1] as usize;
+            for m in start..end {
+                let j = sorted_atoms[m] as usize;
+                let tag_j = atoms.tag[j];
+                if seen_tags.contains(&tag_j) {
+                    continue;
                 }
-            }
-
-            for &offset in &stencil_other {
-                let c = (my_cell as i32 + offset) as usize;
-                let start = unsafe { *bs_ptr.add(c) } as usize;
-                let end = unsafe { *bs_ptr.add(c + 1) } as usize;
-                for m in start..end {
-                    let j = unsafe { *sa_ptr.add(m) } as usize;
-                    unsafe {
-                        let dx = *sx_ptr.add(m) - xi;
-                        let dy = *sy_ptr.add(m) - yi;
-                        let dz = *sz_ptr.add(m) - zi;
-                        let r2 = dx * dx + dy * dy + dz * dz;
-                        let cutoff = si + atoms.skin[j];
-                        if r2 < cutoff * cutoff * skin_fraction2 {
-                            neighbor.neighbor_indices.push(j as u32);
-                        }
-                    }
+                let dx = atoms.pos_x[j] - xi;
+                let dy = atoms.pos_y[j] - yi;
+                let dz = atoms.pos_z[j] - zi;
+                let r2 = dx * dx + dy * dy + dz * dz;
+                let cutoff = (si + atoms.skin[j]) * skin_fraction;
+                if r2 < cutoff * cutoff {
+                    indices.push(j as u32);
+                    seen_tags.push(tag_j);
                 }
             }
         }
     }
-    let final_off = neighbor.neighbor_indices.len() as u32;
-    neighbor.neighbor_offsets.push(final_off);
+    offsets.push(indices.len() as u32);
 
-    // Return borrowed vectors
-    neighbor.bin_stencil_forward = stencil_other;
-    neighbor.scratch_r2 = scratch_r2;
-
-    // Return scratch buffers for reuse
-    neighbor.scratch_atom_cell = atom_cell;
-    neighbor.scratch_bin_count = bin_count_arr;
-    neighbor.scratch_bin_start = bin_start;
-    neighbor.scratch_write_pos = write_pos;
-    neighbor.scratch_sorted_atoms = sorted_atoms;
-    neighbor.scratch_sorted_x = sorted_x;
-    neighbor.scratch_sorted_y = sorted_y;
-    neighbor.scratch_sorted_z = sorted_z;
+    neighbor.neighbor_offsets = offsets;
+    neighbor.neighbor_indices = indices;
+    neighbor.bin_stencil_forward = stencil_forward;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use mddem_core::Atom;
-    use nalgebra::{UnitQuaternion, Vector3};
+    use nalgebra::Vector3;
 
     fn push_atom(atom: &mut Atom, tag: u32, pos: Vector3<f64>, radius: f64) {
-        atom.tag.push(tag);
-        atom.atom_type.push(0);
-        atom.origin_index.push(0);
-        atom.pos_x.push(pos.x);
-        atom.pos_y.push(pos.y);
-        atom.pos_z.push(pos.z);
-        atom.vel_x.push(0.0);
-        atom.vel_y.push(0.0);
-        atom.vel_z.push(0.0);
-        atom.force_x.push(0.0);
-        atom.force_y.push(0.0);
-        atom.force_z.push(0.0);
-        atom.torque_x.push(0.0);
-        atom.torque_y.push(0.0);
-        atom.torque_z.push(0.0);
-        atom.mass.push(1.0);
-        atom.skin.push(radius);
-        atom.is_ghost.push(false);
-        atom.has_ghost.push(false);
-        atom.is_collision.push(false);
-        atom.quaterion.push(UnitQuaternion::identity());
-        atom.omega_x.push(0.0);
-        atom.omega_y.push(0.0);
-        atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0);
-        atom.ang_mom_y.push(0.0);
-        atom.ang_mom_z.push(0.0);
+        atom.push_test_atom(tag, pos, radius, 1.0);
     }
 
     #[test]
@@ -909,6 +767,31 @@ mod tests {
         let end = n.neighbor_offsets[1] as usize;
         let has_pair = n.neighbor_indices[start..end].contains(&1u32);
         assert!(has_pair, "pair (0,1) should be in CSR neighbors");
+    }
+
+    #[test]
+    fn pair_iter_matches_manual() {
+        let mut neighbor = Neighbor::new();
+        // 3 local atoms: atom 0 -> [1, 2], atom 1 -> [2], atom 2 -> []
+        neighbor.neighbor_offsets = vec![0, 2, 3, 3];
+        neighbor.neighbor_indices = vec![1, 2, 2];
+
+        let pairs: Vec<(usize, usize)> = neighbor.pairs(3).collect();
+        assert_eq!(pairs, vec![(0, 1), (0, 2), (1, 2)]);
+    }
+
+    #[test]
+    fn pair_iter_empty() {
+        let mut neighbor = Neighbor::new();
+        neighbor.neighbor_offsets = vec![0, 0, 0];
+        neighbor.neighbor_indices = vec![];
+
+        let pairs: Vec<(usize, usize)> = neighbor.pairs(2).collect();
+        assert!(pairs.is_empty());
+
+        // Also test zero local atoms
+        let pairs2: Vec<(usize, usize)> = neighbor.pairs(0).collect();
+        assert!(pairs2.is_empty());
     }
 
     #[test]

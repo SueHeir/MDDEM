@@ -47,9 +47,11 @@ impl PluginGroup for GranularDefaultPlugins {
     fn build(self) -> PluginGroupBuilder {
         PluginGroupBuilder::start::<Self>()
             .add(DemAtomPlugin)
+            .add(DemAtomInsertPlugin)
             .add(HertzNormalForcePlugin)
             .add(MindlinTangentialForcePlugin)
             .add(RotationalDynamicsPlugin)
+            .add(GranularTempPlugin)
     }
 }
 ```

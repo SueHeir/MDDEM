@@ -1,79 +1,64 @@
-# MDDEM: Molecular Dynamics - Discrete Element Method
+# MDDEM
 
-> **Disclaimer:** This is a toy project created to explore coding patterns in Rust. Much of the code was written with the assistance of Claude (Anthropic's AI). Vibe-coded pull requests are accepted, provided the contributor is qualified in the relevant domain and has personally reviewed the code being submitted.
+**Molecular Dynamics / Discrete Element Method in Rust**
 
-MDDEM (pronounced like "Madem" without the 'a') is a Molecular Dynamics / Discrete Element Method codebase written in Rust with optional MPI parallelization.
-It uses [rsmpi](https://github.com/rsmpi/rsmpi) as a Rust wrapper around MPI (feature-gated behind `mpi_backend`) and [nalgebra](https://github.com/dimforge/nalgebra) as a math library. MPI is optional — MDDEM builds and runs on a single process without it.
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE)
 
-LAMMPS/LIGGGHTS-style MPI communication (exchange, borders, reverse force) is fully implemented for periodic boxes of spheres with Hertz normal contact, Mindlin tangential friction, and rotational dynamics. Continuous-potential molecular dynamics is also supported, with a Lennard-Jones fluid example validated against known liquid Argon properties.
+> **Note:** The initial working example of MDDEM was hand-written, but all code has since been touched and expanded by [Claude Code](https://claude.ai/claude-code). This project explores alternative coding patterns to LAMMPS, prioritizing ergonomics — composable plugins, typed configs, and a Rust-native API — over raw feature count or performance. On a personal note, I am not a MD person, my background is in DEM. When you see "Identical physics: LJ 12-6 with cutoff 2.5" I do not know what 12-6 is, I did not check. If you are an MD person don't be shocked that the MD side doesn't make sense.
 
-## Design Philosophy
+## What is MDDEM?
 
-MDDEM is built around **composability**. A dependency-injection scheduler (inspired by [Bevy](https://github.com/bevyengine/bevy)) and plugin system let you assemble simulations from independent, reusable pieces. Physics models, integrators, neighbor list algorithms, and output formats are all plugins — swap one out, add a new one, or combine them without touching the rest of the codebase. Systems declare what resources they need as function arguments; the scheduler injects them automatically and handles execution order.
+MDDEM (pronounced like "Madem" without the 'a') is a particle simulation engine written in Rust. It supports both Discrete Element Method (DEM) for granular materials and Molecular Dynamics (MD) for continuous-potential systems like Lennard-Jones fluids. MPI parallelization is optional and feature-gated — MDDEM builds and runs on a single process without it.
 
-Configuration follows a **two-tier** approach:
+The design is built around **composability**. A dependency-injection scheduler (inspired by [Bevy](https://github.com/bevyengine/bevy)) and plugin system let you assemble simulations from independent, reusable pieces. Physics models, integrators, neighbor lists, and output formats are all plugins. Systems declare what resources they need as function arguments; the scheduler injects them automatically and handles execution order.
 
-**Tier 1 — Declarative TOML config** for standard simulations. Named fields, typed values, validated at startup via `serde`. Each plugin owns its config section, and multi-stage runs are expressed as `[[run]]` arrays.
+Configuration follows a two-tier approach. **Tier 1** is declarative TOML config for standard simulations — named fields, typed values, validated at startup. **Tier 2** is the Rust API for complex simulations — `main.rs` composes plugins, and custom systems are real functions with full type safety and IDE autocomplete. Both tiers can be mixed: the [hopper](examples/hopper/) example uses TOML config with custom Rust systems for runtime wall control.
 
-**Tier 2 — Rust API** for complex simulations. The simulation is a library — `main.rs` composes plugins, and custom systems are real functions with full type safety, IDE autocomplete, and the entire Rust ecosystem. For example, the [hopper](examples/hopper/) example adds a custom system that monitors kinetic energy and removes a wall when particles settle, using `run_if(in_state(...))` for phase-dependent logic.
+## Installation
 
-## Building
-
-By default, MDDEM builds with MPI support via the `mpi_backend` feature flag. On systems where MPI/libffi-sys is unavailable (e.g. aarch64 macOS without Homebrew libffi), you can build without MPI:
-
-```bash
-# With MPI (default)
-cargo build --release
-
-# Without MPI (single-process only)
-cargo build --release --no-default-features
-```
-
-When built without `mpi_backend`, a `SingleProcessComm` backend is used automatically — no code changes needed. This mode supports all physics and periodic boundaries on a single process.
-
-## Running
-
-Examples are compiled executables. For single-process runs:
-
-```bash
-cargo run --example granular_basic -- examples/granular_basic/config.toml
-```
-
-For MPI runs, build first then launch with `mpiexec`:
-
-```bash
-cargo build-examples                # alias for: cargo build --release --examples
-mpiexec -n 4 ./target/release/examples/granular_basic examples/granular_basic/config.toml
-```
-
-Pass `--schedule` to print the compiled schedule and write a Graphviz DOT file:
-
-```bash
-cargo run --example granular_basic -- examples/granular_basic/config.toml --schedule
-```
-
-Pass `--generate-config` to print a complete TOML config file with all default values from the registered plugins. Each plugin contributes its own config section with comments, so custom plugins automatically participate:
-
-```bash
-cargo run --example granular_basic -- --generate-config
-```
-
-## Input
-
-Parameters are organized into TOML sections, each owned by its plugin:
+MDDEM is not on crates.io. Add it as a git dependency:
 
 ```toml
-[comm]
-processors_x = 2
-processors_y = 2
-processors_z = 1
+[dependencies]
+mddem = { git = "https://github.com/SueHeir/MDDEM" }
+```
 
+To build with MPI support (default), you need an MPI implementation installed (e.g., OpenMPI, MPICH). To build without MPI:
+
+```toml
+[dependencies]
+mddem = { git = "https://github.com/SueHeir/MDDEM", default-features = false }
+```
+
+To clone and work on MDDEM directly:
+
+```bash
+git clone https://github.com/SueHeir/MDDEM.git
+cd MDDEM
+cargo build --release
+```
+
+## Quick Start
+
+### DEM: Granular Gas
+
+**`main.rs`**
+```rust
+use mddem::prelude::*;
+
+fn main() {
+    let mut app = App::new();
+    app.add_plugins(CorePlugins)
+        .add_plugins(GranularDefaultPlugins);
+    app.start();
+}
+```
+
+**`config.toml`**
+```toml
 [domain]
-x_low = 0.0
 x_high = 0.025
-y_low = 0.0
 y_high = 0.025
-z_low = 0.0
 z_high = 0.025
 periodic_x = true
 periodic_y = true
@@ -98,119 +83,140 @@ density = 2500.0
 velocity = 0.5
 
 [run]
-thermo = 100
 steps = 10000
-
-[dump]
-interval = 1000
-format = "text"
-
-[restart]
-interval = 10000
-format = "bincode"
-read = false
-
-[vtp]
-interval = 2000
+thermo = 100
 ```
 
-Materials are defined as named types under `[[dem.materials]]`. Particles reference a material by name in `[[particles.insert]]`. Multiple material types and insert blocks are supported — mixed-material contacts use geometric-mean mixing for restitution and friction (LAMMPS convention).
+### MD: Lennard-Jones Fluid
 
-### Multi-stage runs
+**`main.rs`**
+```rust
+use mddem::prelude::*;
 
-For sequential simulation stages with different settings, use `[[run]]` (TOML array) instead of `[run]`:
+fn main() {
+    let mut app = App::new();
+    app.add_plugins(CorePlugins).add_plugins(LJDefaultPlugins);
+    app.start();
+}
+```
 
+**`config.toml`**
 ```toml
-[[run]]
-name = "settling"
-steps = 10000
-thermo = 100
+[domain]
+x_high = 10.06
+y_high = 10.06
+z_high = 10.06
+periodic_x = true
+periodic_y = true
+periodic_z = true
 
-[[run]]
-name = "production"
+[neighbor]
+skin_fraction = 1.12
+bin_size = 1.0
+
+[lattice]
+style = "fcc"
+density = 0.85
+temperature = 0.85
+mass = 1.0
+skin = 1.25
+
+[lj]
+epsilon = 1.0
+sigma = 1.0
+cutoff = 2.5
+
+[thermostat]
+temperature = 0.85
+coupling = 1.0
+
+[run]
 steps = 100000
 thermo = 1000
-dump_interval = 500
 ```
 
-Each stage can override `dump_interval`, `restart_interval`, and `vtp_interval` for that stage only; unset values fall back to the global `[dump]`/`[restart]`/`[vtp]` config. Single-stage `[run]` is still supported.
+### Running
 
-### Parameters
+```bash
+# Single process
+cargo run --release -- config.toml
 
-| Section | Parameter | Description |
-|---|---|---|
-| `[comm]` | `processors_x/y/z` | MPI domain decomposition (default 1) |
-| `[domain]` | `x/y/z_low/high` | Simulation box bounds (m) |
-| `[domain]` | `periodic_x/y/z` | Boundary condition per axis |
-| `[neighbor]` | `skin_fraction` | Neighbor list cutoff multiplier |
-| `[neighbor]` | `bin_size` | Minimum bin size for bin-based neighbor list |
-| `[[dem.materials]]` | `name` | Material type name |
-| `[[dem.materials]]` | `youngs_mod` | Young's modulus (Pa) |
-| `[[dem.materials]]` | `poisson_ratio` | Poisson ratio |
-| `[[dem.materials]]` | `restitution` | Normal restitution coefficient (0-1) |
-| `[[dem.materials]]` | `friction` | Coulomb friction coefficient (default 0.4) |
-| `[[particles.insert]]` | `material` | Name of material type to use |
-| `[[particles.insert]]` | `count` | Number of spheres to insert randomly |
-| `[[particles.insert]]` | `radius` | Particle radius (m) |
-| `[[particles.insert]]` | `density` | Particle density (kg/m^3) |
-| `[[particles.insert]]` | `velocity` | Initial RMS velocity (m/s, Gaussian per component) |
-| `[[particles.insert]]` | `velocity_x/y/z` | Directional initial velocity components (m/s, additive with random) |
-| `[[particles.insert]]` | `region_x/y/z_low/high` | Insertion sub-region bounds (optional, defaults to domain) |
-| `[gravity]` | `gx`, `gy`, `gz` | Gravitational acceleration components (m/s^2, default 0, 0, -9.81) |
-| `[[wall]]` | `point_x/y/z` | A point on the wall plane (m) |
-| `[[wall]]` | `normal_x/y/z` | Inward normal vector (normalized internally) |
-| `[[wall]]` | `bound_x/y/z_low/high` | Optional bounding box to clip wall to a finite region |
-| `[[wall]]` | `material` | Material name for contact properties |
-| `[[wall]]` | `name` | Optional wall name (for runtime toggling) |
-| `[run]` or `[[run]]` | `name` | Stage name for logging (optional) |
-| `[run]` or `[[run]]` | `steps` | Number of timesteps |
-| `[run]` or `[[run]]` | `thermo` | Print thermodynamic output every N steps |
-| `[[run]]` | `dump_interval` | Override dump interval for this stage (optional) |
-| `[[run]]` | `restart_interval` | Override restart interval for this stage (optional) |
-| `[[run]]` | `vtp_interval` | Override VTP interval for this stage (optional) |
-| `[dump]` | `interval` | Dump atom data every N steps (0 = disabled) |
-| `[dump]` | `format` | Dump format: `"text"` (CSV) or `"binary"` |
-| `[restart]` | `interval` | Write restart files every N steps (0 = disabled) |
-| `[restart]` | `format` | Restart format: `"bincode"` or `"json"` |
-| `[restart]` | `read` | Read restart file on startup (default false) |
-| `[vtp]` | `interval` | Write VTP visualization files every N steps (0 = disabled) |
-| `[lj]` | `epsilon` | LJ well depth (reduced units, default 1.0) |
-| `[lj]` | `sigma` | LJ length scale (reduced units, default 1.0) |
-| `[lj]` | `cutoff` | LJ cutoff distance in sigma units (default 2.5) |
-| `[thermostat]` | `temperature` | Target temperature T* (reduced units) |
-| `[thermostat]` | `coupling` | Nose-Hoover relaxation time tau_T |
-| `[lattice]` | `style` | Lattice type (`"fcc"`) |
-| `[lattice]` | `density` | Number density rho* |
-| `[lattice]` | `temperature` | Initial temperature for Maxwell-Boltzmann velocities |
-| `[lattice]` | `mass` | Particle mass |
-| `[lattice]` | `skin` | Neighbor skin distance |
-| `[measure]` | `rdf_bins` | Number of RDF histogram bins (default 200) |
-| `[measure]` | `rdf_cutoff` | RDF maximum distance (default 3.0) |
-| `[measure]` | `rdf_interval` | Accumulate RDF every N steps |
-| `[measure]` | `msd_interval` | Compute MSD every N steps |
-| `[measure]` | `output_interval` | Write measurement files every N steps |
+# With MPI (build first, then launch)
+cargo build --release
+mpiexec -n 4 ./target/release/my_simulation config.toml
 
-## Physics
+# Print the compiled schedule (Graphviz DOT)
+cargo run --release -- config.toml --schedule
+```
 
-- **Normal contact**: Hertz elastic contact with viscoelastic damping (LAMMPS `hertz/material` equivalent)
-- **Tangential contact**: Mindlin spring-history model with Coulomb friction cap and viscous tangential damping
-- **Damping**: beta derived from restitution coefficient e via beta = -ln(e) / sqrt(pi^2 + ln^2(e))
-- **Integration**: Velocity Verlet for both translational and rotational degrees of freedom
-- **Rotational dynamics**: Quaternion-based orientation tracking, angular velocity integration (I = 2/5 mr^2 for solid spheres)
-- **Timestep**: Automatically computed as 5% of the Rayleigh wave period
-- **Gravity**: Configurable body force (`GravityPlugin`)
-- **Walls**: General plane wall contact with Hertz repulsion (`WallPlugin`), supports axis-aligned and angled walls, toggleable at runtime for staged simulations
-- **MPI**: Optional 3D domain decomposition with ghost atom forwarding to diagonal neighbors (corner-complete). Falls back to single-process mode when built without the `mpi_backend` feature.
+## Configuration
 
-### Molecular Dynamics
-- **Lennard-Jones 12-6**: Continuous pair potential with cutoff, virial accumulator, and long-range tail corrections (`LJForcePlugin`)
-- **Nose-Hoover NVT**: Thermostat via symmetric Liouville splitting around Velocity Verlet (`NoseHooverPlugin`)
-- **FCC lattice initialization**: Face-centered cubic crystal with Maxwell-Boltzmann velocities (`LatticePlugin`)
-- **Measurements**: Radial distribution function g(r), mean square displacement, virial pressure (`MeasurePlugin`)
+Each plugin owns its TOML section. The full set of config sections:
+
+| Section | Purpose |
+|---|---|
+| `[comm]` | MPI processor grid (`processors_x/y/z`) |
+| `[domain]` | Box bounds, periodic boundaries |
+| `[neighbor]` | Skin fraction, bin size |
+| `[[dem.materials]]` | Named material types (Young's modulus, Poisson ratio, restitution, friction) |
+| `[[particles.insert]]` | Random particle insertion (material, count, radius, density, velocity) |
+| `[gravity]` | Body force components (`gx`, `gy`, `gz`) |
+| `[[wall]]` | Plane wall contacts (point, normal, optional bounds, material) |
+| `[lj]` | LJ 12-6 parameters (epsilon, sigma, cutoff) |
+| `[thermostat]` | Nose-Hoover NVT (temperature, coupling) |
+| `[lattice]` | FCC initialization (density, temperature, mass) |
+| `[measure]` | RDF, MSD, pressure measurement intervals |
+| `[run]` or `[[run]]` | Timesteps, thermo interval, per-stage overrides |
+| `[dump]` | Atom data output (interval, format: text/binary) |
+| `[restart]` | Restart files (interval, format: bincode/json) |
+| `[vtp]` | VTP visualization output |
+
+Multiple materials and insert blocks are supported — mixed-material contacts use geometric-mean mixing (LAMMPS convention). Multi-stage runs use `[[run]]` arrays where each stage can override dump/restart/VTP intervals. See the [examples](examples/) for full configs.
+
+## What's Included
+
+### DEM (Granular)
+- Hertz elastic normal contact with viscoelastic damping (LAMMPS `hertz/material` equivalent)
+- Mindlin tangential spring-history with Coulomb friction cap
+- Velocity Verlet for translational + rotational degrees of freedom
+- Quaternion-based orientation tracking
+- Automatic timestep (5% of Rayleigh wave period)
+- Configurable gravity body force
+- General plane wall contacts, toggleable at runtime
+- Named material types with per-pair mixing
+
+### MD (Molecular)
+- Lennard-Jones 12-6 with cutoff, virial accumulator, and tail corrections
+- Nose-Hoover NVT thermostat (symmetric Liouville splitting)
+- FCC lattice initialization with Maxwell-Boltzmann velocities
+- Radial distribution function, mean square displacement, virial pressure
+
+### Infrastructure
+- Optional 3D MPI domain decomposition with corner-complete ghost forwarding
+- Single-process mode with ghost atoms for periodic boundaries
+- Bin-based neighbor lists with CSR storage and forward-only stencil
+- Brute force and sweep-and-prune neighbor lists also available
+- TOML config with `serde` validation and `deny_unknown_fields` on all config structs
+- Dump files (CSV/binary), restart files (bincode/JSON), VTP visualization
+- Generic restart serialization — any registered `AtomData` extension is automatically saved/restored
+- Multi-stage runs with per-stage output control
+- `#[derive(AtomData)]` proc macro for zero-boilerplate per-atom extension structs
+
+## Examples
+
+| Example | Description | Run |
+|---------|-------------|-----|
+| [granular_basic](examples/granular_basic/) | 500-particle granular gas in a periodic box | `cargo run --example granular_basic -- examples/granular_basic/config.toml` |
+| [granular_gas_benchmark](examples/granular_gas_benchmark/) | Haff's cooling law validation with LAMMPS comparison | `cargo run --example granular_gas_benchmark -- examples/granular_gas_benchmark/config.toml` |
+| [hopper](examples/hopper/) | 2D slot hopper with angled walls, gravity, and simulation states | `cargo run --example hopper -- examples/hopper/config.toml` |
+| [lj_argon](examples/lj_argon/) | LJ fluid validated against liquid Argon (RDF, MSD, pressure) | `cargo run --release --example lj_argon -- examples/lj_argon/config.toml` |
+| [toml_single](examples/toml_single/) | Programmatic config — no TOML file needed | `cargo run --example toml_single` |
+
+DEM examples include `validate.py` scripts for physics checks (Haff's law cooling, hopper settling). The `lj_argon` example validates against known liquid Argon properties (RDF, MSD, pressure) and generates diagnostic plots. Run `./validate.sh` to execute all tests and validations.
 
 ## Performance
 
-Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). Both codes run identical physics: LJ 12-6 with cutoff 2.5 sigma, FCC lattice at rho\*=0.8442, Nose-Hoover NVT at T\*=1.44, neighbor list rebuild every 20 steps, 500 timesteps. Compiled with `--release` on Apple M1 (aarch64). MDDEM's RDF accumulator is currently O(N^2) and dominates runtime at large system sizes, so measurements (RDF, MSD) are disabled in both codes for a fair force-computation comparison.
+Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). Identical physics: LJ 12-6 with cutoff 2.5 sigma, FCC lattice at rho\*=0.8442, Nose-Hoover NVT at T\*=1.44, neighbor rebuild every 20 steps, 500 timesteps. Compiled with `--release` on Apple M1. RDF/MSD disabled in both codes for fair comparison.
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
 |--------:|---------------:|----------------:|------:|
@@ -220,32 +226,72 @@ Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). 
 |  32,000 |             26 |              92 |  3.6x |
 | 100,000 |            9.5 |            28.2 |  3.0x |
 
-LAMMPS is roughly 3-5x faster, with consistent scaling across system sizes. Both codes show the expected O(N) scaling for short-range pair potentials with neighbor lists. The remaining gap is primarily in the neighbor build and force loop, where LAMMPS benefits from decades of hand-tuned inner loops, SIMD intrinsics, and cache-optimized data layouts. The benchmark configs are in [`examples/lj_benchmark/`](examples/lj_benchmark/).
+LAMMPS is 3-5x faster, with consistent O(N) scaling in both codes. The gap is primarily in the force loop and neighbor build, where LAMMPS benefits from decades of hand-tuned SIMD and cache optimization.
 
-MDDEM uses bin-based neighbor lists with forward-only half-shell stencil, merged CSR storage, ghost atoms for periodic boundaries, and a two-phase inner loop (vectorizable distance computation followed by sequential neighbor collection). These optimizations brought single-core performance from ~2 step/s to ~20 step/s for 32k atoms. MPI domain decomposition provides additional scaling (e.g., 4-core MPI achieves ~1,370 step/s on the 864-atom lj_argon case vs ~620 step/s single-core).
+## Roadmap
 
-## Code Layout
+Planned features, organized by implementation wave:
 
-MDDEM is built around a dependency-injection scheduler inspired by [Bevy](https://github.com/bevyengine/bevy). All simulation state lives in typed resources. Systems declare the resources they need as function arguments and the scheduler injects them automatically.
+### Wave 1: Foundation
+1. **Groups** — Named atom subsets (`[[group]]`) for selective operations (thermostat a region, freeze a surface)
+2. **Custom thermo computes** — `ThermoCompute` trait + configurable thermo columns
+
+### Wave 2: Small, High-Value
+3. **Langevin thermostat** — Stochastic friction + random force
+4. **AddForce / SetForce** — Constant external forces on groups
+5. **Shrink-wrap boundaries** — Auto-expanding domain per axis
+
+### Wave 3: Medium Complexity
+6. **Energy minimization** — CG + FIRE, runs as a `[[run]]` stage
+7. **Fix ave/time** — Running time averages to file
+
+### Wave 4: Box Manipulation
+8. **NPT barostat** — Nose-Hoover pressure control with box rescaling
+9. **Fix deform** — Box size change over time
+
+### Wave 5: New Physics
+10. **Short-range Coulomb** — `k_e*q_i*q_j/r^2` with cutoff (no PPPM)
+11. **Bonded particle model** — Bond lists between DEM spheres (parallel bonds, breakage criteria) for modeling cemented/rock-like materials
+
+Every feature ships with an example and validation against analytical solutions or LAMMPS.
+
+## Out of Scope
+
+These are specialized features that won't be in core. Users can write plugins for them:
+
+- EAM / Tersoff / many-body potentials
+- ReaxFF / ML potentials (SNAP, ACE)
+- Angles / dihedrals (bonds are planned — see roadmap)
+- SHAKE / RATTLE constraints
+- Units system (TOML config uses explicit units in docs)
+- rRESPA multi-timescale integration
+- PPPM / Ewald long-range electrostatics
+- Rigid body dynamics
+- GCMC, NEB, spin dynamics
+- Triclinic (non-orthogonal) boxes
+- Multiple dump formats (XYZ, DCD, NetCDF) — CSV + VTP + binary covers most needs
+
+## Architecture
 
 | Crate | Description |
 |---|---|
+| [`mddem`](crates/mddem/) | Umbrella crate: `CorePlugins`, `LJDefaultPlugins`, prelude re-exports |
 | [`mddem_scheduler`](crates/mddem_scheduler/) | DI scheduler, resources, schedule sets, ordering, run conditions, states |
 | [`mddem_app`](crates/mddem_app/) | App, SubApp, Plugin, PluginGroup, StatesPlugin |
-| [`mddem_core`](crates/mddem_core/) | Core simulation: TOML config loading, domain decomposition, communication (MPI or single-process), atom data structures, run/cycle management |
+| [`mddem_core`](crates/mddem_core/) | TOML config, domain decomposition, communication, atom data, run management |
 | [`mddem_neighbor`](crates/mddem_neighbor/) | Neighbor lists: brute force, sweep-and-prune, bin-based |
-| [`mddem_verlet`](crates/mddem_verlet/) | Velocity Verlet translational integration (initial + final half-steps) |
-| [`mddem_print`](crates/mddem_print/) | Output: thermo, VTP visualization, granular temperature, dump files, restart files |
-| [`dem_atom`](crates/dem_atom/) | Per-atom DEM data (radius, density) with pack/unpack, `MaterialTable` for per-material and per-pair mixing, material config |
-| [`dem_atom_insert`](crates/dem_atom_insert/) | DEM particle insertion: random placement with overlap checking, populates both `Atom` and `DemAtom` fields |
-| [`dem_granular`](crates/dem_granular/) | Granular physics: Hertz normal contact, Mindlin tangential friction, rotational dynamics, `GranularDefaultPlugins` |
-| [`dem_gravity`](crates/dem_gravity/) | Configurable gravity body force (`GravityPlugin`) |
-| [`dem_wall`](crates/dem_wall/) | General plane wall contact forces with Hertz repulsion (`WallPlugin`), runtime-toggleable walls |
-| [`md_lj`](crates/md_lj/) | Lennard-Jones 12-6 pair force with virial accumulator and tail corrections |
-| [`md_thermostat`](crates/md_thermostat/) | Nose-Hoover NVT thermostat (symmetric Liouville splitting) |
-| [`md_lattice`](crates/md_lattice/) | FCC lattice initialization with Maxwell-Boltzmann velocities |
-| [`md_measure`](crates/md_measure/) | Measurement tools: radial distribution function, mean square displacement, virial pressure |
-| [`mddem`](crates/mddem/) | Umbrella crate: `CorePlugins`, `LJDefaultPlugins`, prelude re-exports |
+| [`mddem_verlet`](crates/mddem_verlet/) | Velocity Verlet translational integration |
+| [`mddem_print`](crates/mddem_print/) | Thermo, VTP, dump files, restart files |
+| [`mddem_derive`](crates/mddem_derive/) | `#[derive(AtomData)]` proc macro |
+| [`dem_atom`](crates/dem_atom/) | Per-atom DEM data, `MaterialTable`, material config |
+| [`dem_atom_insert`](crates/dem_atom_insert/) | Random particle insertion with overlap checking |
+| [`dem_granular`](crates/dem_granular/) | Hertz normal, Mindlin tangential, rotational dynamics, granular temperature |
+| [`dem_gravity`](crates/dem_gravity/) | Gravity body force |
+| [`dem_wall`](crates/dem_wall/) | Plane wall contact forces |
+| [`md_lj`](crates/md_lj/) | LJ 12-6 pair force with virial and tail corrections |
+| [`md_thermostat`](crates/md_thermostat/) | Nose-Hoover NVT thermostat |
+| [`md_lattice`](crates/md_lattice/) | FCC lattice initialization |
+| [`md_measure`](crates/md_measure/) | RDF, MSD, virial pressure |
 
 A simulation is composed by adding plugin groups to an `App`:
 
@@ -259,252 +305,29 @@ fn main() {
 }
 ```
 
-`CorePlugins` bundles TOML config loading, communication, domain decomposition, neighbor lists, run/cycle management, Velocity Verlet integration, and output. `LJDefaultPlugins` bundles FCC lattice initialization, LJ 12-6 forces, Nose-Hoover thermostat, and measurements for MD simulations. MPI finalization is handled automatically via cleanup callbacks. Individual plugins can be added separately for custom configurations.
-
-### Programmatic config
-
-You can construct an `App` directly with a programmatic `Config` table, bypassing TOML file parsing (see the [toml_single](examples/toml_single/) example):
-
-```rust
-use mddem::prelude::*;
-
-fn main() {
-    let mut table = toml::Table::new();
-
-    let mut comm = toml::Table::new();
-    comm.insert("processors_x".into(), 1.into());
-    comm.insert("processors_y".into(), 1.into());
-    comm.insert("processors_z".into(), 1.into());
-    table.insert("comm".into(), comm.into());
-
-    let mut domain = toml::Table::new();
-    domain.insert("x_high".into(), toml::Value::Float(0.025));
-    domain.insert("y_high".into(), toml::Value::Float(0.025));
-    domain.insert("z_high".into(), toml::Value::Float(0.025));
-    domain.insert("periodic_x".into(), true.into());
-    domain.insert("periodic_y".into(), true.into());
-    domain.insert("periodic_z".into(), true.into());
-    table.insert("domain".into(), domain.into());
-
-    let mut mat = toml::Table::new();
-    mat.insert("name".into(), "glass".into());
-    mat.insert("youngs_mod".into(), toml::Value::Float(8.7e9));
-    mat.insert("poisson_ratio".into(), toml::Value::Float(0.3));
-    mat.insert("restitution".into(), toml::Value::Float(0.95));
-    mat.insert("friction".into(), toml::Value::Float(0.4));
-    let mut dem = toml::Table::new();
-    dem.insert("materials".into(), toml::Value::Array(vec![toml::Value::Table(mat)]));
-    table.insert("dem".into(), dem.into());
-
-    let mut insert = toml::Table::new();
-    insert.insert("material".into(), "glass".into());
-    insert.insert("count".into(), 100.into());
-    insert.insert("radius".into(), toml::Value::Float(0.001));
-    insert.insert("density".into(), toml::Value::Float(2500.0));
-    insert.insert("velocity".into(), toml::Value::Float(0.5));
-    let mut particles = toml::Table::new();
-    particles.insert("insert".into(), toml::Value::Array(vec![toml::Value::Table(insert)]));
-    table.insert("particles".into(), particles.into());
-
-    let mut run = toml::Table::new();
-    run.insert("steps".into(), 1000.into());
-    run.insert("thermo".into(), 100.into());
-    table.insert("run".into(), run.into());
-
-    let mut app = App::new();
-    app.add_resource(Input { filename: String::new(), output_dir: None });
-    app.add_resource(Config { table });
-    app.add_plugins(CorePlugins)
-        .add_plugins(GranularDefaultPlugins);
-    app.start();
-}
-```
-
-When `Config` is already present before `CorePlugins` builds, `InputPlugin` skips CLI parsing entirely. MPI finalization is handled automatically. Useful for embedding MDDEM as a library or running from a custom driver.
-
-Per-atom DEM data (radius, density) is stored in `DemAtom`, a typed extension registered with `AtomDataRegistry`. The registry packs and unpacks these fields automatically during MPI communication alongside the base `Atom` fields. Per-material properties (Young's modulus, Poisson ratio, restitution, friction) live in `MaterialTable`, populated at plugin build time from `[[dem.materials]]` config.
+`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, Velocity Verlet, and output. `GranularDefaultPlugins` adds DEM atom data, insertion, contact forces, gravity, and walls. `LJDefaultPlugins` adds FCC lattice, LJ forces, thermostat, and measurements. Individual plugins can be added separately for custom configurations.
 
 ## Testing
 
-Tests run without MPI, using the single-process backend:
-
 ```bash
-# Run all tests
-cargo test --workspace --no-default-features
+cargo test --workspace                    # All tests (with MPI)
+cargo test --workspace --no-default-features  # All tests (without MPI)
+cargo test -p dem_granular                # Single crate
 
-# Run tests for a specific crate
-cargo test -p mddem_core --no-default-features
-cargo test -p mddem_verlet
-cargo test -p mddem_neighbor
-cargo test -p dem_granular
-cargo test -p md_lj
-cargo test -p md_thermostat
-cargo test -p md_lattice
-cargo test -p md_measure
+./validate.sh                             # Full validation: tests + examples + physics checks
+./validate.sh --long                      # Production-length runs with full physics validation
+./validate.sh --dem                       # DEM examples only
+./validate.sh --md                        # MD examples only
 ```
 
-Tests cover:
-- `SingleProcessComm` backend (rank, size, reductions)
-- `CartesianDecomposition` (single-proc and multi-proc domain splitting)
-- Velocity Verlet integration (initial and final half-steps)
-- Neighbor lists (brute force, sweep-and-prune, and bin-based)
-- Hertz normal contact force (repulsive for overlap, zero for gap)
-- Mindlin tangential friction (spring history, Coulomb cap)
-- Rotational dynamics (angular acceleration, quaternion updates)
-- Material mixing (single-material, multi-material symmetry)
-- LJ 12-6 force (repulsive/attractive/cutoff, Newton's 3rd law, virial)
-- Nose-Hoover thermostat (temperature control, stability)
-- FCC lattice insertion (atom count, density, zero COM velocity)
-- RDF and MSD measurement infrastructure
+Unit tests cover: single-process communication, domain decomposition, Velocity Verlet integration, neighbor lists (all three algorithms), Hertz/Mindlin contact forces, rotational dynamics, material mixing, LJ force and virial, Nose-Hoover thermostat, FCC lattice insertion, and RDF/MSD measurement.
 
-## Examples
+Physics validation scripts (`validate.py` per example) check simulation output against analytical solutions: Haff's cooling law for granular gas, settling behavior for hopper, and RDF/MSD/pressure against known liquid Argon properties for LJ fluid.
 
-Examples are compiled executables, each with a `main.rs` and supporting files:
+## Contributing
 
-| Example | Description | Run |
-|---------|-------------|-----|
-| [granular_basic](examples/granular_basic/) | 500-particle granular gas in a periodic box | `cargo run --example granular_basic -- examples/granular_basic/config.toml` |
-| [benchmark](examples/benchmark/) | Haff's cooling law validation with LAMMPS comparison | `cargo run --example benchmark -- examples/benchmark/config.toml` |
-| [toml_single](examples/toml_single/) | Programmatic config — no TOML file needed | `cargo run --example toml_single` |
-| [hopper](examples/hopper/) | 2D slot hopper with angled funnel walls, gravity, and simulation states | `cargo run --example hopper -- examples/hopper/config.toml` |
-| [lj_argon](examples/lj_argon/) | LJ fluid validated against liquid Argon (RDF, MSD, pressure) | `cargo run --release --no-default-features --example lj_argon -- examples/lj_argon/config.toml` |
+Vibe-coded PRs are accepted, provided the contributor is qualified in the relevant domain and has personally reviewed the code being submitted. Report issues at [github.com/SueHeir/MDDEM/issues](https://github.com/SueHeir/MDDEM/issues).
 
-The `granular_basic`, `benchmark`, `hopper`, and `lj_argon` examples use TOML config files (Tier 1). The `toml_single` example builds its config entirely in Rust code (Tier 2), demonstrating programmatic setup for parameter sweeps or embedding MDDEM as a library. The `hopper` example combines TOML config with a custom Rust setup system (Tier 2) for runtime wall control. The `lj_argon` example includes a Python validation script (`validate.py`) that checks simulation output against known liquid Argon properties and generates diagnostic plots.
+## License
 
-## Future Goals
-
-Each goal is a physics simulation that doubles as a benchmark. Implementing each one requires adding specific new features, and the analytical/experimental comparisons validate correctness. Together they test the composability and flexibility of the plugin architecture.
-
-### 1. Granular Column Collapse (Dam Break)
-
-A tall column of particles is released and collapses under gravity, spreading until it comes to rest. The granular analogue of a dam break.
-
-**New features needed:**
-- Lattice-packed particle insertion (FCC/cubic packing within a region, extending `dem_atom_insert`)
-- Open or absorbing domain boundaries for particles that leave the simulation box
-
-**Why it matters:** Tests large-displacement transient dynamics where particles move many body-diameters. Validates multi-stage simulation (settle with confining walls, then remove walls to trigger collapse). Exercises MPI load balancing as particles rapidly redistribute across processors. Stresses the neighbor list under fast-changing spatial configurations.
-
-**Validation:** Normalized runout scales as (L_final - L_0)/L_0 ~ a^0.9 and deposit height as H_final/H_0 ~ a^(-0.6) where a = H_0/L_0 is the initial aspect ratio. These power laws are remarkably robust and material-independent ([Lube et al., J. Fluid Mech. 508, 2004](https://doi.org/10.1017/S0022112004009036)).
-
-### 2. Angle of Repose (Funnel Discharge)
-
-Particles pour continuously from a funnel onto a flat surface, forming a conical pile. The pile angle is a fundamental bulk property determined by friction and rolling resistance.
-
-**New features needed:**
-- Rolling resistance torque model (elastic-plastic spring, Type C per [Ai et al., Granular Matter 13, 2011](https://doi.org/10.1007/s10035-010-0229-0)) — a new torque plugin that composes with existing Mindlin tangential forces and rotational Verlet integration
-- Runtime particle insertion — a system that creates particles at specified intervals during the run phase, not just at setup
-
-**Why it matters:** This is the single most common DEM calibration benchmark in the literature, used by a [16-group international round-robin study](https://www.sciencedirect.com/science/article/pii/S003808062300001X). Rolling resistance is a new physics plugin that must integrate cleanly with existing contact forces, directly testing plugin composability. Without rolling resistance, smooth spheres produce unrealistically low angles (~20 deg vs 25-35 deg for real materials).
-
-**Validation:** For glass beads with mu=0.5, angle of repose ~25 +/- 2 deg. The angle should be independent of pile size (scale invariance). Analytical expressions from [Albert et al., PNAS 118, 2021](https://www.pnas.org/doi/10.1073/pnas.2107965118).
-
-### 3. Inclined Chute Flow (Bagnold Profile)
-
-Steady-state granular flow down a rough inclined surface. Particles reach equilibrium where gravity balances friction, producing a characteristic velocity profile through the flow depth.
-
-**New features needed:**
-- Frozen/fixed particles — a particle flag that participates in neighbor finding and contact forces but skips integration, used to create a rough wall base
-- Spatial binning for velocity profiles — analysis output that bins particle velocities by depth to extract the flow profile
-
-**Why it matters:** Tests that Hertz/Mindlin contact forces produce correct *bulk* rheology, not just pairwise correctness. Validates periodic boundaries under sustained non-equilibrium shear flow. Tests steady-state energy balance (gravitational input = frictional dissipation). The velocity profile measurement exercises analysis/output infrastructure.
-
-**Validation:** Bagnold velocity profile v(z) ~ [1 - (1-z/H)^(3/2)] ([Silbert et al., Phys. Rev. E 64, 2001](https://doi.org/10.1103/PhysRevE.64.051302)). The mu(I) rheology curve can be extracted and compared to the empirical law mu(I) = mu_s + (mu_2 - mu_s)/(I_0/I + 1) ([Jop et al., Nature 441, 2006](https://doi.org/10.1038/nature04801)).
-
-### 4. Simple Shear with Lees-Edwards Boundaries (mu(I) Rheology)
-
-Uniform simple shear at controlled shear rate and pressure. The gold standard for measuring bulk granular constitutive behavior, eliminating wall effects entirely.
-
-**New features needed:**
-- Lees-Edwards boundary conditions (LEBC) — deforming periodic boundaries where images are displaced at a controlled velocity. Requires changes to domain wrapping, ghost atom velocity offsets, neighbor list image displacement, and force relative-velocity calculations
-- Simple barostat — Berendsen-style rescaling of the box dimension perpendicular to shear to maintain target pressure
-
-**Why it matters:** The most architecturally demanding benchmark. LEBC requires fundamental changes to the periodic boundary infrastructure — boundaries that move and deform over time. Tests that MPI domain decomposition handles a continuously deforming domain. The mu(I) curve integrates all contact mechanics into a single measurable relationship, making it the most fundamental constitutive test of the force model.
-
-**Validation:** mu(I) = mu_s + (mu_2 - mu_s)/(I_0/I + 1) with mu_s ~ 0.38, mu_2 ~ 0.64, I_0 ~ 0.28 for frictional spheres ([da Cruz et al., Phys. Rev. E 72, 2005](https://doi.org/10.1103/PhysRevE.72.021309)). Volume fraction phi(I) = phi_max - (phi_max - phi_min)*I with phi_max ~ 0.64.
-
-### 5. Vibrated Granular Bed (Convection and Brazil Nut Effect)
-
-A container of particles is vibrated sinusoidally from below. Above a critical acceleration, particles detach from the base and complex phenomena emerge: convection cells form and large intruder particles rise to the surface (the Brazil Nut Effect).
-
-**New features needed:**
-- Moving/oscillating walls — walls whose position varies as x(t) = A*sin(omega*t), with wall velocity feeding into the contact force calculation
-- Per-step wall update system — updates wall positions and velocities each timestep
-- Intruder particle tracking — per-particle position-vs-time output for tagged particles
-- Multi-size particle insertion — polydisperse mixtures with large intruder particles among smaller ones
-
-**Why it matters:** Tests the full spectrum of granular dynamics in a single simulation: dense packing, fluidization, free flight, and re-compaction. Validates time-dependent boundary conditions (prerequisite for rotating drums, shakers, and industrial applications). Tests multi-material/multi-size composability. The convection cell pattern validates correct collective behavior, not just pairwise accuracy.
-
-**Validation:** Critical acceleration for fluidization: Gamma_c = A*omega^2/g = 1. Convection onset at Gamma ~ 2-3 ([Wildman et al., Phys. Rev. Lett. 86, 2001](https://doi.org/10.1103/PhysRevLett.86.3304)). Intruder rise velocity scales linearly with vibration velocity amplitude.
-
-### Molecular Dynamics
-
-The DEM benchmarks above validate granular contact mechanics. The following MD benchmarks progressively build general-purpose molecular simulation capability, each layering new features on top of the previous ones.
-
-### ~~6. Lennard-Jones Fluid (Argon)~~ DONE
-
-Implemented and validated in the [lj_argon](examples/lj_argon/) example. 864 LJ atoms on an FCC lattice at T\*=0.85, rho\*=0.85 with Nose-Hoover NVT thermostat. Validated: g(r) first peak at r=1.07 sigma (height 2.89), diffusion D\*=0.038, virial pressure with tail corrections. See `examples/lj_argon/validate.py` for automated validation and plots.
-
-**Crates added:** `md_lj` (LJ 12-6 force + virial), `md_thermostat` (Nose-Hoover NVT), `md_lattice` (FCC initialization), `md_measure` (RDF, MSD, pressure). Plugin group: `LJDefaultPlugins`.
-
-### 7. Lennard-Jones Crystal Melting
-
-An FCC crystal is heated through the melting transition, testing lattice initialization, phase detection, and the NPT ensemble.
-
-**New features needed:**
-- `md_lattice` — Lattice initializer generating FCC, BCC, HCP, or SC crystal structures with specified lattice constant
-- `md_barostat` — Nose-Hoover barostat (NPT ensemble). Couples to simulation box dimensions, rescales particle positions when the box resizes, and triggers domain/neighbor list updates
-- Variable box size support in core — `Domain` must support dynamic resizing, `Comm` must handle changing ghost cutoffs and processor boundaries
-
-**Why it matters:** The barostat is the first feature that modifies the simulation box at runtime, stress-testing domain decomposition, ghost communication, and neighbor list rebuilds as processor boundaries shift every step. Lattice initialization tests that the plugin system cleanly swaps setup strategies (lattice vs. random insertion). Phase coexistence (solid-liquid interface in one box) tests handling regions of very different local structure.
-
-**Validation:** LJ melting point at zero pressure: T_m\* = 0.694 +/- 0.006 via two-phase coexistence method ([Mastny and de Pablo, J. Chem. Phys. 127, 2007](https://doi.org/10.1063/1.2753149)). Latent heat delta_H\* ~ 1.05 ([Hansen and Verlet, Phys. Rev. 184, 1969](https://doi.org/10.1103/PhysRev.184.151)). Lindemann criterion: melting at ~10% RMS displacement of nearest-neighbor distance.
-
-### 8. Kremer-Grest Polymer Melt
-
-A melt of coarse-grained bead-spring polymer chains. Each chain is a sequence of LJ beads connected by FENE springs — the standard model for polymer dynamics and entanglement.
-
-**New features needed:**
-- `md_bond` — FENE bond potential: U = -0.5\*k\*R0^2\*ln(1 - (r/R0)^2). Iterates over a bond list and computes forces along bond vectors
-- Bond migration in MPI — when atoms migrate across processor boundaries, their bond connectivity must migrate with them
-- Chain initialization — random-walk initial configurations with soft push-off equilibration
-- Molecule topology infrastructure — molecule IDs, bond lists, neighbor list exclusions for bonded pairs
-
-**Why it matters:** Bonded interactions are the first *topological* forces (connectivity-dependent, not proximity-dependent), testing a fundamentally different force computation pattern. Bond migration across MPI boundaries is a hard test of communication infrastructure — a chain spanning 3 processors must compute forces correctly. The FENE singularity at r = R0 tests robustness. Long equilibration runs (10^6-10^7 steps) test numerical stability and performance.
-
-**Validation:** Rouse dynamics for short chains (N < N_e ~ 85): tau_R ~ N^2, monomer MSD ~ t^0.5. Reptation for long chains (N > N_e): MSD ~ t^0.25, D ~ N^-2.3. Entanglement length N_e ~ 85 beads ([Kremer and Grest, J. Chem. Phys. 92, 1990](https://doi.org/10.1063/1.458541)). End-to-end distance R_e^2 = C_inf\*N\*b^2 with C_inf ~ 1.7.
-
-### 9. SPC/E Water
-
-A box of SPC/E water molecules at ambient conditions. The standard benchmark for electrostatic solvers and rigid-body constraints.
-
-**New features needed:**
-- `md_coulomb` — Particle-Particle Particle-Mesh (PPPM) or Ewald summation for long-range electrostatics. Requires FFT (via `rustfft`), charge assignment to a mesh, reciprocal-space force calculation, and MPI mesh decomposition
-- `md_rigid` — SHAKE/RATTLE constraint algorithm for fixed bond lengths and angles
-- Partial charges on atoms — add `charge: Vec<f64>` to `Atom`
-- Mixed LJ + Coulomb pair interactions in a single force loop
-- Topology exclusions — neighbor list must exclude bonded pairs from non-bonded interactions
-
-**Why it matters:** PPPM/Ewald is a fundamentally different computation pattern: a global FFT operation rather than local pair interactions. Tests whether the plugin architecture accommodates global solvers that need the full domain. SHAKE constraints modify positions *after* the integrator, testing scheduler flexibility. Multi-site molecules with different LJ and charge parameters test the multi-type infrastructure.
-
-**Validation:** SPC/E density at 300 K, 1 atm: 998 +/- 5 kg/m^3 (exp: 997). g_OO(r) first peak at 2.75 A with height ~3.0 ([Berendsen et al., J. Phys. Chem. 91, 1987](https://doi.org/10.1021/j100308a038)). Self-diffusion D = 2.4e-5 cm^2/s (exp: 2.3e-5). Dielectric constant epsilon ~ 71 (exp: 78.4) — a stringent test of electrostatic accuracy.
-
-### 10. Transport Properties via Green-Kubo and NEMD
-
-Shear viscosity, thermal conductivity, and diffusion for a Lennard-Jones fluid using both equilibrium (Green-Kubo) and non-equilibrium (NEMD) methods.
-
-**New features needed:**
-- `md_correlator` — Time correlation function infrastructure with multiple-tau correlator algorithm for efficient O(N log N) storage over long correlations
-- `md_stress` — Per-atom and system-wide stress tensor from the virial. Requires pair forces exposed *before* summation into per-atom totals
-- `md_nemd` — Lees-Edwards sliding boundaries for shear viscosity; Muller-Plathe reverse NEMD for thermal conductivity
-- Triclinic simulation box — Lees-Edwards requires a tilted box with time-dependent tilt factor
-- Block averaging for statistical error estimation
-
-**Why it matters:** Green-Kubo requires accumulating time correlations over millions of steps, testing measurement infrastructure and correct ensemble generation. NEMD methods modify boundary conditions themselves — the most invasive type of plugin. Per-atom stress requires force loops to expose intermediate pair-force data, testing whether force plugins can share internal state through the resource system. Comparing equilibrium and non-equilibrium results for the same property provides an internal consistency check.
-
-**Validation:** Shear viscosity at T\*=1.0, rho\*=0.85: eta\* = 3.26 +/- 0.07 — Green-Kubo and NEMD must agree ([Hess, Phys. Rev. E 66, 2002](https://doi.org/10.1103/PhysRevE.66.021202)). Thermal conductivity lambda\* = 7.0 +/- 0.3. NEMD at multiple shear rates should show Newtonian plateau at low rates and shear-thinning at high rates.
-
-### Infrastructure Goals
-
-- **GPU acceleration**: Flat neighbor list arrays, grid-based neighbor detection, maybe f32 GPU force kernels. 
-- **Compile Time Dependency Plugin Checks**: We don't want people to worry about plugins missing other required plugins, or plugins that are known to not work together.
+MIT OR Apache-2.0

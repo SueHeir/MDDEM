@@ -41,28 +41,21 @@ fn my_system(atoms: Res<Atom>, mut forces: ResMut<ForceArray>) {
 `Local<T>` gives a system its own private state that persists across timesteps, initialized with `T::default()` on first use. Unlike `ResMut<T>`, a `Local` is not shared with any other system.
 
 ```rust
-pub fn tangential_force(
-    atoms:        Res<Atom>,
-    neighbor:     Res<Neighbor>,
-    mut history:  Local<HashMap<(u32, u32), Vector3<f64>>>,
+pub fn my_system(
+    atoms:  Res<Atom>,
+    mut counter: Local<u64>,
 ) {
-    // `history` retains spring displacements from the previous step.
-    for &(i, j) in neighbor.neighbor_list.iter() {
-        let entry = history.entry((atoms.tag[i], atoms.tag[j])).or_default();
-        // ... update spring displacement, compute tangential force ...
-    }
+    *counter += 1;
+    // `counter` retains its value across timesteps.
 }
 ```
 
-**DEM use cases**
-- Mindlin-Deresiewicz tangential spring history (contact-pair displacement accumulation)
+**Use cases**
 - Per-system step counters or timers without global resources
 - Cached neighbor list statistics between rebuilds
-
-**MD use cases**
-- FENE bond extension history
-- Thermostat state (Nose-Hoover chain variables) local to the thermostat system
 - Per-system RNG state for stochastic force methods (Langevin)
+
+Note: For per-atom data that needs to travel with atoms during MPI exchange (e.g., tangential contact history), use `AtomData` registered in the `AtomDataRegistry` instead of `Local`.
 
 ## Run Conditions -- `.run_if()`
 

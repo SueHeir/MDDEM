@@ -5,6 +5,7 @@ use nalgebra::{UnitVector3, Vector3};
 use dem_atom::DemAtom;
 use mddem_core::{Atom, AtomDataRegistry};
 
+/// Quaternion-based Velocity Verlet for angular degrees of freedom (I = 2/5 mr²).
 pub struct RotationalDynamicsPlugin;
 
 impl Plugin for RotationalDynamicsPlugin {
@@ -15,7 +16,7 @@ impl Plugin for RotationalDynamicsPlugin {
 }
 
 pub fn initial_rotation(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) {
-    let dem = registry.get::<DemAtom>().unwrap();
+    let dem = registry.expect::<DemAtom>("initial_rotation");
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
 
@@ -31,13 +32,13 @@ pub fn initial_rotation(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>
         if angle > 1e-14 {
             let axis = UnitVector3::new_normalize(omega);
             let dq = nalgebra::UnitQuaternion::from_axis_angle(&axis, angle);
-            atoms.quaterion[i] = dq * atoms.quaterion[i];
+            atoms.quaternion[i] = dq * atoms.quaternion[i];
         }
     }
 }
 
 pub fn final_rotation(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) {
-    let dem = registry.get::<DemAtom>().unwrap();
+    let dem = registry.expect::<DemAtom>("final_rotation");
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
 
@@ -55,39 +56,13 @@ mod tests {
     use super::*;
     use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry};
-    use nalgebra::UnitQuaternion;
+    use nalgebra::{UnitQuaternion, Vector3};
     use std::f64::consts::PI;
 
     fn push_test_atom(atom: &mut Atom, dem: &mut DemAtom, tag: u32, radius: f64) {
         let density = 2500.0;
         let mass = density * 4.0 / 3.0 * PI * radius.powi(3);
-        atom.tag.push(tag);
-        atom.atom_type.push(0);
-        atom.origin_index.push(0);
-        atom.pos_x.push(0.0);
-        atom.pos_y.push(0.0);
-        atom.pos_z.push(0.0);
-        atom.vel_x.push(0.0);
-        atom.vel_y.push(0.0);
-        atom.vel_z.push(0.0);
-        atom.force_x.push(0.0);
-        atom.force_y.push(0.0);
-        atom.force_z.push(0.0);
-        atom.torque_x.push(0.0);
-        atom.torque_y.push(0.0);
-        atom.torque_z.push(0.0);
-        atom.mass.push(mass);
-        atom.skin.push(radius);
-        atom.is_ghost.push(false);
-        atom.has_ghost.push(false);
-        atom.is_collision.push(false);
-        atom.quaterion.push(UnitQuaternion::identity());
-        atom.omega_x.push(0.0);
-        atom.omega_y.push(0.0);
-        atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0);
-        atom.ang_mom_y.push(0.0);
-        atom.ang_mom_z.push(0.0);
+        atom.push_test_atom(tag, Vector3::zeros(), radius, mass);
         dem.radius.push(radius);
         dem.density.push(density);
     }
@@ -152,7 +127,7 @@ mod tests {
         app.run();
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
-        let q = atom.quaterion[0];
+        let q = atom.quaternion[0];
         let identity = UnitQuaternion::identity();
         let angle = q.angle_to(&identity);
         assert!(

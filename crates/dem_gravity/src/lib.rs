@@ -1,3 +1,5 @@
+//! Constant gravitational body force applied to all local atoms.
+
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::Deserialize;
@@ -5,11 +7,16 @@ use serde::Deserialize;
 use mddem_core::{Atom, Config};
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+/// TOML `[gravity]` — gravitational acceleration components.
 pub struct GravityConfig {
+    /// Gravity in x direction (m/s²).
     #[serde(default)]
     pub gx: f64,
+    /// Gravity in y direction (m/s²).
     #[serde(default)]
     pub gy: f64,
+    /// Gravity in z direction (m/s²). Default: -9.81.
     #[serde(default = "default_gz")]
     pub gz: f64,
 }
@@ -28,6 +35,7 @@ fn default_gz() -> f64 {
     -9.81
 }
 
+/// Applies a constant gravitational body force to all local atoms.
 pub struct GravityPlugin;
 
 impl Plugin for GravityPlugin {
@@ -59,38 +67,12 @@ pub fn apply_gravity(mut atoms: ResMut<Atom>, gravity: Res<GravityConfig>) {
 mod tests {
     use super::*;
     use mddem_core::Atom;
-    use nalgebra::UnitQuaternion;
+    use nalgebra::Vector3;
 
     fn make_atom(mass: f64) -> Atom {
         let mut atom = Atom::new();
         atom.dt = 1e-6;
-        atom.pos_x.push(0.0);
-        atom.pos_y.push(0.0);
-        atom.pos_z.push(0.0);
-        atom.vel_x.push(0.0);
-        atom.vel_y.push(0.0);
-        atom.vel_z.push(0.0);
-        atom.force_x.push(0.0);
-        atom.force_y.push(0.0);
-        atom.force_z.push(0.0);
-        atom.torque_x.push(0.0);
-        atom.torque_y.push(0.0);
-        atom.torque_z.push(0.0);
-        atom.mass.push(mass);
-        atom.tag.push(0);
-        atom.atom_type.push(0);
-        atom.origin_index.push(0);
-        atom.is_ghost.push(false);
-        atom.has_ghost.push(false);
-        atom.is_collision.push(false);
-        atom.skin.push(0.001);
-        atom.quaterion.push(UnitQuaternion::identity());
-        atom.omega_x.push(0.0);
-        atom.omega_y.push(0.0);
-        atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0);
-        atom.ang_mom_y.push(0.0);
-        atom.ang_mom_z.push(0.0);
+        atom.push_test_atom(0, Vector3::zeros(), 0.001, mass);
         atom.nlocal = 1;
         atom.natoms = 1;
         atom
@@ -125,33 +107,8 @@ mod tests {
 
         let mut atom = make_atom(mass);
         // Add a ghost atom
-        atom.pos_x.push(0.0);
-        atom.pos_y.push(0.0);
-        atom.pos_z.push(0.0);
-        atom.vel_x.push(0.0);
-        atom.vel_y.push(0.0);
-        atom.vel_z.push(0.0);
-        atom.force_x.push(0.0);
-        atom.force_y.push(0.0);
-        atom.force_z.push(0.0);
-        atom.torque_x.push(0.0);
-        atom.torque_y.push(0.0);
-        atom.torque_z.push(0.0);
-        atom.mass.push(mass);
-        atom.tag.push(1);
-        atom.atom_type.push(0);
-        atom.origin_index.push(0);
-        atom.is_ghost.push(true);
-        atom.has_ghost.push(false);
-        atom.is_collision.push(false);
-        atom.skin.push(0.001);
-        atom.quaterion.push(UnitQuaternion::identity());
-        atom.omega_x.push(0.0);
-        atom.omega_y.push(0.0);
-        atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0);
-        atom.ang_mom_y.push(0.0);
-        atom.ang_mom_z.push(0.0);
+        atom.push_test_atom(1, Vector3::zeros(), 0.001, mass);
+        atom.is_ghost[1] = true;
         // nlocal stays 1, ghost is index 1
 
         let mut app = App::new();

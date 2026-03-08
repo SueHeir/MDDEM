@@ -12,17 +12,25 @@ fn default_thermo() -> usize {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+/// Per-stage settings: step count, thermo/dump/restart intervals.
 pub struct StageConfig {
+    /// Optional human-readable stage name.
     #[serde(default)]
     pub name: Option<String>,
+    /// Number of timesteps to run in this stage.
     #[serde(default = "default_steps")]
     pub steps: u32,
+    /// Print thermo output every N steps.
     #[serde(default = "default_thermo")]
     pub thermo: usize,
+    /// Override dump interval for this stage (None = use global).
     #[serde(default)]
     pub dump_interval: Option<usize>,
+    /// Override restart interval for this stage (None = use global).
     #[serde(default)]
     pub restart_interval: Option<usize>,
+    /// Override VTP interval for this stage (None = use global).
     #[serde(default)]
     pub vtp_interval: Option<usize>,
 }
@@ -41,6 +49,7 @@ impl Default for StageConfig {
 }
 
 #[derive(Clone)]
+/// All run stages. Supports single `[run]` or multi-stage `[[run]]` TOML syntax.
 pub struct RunConfig {
     pub stages: Vec<StageConfig>,
 }
@@ -63,6 +72,7 @@ impl Default for RunConfig {
     }
 }
 
+/// Mutable state tracking the current cycle count per stage and total.
 pub struct RunState {
     pub total_cycle: usize,
     pub cycle_count: Vec<u32>,
@@ -85,6 +95,7 @@ impl RunState {
     }
 }
 
+/// Manages run stages, cycle counting, and scheduler state transitions.
 pub struct RunPlugin;
 
 impl Plugin for RunPlugin {
@@ -152,17 +163,17 @@ pub fn run_read_input(
 
 pub fn update_cycle(
     mut run_state: ResMut<RunState>,
-    mut scheudler_manager: ResMut<SchedulerManager>,
+    mut scheduler_manager: ResMut<SchedulerManager>,
     run_config: Res<RunConfig>,
 ) {
-    let index = scheudler_manager.index;
+    let index = scheduler_manager.index;
     run_state.cycle_count[index] += 1;
     run_state.total_cycle += 1;
     if run_state.cycle_count[index] == run_state.cycle_remaining[index] {
-        scheudler_manager.index += 1;
-        scheudler_manager.state = SchedulerState::Setup;
-        if scheudler_manager.index >= run_config.num_stages() {
-            scheudler_manager.state = SchedulerState::End;
+        scheduler_manager.index += 1;
+        scheduler_manager.state = SchedulerState::Setup;
+        if scheduler_manager.index >= run_config.num_stages() {
+            scheduler_manager.state = SchedulerState::End;
         }
     }
 }

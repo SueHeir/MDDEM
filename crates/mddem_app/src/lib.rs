@@ -1,3 +1,8 @@
+//! Plugin-based application framework for MDDEM.
+//!
+//! Provides [`App`] as the central container and the [`Plugin`] trait for modular registration
+//! of resources and systems.
+
 mod app;
 mod plugin;
 mod sub_app;

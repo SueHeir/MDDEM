@@ -1,3 +1,5 @@
+//! Plane wall contact forces for DEM particles (Hertz normal + Coulomb friction).
+
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::Deserialize;
@@ -16,6 +18,8 @@ fn default_pos_inf() -> f64 {
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+/// TOML definition of a wall plane: point, normal, material, and optional bounding box.
 pub struct WallDef {
     pub point_x: f64,
     pub point_y: f64,
@@ -40,6 +44,7 @@ pub struct WallDef {
     pub bound_z_high: f64,
 }
 
+/// Runtime representation of a wall plane with resolved material index.
 pub struct WallPlane {
     pub point_x: f64,
     pub point_y: f64,
@@ -71,6 +76,7 @@ impl WallPlane {
     }
 }
 
+/// Collection of wall planes with per-wall active/inactive flags.
 pub struct Walls {
     pub planes: Vec<WallPlane>,
     pub active: Vec<bool>,
@@ -86,6 +92,7 @@ impl Walls {
     }
 }
 
+/// Registers wall contact force system from `[[wall]]` TOML config.
 pub struct WallPlugin;
 
 impl Plugin for WallPlugin {
@@ -119,18 +126,30 @@ impl Plugin for WallPlugin {
                 match val {
                     toml::Value::Array(arr) => arr
                         .iter()
-                        .map(|v| {
-                            v.clone()
-                                .try_into::<WallDef>()
-                                .expect("failed to parse [[wall]] entry")
+                        .enumerate()
+                        .map(|(idx, v)| {
+                            match v.clone().try_into::<WallDef>() {
+                                Ok(w) => w,
+                                Err(e) => {
+                                    eprintln!("ERROR: failed to parse [[wall]] entry {}: {}", idx, e);
+                                    std::process::exit(1);
+                                }
+                            }
                         })
                         .collect(),
                     toml::Value::Table(t) => {
-                        vec![toml::Value::Table(t.clone())
-                            .try_into::<WallDef>()
-                            .expect("failed to parse [wall] entry")]
+                        match toml::Value::Table(t.clone()).try_into::<WallDef>() {
+                            Ok(w) => vec![w],
+                            Err(e) => {
+                                eprintln!("ERROR: failed to parse [wall] entry: {}", e);
+                                std::process::exit(1);
+                            }
+                        }
                     }
-                    _ => panic!("[wall] must be a table or array of tables"),
+                    _ => {
+                        eprintln!("ERROR: [wall] must be a table or array of tables");
+                        std::process::exit(1);
+                    }
                 }
             } else {
                 Vec::new()
@@ -143,18 +162,23 @@ impl Plugin for WallPlugin {
 
             let mut planes = Vec::with_capacity(wall_defs.len());
             for w in &wall_defs {
-                let mat_idx = material_table
-                    .find_material(&w.material)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "wall material '{}' not found in [[dem.materials]]",
-                            w.material
-                        )
-                    }) as usize;
+                let mat_idx = match material_table.find_material(&w.material) {
+                    Some(idx) => idx as usize,
+                    None => {
+                        eprintln!(
+                            "ERROR: wall material '{}' not found in [[dem.materials]]. Available: {:?}",
+                            w.material, material_table.names
+                        );
+                        std::process::exit(1);
+                    }
+                };
                 let mag =
                     (w.normal_x * w.normal_x + w.normal_y * w.normal_y + w.normal_z * w.normal_z)
                         .sqrt();
-                assert!(mag > 1e-15, "wall normal vector must be non-zero");
+                if mag <= 1e-15 {
+                    eprintln!("ERROR: wall normal vector must be non-zero (wall material '{}')", w.material);
+                    std::process::exit(1);
+                }
                 planes.push(WallPlane {
                     point_x: w.point_x,
                     point_y: w.point_y,
@@ -192,7 +216,7 @@ pub fn wall_contact_force(
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
 ) {
-    let dem = registry.get::<DemAtom>().unwrap();
+    let dem = registry.expect::<DemAtom>("wall_contact_force");
 
     for (wall_idx, wall) in walls.planes.iter().enumerate() {
         if !walls.active[wall_idx] {
@@ -273,7 +297,7 @@ mod tests {
     use super::*;
     use dem_atom::{DemAtom, MaterialTable};
     use mddem_core::{Atom, AtomDataRegistry};
-    use nalgebra::UnitQuaternion;
+    use nalgebra::Vector3;
 
     fn push_test_atom(
         atom: &mut Atom,
@@ -284,34 +308,8 @@ mod tests {
         pos_z: f64,
         radius: f64,
     ) {
-        atom.tag.push(tag);
-        atom.atom_type.push(0);
-        atom.origin_index.push(0);
-        atom.pos_x.push(pos_x);
-        atom.pos_y.push(pos_y);
-        atom.pos_z.push(pos_z);
-        atom.vel_x.push(0.0);
-        atom.vel_y.push(0.0);
-        atom.vel_z.push(0.0);
-        atom.force_x.push(0.0);
-        atom.force_y.push(0.0);
-        atom.force_z.push(0.0);
-        atom.torque_x.push(0.0);
-        atom.torque_y.push(0.0);
-        atom.torque_z.push(0.0);
-        atom.mass
-            .push(2500.0 * 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3));
-        atom.skin.push(radius);
-        atom.is_ghost.push(false);
-        atom.has_ghost.push(false);
-        atom.is_collision.push(false);
-        atom.quaterion.push(UnitQuaternion::identity());
-        atom.omega_x.push(0.0);
-        atom.omega_y.push(0.0);
-        atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0);
-        atom.ang_mom_y.push(0.0);
-        atom.ang_mom_z.push(0.0);
+        let mass = 2500.0 * 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3);
+        atom.push_test_atom(tag, Vector3::new(pos_x, pos_y, pos_z), radius, mass);
         dem.radius.push(radius);
         dem.density.push(2500.0);
     }

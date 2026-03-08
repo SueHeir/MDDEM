@@ -1,7 +1,6 @@
 use std::{
     any::{Any, TypeId},
     cell::RefCell,
-    collections::HashMap,
 };
 
 use mddem_scheduler::{IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetupSet, System};
@@ -16,6 +15,7 @@ pub struct ConfigSnippets {
 /// Marker resource: when present, `App::start()` prints config snippets and exits.
 pub struct GenerateConfigFlag;
 
+/// Central application container. Holds resources, systems, and plugins.
 pub struct App {
     pub(crate) sub_apps: SubApps,
     cleanup_fns: Vec<Box<dyn FnOnce()>>,
@@ -23,7 +23,7 @@ pub struct App {
 
 impl Default for App {
     fn default() -> Self {
-        App::empty()
+        App::new()
     }
 }
 
@@ -31,17 +31,9 @@ impl App {
     /// Creates a new [`App`] with some default structure to enable core engine features.
     /// This is the preferred constructor for most use cases.
     pub fn new() -> App {
-        App::default()
-    }
-
-    /// Creates a new empty [`App`] with minimal default configuration.
-    ///
-    /// Use this constructor if you want to customize scheduling, exit handling, cleanup, etc.
-    pub fn empty() -> App {
         Self {
             sub_apps: SubApps {
                 main: SubApp::new(),
-                sub_apps: HashMap::new(),
             },
             cleanup_fns: Vec::new(),
         }
@@ -77,8 +69,6 @@ impl App {
             }
         }
 
-        self.main_mut().plugin_registry.push(plugin);
-        self.main_mut().plugin_build_depth += 1;
         Ok(self)
     }
 

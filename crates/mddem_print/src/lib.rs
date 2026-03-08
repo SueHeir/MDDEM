@@ -1,5 +1,7 @@
+//! Output systems: LAMMPS-style thermo, CSV/binary dump, restart files, and VTP (ParaView) output.
+
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{BufWriter, Write},
     time::Instant,
 };
@@ -8,12 +10,12 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use dem_atom::DemAtom;
 use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, Input, RunConfig, RunState};
 use mddem_neighbor::Neighbor;
 
 // ── Thermo ──────────────────────────────────────────────────────────────────
 
+/// Thermo output state: print interval and wall-clock timing.
 pub struct Thermo {
     pub interval: usize,
     pub start_time: Instant,
@@ -43,9 +45,13 @@ fn default_dump_format() -> String {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+/// TOML `[dump]` — atom dump file output settings.
 pub struct DumpConfig {
+    /// Write dump every N steps (0 = disabled).
     #[serde(default)]
     pub interval: usize,
+    /// Output format: `"text"` (CSV) or `"binary"`.
     #[serde(default = "default_dump_format")]
     pub format: String,
 }
@@ -66,11 +72,16 @@ fn default_restart_format() -> String {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+/// TOML `[restart]` — restart file write/read settings.
 pub struct RestartConfig {
+    /// Write restart every N steps (0 = disabled).
     #[serde(default)]
     pub interval: usize,
+    /// File format: `"bincode"` or `"json"`.
     #[serde(default = "default_restart_format")]
     pub format: String,
+    /// Whether to read restart files at startup.
     #[serde(default)]
     pub read: bool,
 }
@@ -115,20 +126,23 @@ struct RestartData {
     quaternion: Vec<[f64; 4]>,
     mass: Vec<f64>,
     skin: Vec<f64>,
-    radius: Vec<f64>,
-    density: Vec<f64>,
+    atom_data_buffers: Vec<Vec<f64>>,
 }
 
 // ── VTP config ──────────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
+/// TOML `[vtp]` — ParaView VTP output settings.
 pub struct VtpConfig {
+    /// Write VTP every N steps (0 = disabled).
     #[serde(default)]
     pub interval: usize,
 }
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
+/// Registers thermo, dump, restart, and VTP output systems.
 pub struct PrintPlugin;
 
 impl Plugin for PrintPlugin {
@@ -165,8 +179,7 @@ interval = 0"#,
             .add_update_system(print_vtp, ScheduleSet::PostFinalIntegration)
             .add_update_system(print_thermo, ScheduleSet::PostFinalIntegration)
             .add_update_system(dump_atoms, ScheduleSet::PostFinalIntegration)
-            .add_update_system(write_restart, ScheduleSet::PostFinalIntegration)
-            .add_update_system(print_granular_temperature, ScheduleSet::PreExchange);
+            .add_update_system(write_restart, ScheduleSet::PostFinalIntegration);
     }
 }
 
@@ -239,6 +252,25 @@ pub fn print_thermo(
 
 // ── VTP output ──────────────────────────────────────────────────────────────
 
+fn write_vtp_data_array(
+    file: &mut File,
+    vtp_type: &str,
+    name: &str,
+    n: usize,
+    value_fn: impl Fn(usize) -> String,
+) -> std::io::Result<()> {
+    writeln!(
+        file,
+        "<DataArray type=\"{}\" Name=\"{}\" format=\"ascii\">",
+        vtp_type, name
+    )?;
+    for i in 0..n {
+        writeln!(file, "{}", value_fn(i))?;
+    }
+    write!(file, "</DataArray>")?;
+    Ok(())
+}
+
 pub fn print_vtp(
     atoms: Res<Atom>,
     run_state: Res<RunState>,
@@ -255,152 +287,54 @@ pub fn print_vtp(
     if interval == 0 || !count.is_multiple_of(interval) {
         return;
     }
+    if let Err(e) = print_vtp_inner(&atoms, count, rank, &input) {
+        eprintln!("WARNING: VTP write failed at step {}: {}", count, e);
+    }
+}
+
+fn print_vtp_inner(
+    atoms: &Atom,
+    count: usize,
+    rank: i32,
+    input: &Input,
+) -> std::io::Result<()> {
     let base_dir = match input.output_dir.as_deref() {
         Some(dir) => format!("./{}/vtp", dir),
         None => "./vtp".to_string(),
     };
     let filename = format!("{}/{}CYCLE_{}RANK.vtp", base_dir, count, rank);
-    let result = fs::create_dir_all(&base_dir);
-    if let Err(_error) = result {
-        println!("Could not create file directory {}", base_dir)
-    }
-    let mut file = File::create(filename).unwrap();
-    write!(&mut file, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\">\n<PolyData>\n").unwrap();
-    writeln!(&mut file, "<Piece NumberOfPoints=\"{}\">", atoms.len()).unwrap();
-    write!(&mut file, "<Points>").unwrap();
-    write!(
-        &mut file,
-        "<DataArray type=\"Float32\" NumberOfComponents=\"3\" format=\"ascii\">"
-    )
-    .unwrap();
-    for i in 0..atoms.len() {
-        writeln!(
-            &mut file,
-            "{} {} {}",
-            atoms.pos_x[i], atoms.pos_y[i], atoms.pos_z[i]
-        )
-        .unwrap();
-    }
-    write!(&mut file, "</DataArray>\n</Points>\n").unwrap();
-    writeln!(&mut file, "<PointData Scalars=\"\" Vectors=\"\">").unwrap();
-    writeln!(
-        &mut file,
-        "<DataArray type=\"Float32\" Name=\"Radius\" format=\"ascii\">"
-    )
-    .unwrap();
-    for i in 0..atoms.len() {
-        writeln!(&mut file, "{}", atoms.skin[i]).unwrap();
-    }
-    write!(&mut file, "</DataArray>").unwrap();
-    writeln!(
-        &mut file,
-        "<DataArray type=\"Float32\" Name=\"Vel_Mag\" format=\"ascii\">"
-    )
-    .unwrap();
-    for i in 0..atoms.len() {
-        let vmag =
-            (atoms.vel_x[i].powi(2) + atoms.vel_y[i].powi(2) + atoms.vel_z[i].powi(2)).sqrt();
-        writeln!(&mut file, "{}", vmag).unwrap();
-    }
-    write!(&mut file, "</DataArray>").unwrap();
-    writeln!(
-        &mut file,
-        "<DataArray type=\"Int32\" Name=\"IsGhost\" format=\"ascii\">"
-    )
-    .unwrap();
-    for i in 0..atoms.len() {
-        let is_ghost = if i >= atoms.nlocal as usize { 1 } else { 0 };
-        writeln!(&mut file, "{}", is_ghost).unwrap();
-    }
-    write!(&mut file, "</DataArray>").unwrap();
-    writeln!(
-        &mut file,
-        "<DataArray type=\"Int32\" Name=\"IsCollision\" format=\"ascii\">"
-    )
-    .unwrap();
-    for i in 0..atoms.len() {
-        let is_collision = if atoms.is_collision[i] { 1 } else { 0 };
-        writeln!(&mut file, "{}", is_collision).unwrap();
-    }
-    write!(&mut file, "</DataArray>").unwrap();
-    write!(
-        &mut file,
-        "</PointData>\n</Piece>\n</PolyData>\n</VTKFile>\n"
-    )
-    .unwrap();
-}
+    fs::create_dir_all(&base_dir)?;
+    let mut file = File::create(&filename)?;
 
-// ── Granular temperature ────────────────────────────────────────────────────
-
-pub fn print_granular_temperature(
-    atoms: Res<Atom>,
-    run_state: Res<RunState>,
-    comm: Res<CommResource>,
-    thermo: Res<Thermo>,
-    input: Res<Input>,
-) {
-    if !run_state.total_cycle.is_multiple_of(thermo.interval) {
-        return;
-    }
+    let n = atoms.len();
     let nlocal = atoms.nlocal as usize;
-    let mut local_mv_x = 0.0;
-    let mut local_mv_y = 0.0;
-    let mut local_mv_z = 0.0;
-    let mut local_mass = 0.0;
-    for i in 0..nlocal {
-        local_mv_x += atoms.mass[i] * atoms.vel_x[i];
-        local_mv_y += atoms.mass[i] * atoms.vel_y[i];
-        local_mv_z += atoms.mass[i] * atoms.vel_z[i];
-        local_mass += atoms.mass[i];
+
+    write!(&mut file, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\">\n<PolyData>\n")?;
+    writeln!(&mut file, "<Piece NumberOfPoints=\"{}\">", n)?;
+
+    // Points
+    write!(&mut file, "<Points><DataArray type=\"Float32\" NumberOfComponents=\"3\" format=\"ascii\">")?;
+    for i in 0..n {
+        writeln!(&mut file, "{} {} {}", atoms.pos_x[i], atoms.pos_y[i], atoms.pos_z[i])?;
     }
-    let global_mv_x = comm.all_reduce_sum_f64(local_mv_x);
-    let global_mv_y = comm.all_reduce_sum_f64(local_mv_y);
-    let global_mv_z = comm.all_reduce_sum_f64(local_mv_z);
-    let global_mass = comm.all_reduce_sum_f64(local_mass);
-    let avg_vx = global_mv_x / global_mass;
-    let avg_vy = global_mv_y / global_mass;
-    let avg_vz = global_mv_z / global_mass;
-    let mut vel_diff = 0.0;
-    for i in 0..nlocal {
-        vel_diff += atoms.mass[i] * (atoms.vel_x[i] - avg_vx).powi(2)
-            + atoms.mass[i] * (atoms.vel_y[i] - avg_vy).powi(2)
-            + atoms.mass[i] * (atoms.vel_z[i] - avg_vz).powi(2);
-    }
-    let vel_diff_sum = comm.all_reduce_sum_f64(vel_diff);
-    let granular_temperature = vel_diff_sum / (3.0 * global_mass);
-    if comm.rank() != 0 {
-        return;
-    }
-    let physical_time = run_state.total_cycle as f64 * atoms.dt;
-    let base_dir = match input.output_dir.as_deref() {
-        Some(dir) => format!("./{}/data", dir),
-        None => "./data".to_string(),
-    };
-    let result = fs::create_dir_all(&base_dir);
-    if let Err(_error) = result {
-        println!("Could not create file directory {}", base_dir)
-    }
-    let data_path = format!("{}/GranularTemp.txt", base_dir);
-    let mut file = if run_state.total_cycle == 0 {
-        OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&data_path)
-            .unwrap()
-    } else {
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&data_path)
-            .unwrap()
-    };
-    writeln!(
-        &mut file,
-        "{} {:.6e} {:.10e}",
-        run_state.total_cycle, physical_time, granular_temperature
-    )
-    .unwrap();
+    write!(&mut file, "</DataArray>\n</Points>\n")?;
+
+    // Per-point data arrays
+    writeln!(&mut file, "<PointData Scalars=\"\" Vectors=\"\">")?;
+    write_vtp_data_array(&mut file, "Float32", "Radius", n, |i| format!("{}", atoms.skin[i]))?;
+    write_vtp_data_array(&mut file, "Float32", "Vel_Mag", n, |i| {
+        let vmag = (atoms.vel_x[i].powi(2) + atoms.vel_y[i].powi(2) + atoms.vel_z[i].powi(2)).sqrt();
+        format!("{}", vmag)
+    })?;
+    write_vtp_data_array(&mut file, "Int32", "IsGhost", n, |i| {
+        format!("{}", if i >= nlocal { 1 } else { 0 })
+    })?;
+    write_vtp_data_array(&mut file, "Int32", "IsCollision", n, |i| {
+        format!("{}", if atoms.is_collision[i] { 1 } else { 0 })
+    })?;
+
+    write!(&mut file, "</PointData>\n</Piece>\n</PolyData>\n</VTKFile>\n")?;
+    Ok(())
 }
 
 // ── Dump output ─────────────────────────────────────────────────────────────
@@ -408,7 +342,6 @@ pub fn print_granular_temperature(
 #[allow(clippy::too_many_arguments)]
 pub fn dump_atoms(
     atoms: Res<Atom>,
-    registry: Res<AtomDataRegistry>,
     run_state: Res<RunState>,
     comm: Res<CommResource>,
     input: Res<Input>,
@@ -426,46 +359,53 @@ pub fn dump_atoms(
         return;
     }
 
-    let rank = comm.rank();
+    if let Err(e) = dump_atoms_inner(&atoms, step, comm.rank(), &input, &dump_config) {
+        eprintln!("WARNING: Dump write failed at step {}: {}", step, e);
+    }
+}
+
+fn dump_atoms_inner(
+    atoms: &Atom,
+    step: usize,
+    rank: i32,
+    input: &Input,
+    dump_config: &DumpConfig,
+) -> std::io::Result<()> {
     let nlocal = atoms.nlocal as usize;
     let base_dir = match input.output_dir.as_deref() {
         Some(dir) => format!("./{}/dump", dir),
         None => "./dump".to_string(),
     };
-    fs::create_dir_all(&base_dir).ok();
-
-    let dem = registry.get::<DemAtom>();
+    fs::create_dir_all(&base_dir)?;
 
     match dump_config.format.as_str() {
         "binary" => {
             let filename = format!("{}/dump_{}_rank{}.bin", base_dir, step, rank);
-            let file = File::create(&filename).unwrap();
+            let file = File::create(&filename)?;
             let mut w = BufWriter::new(file);
-            w.write_all(&(nlocal as u32).to_le_bytes()).unwrap();
+            w.write_all(&(nlocal as u32).to_le_bytes())?;
             for i in 0..nlocal {
-                w.write_all(&atoms.tag[i].to_le_bytes()).unwrap();
-                w.write_all(&atoms.atom_type[i].to_le_bytes()).unwrap();
-                w.write_all(&atoms.pos_x[i].to_le_bytes()).unwrap();
-                w.write_all(&atoms.pos_y[i].to_le_bytes()).unwrap();
-                w.write_all(&atoms.pos_z[i].to_le_bytes()).unwrap();
-                w.write_all(&atoms.vel_x[i].to_le_bytes()).unwrap();
-                w.write_all(&atoms.vel_y[i].to_le_bytes()).unwrap();
-                w.write_all(&atoms.vel_z[i].to_le_bytes()).unwrap();
-                w.write_all(&atoms.force_x[i].to_le_bytes()).unwrap();
-                w.write_all(&atoms.force_y[i].to_le_bytes()).unwrap();
-                w.write_all(&atoms.force_z[i].to_le_bytes()).unwrap();
-                let radius = dem.as_ref().map(|d| d.radius[i]).unwrap_or(atoms.skin[i]);
-                w.write_all(&radius.to_le_bytes()).unwrap();
+                w.write_all(&atoms.tag[i].to_le_bytes())?;
+                w.write_all(&atoms.atom_type[i].to_le_bytes())?;
+                w.write_all(&atoms.pos_x[i].to_le_bytes())?;
+                w.write_all(&atoms.pos_y[i].to_le_bytes())?;
+                w.write_all(&atoms.pos_z[i].to_le_bytes())?;
+                w.write_all(&atoms.vel_x[i].to_le_bytes())?;
+                w.write_all(&atoms.vel_y[i].to_le_bytes())?;
+                w.write_all(&atoms.vel_z[i].to_le_bytes())?;
+                w.write_all(&atoms.force_x[i].to_le_bytes())?;
+                w.write_all(&atoms.force_y[i].to_le_bytes())?;
+                w.write_all(&atoms.force_z[i].to_le_bytes())?;
+                w.write_all(&atoms.skin[i].to_le_bytes())?;
             }
         }
         _ => {
             // Default: text/CSV
             let filename = format!("{}/dump_{}_rank{}.csv", base_dir, step, rank);
-            let file = File::create(&filename).unwrap();
+            let file = File::create(&filename)?;
             let mut w = BufWriter::new(file);
-            writeln!(w, "tag,type,x,y,z,vx,vy,vz,fx,fy,fz,radius").unwrap();
+            writeln!(w, "tag,type,x,y,z,vx,vy,vz,fx,fy,fz,radius")?;
             for i in 0..nlocal {
-                let radius = dem.as_ref().map(|d| d.radius[i]).unwrap_or(atoms.skin[i]);
                 writeln!(
                     w,
                     "{},{},{},{},{},{},{},{},{},{},{},{}",
@@ -480,12 +420,12 @@ pub fn dump_atoms(
                     atoms.force_x[i],
                     atoms.force_y[i],
                     atoms.force_z[i],
-                    radius,
-                )
-                .unwrap();
+                    atoms.skin[i],
+                )?;
             }
         }
     }
+    Ok(())
 }
 
 // ── Restart write ───────────────────────────────────────────────────────────
@@ -519,8 +459,6 @@ pub fn write_restart(
     };
     fs::create_dir_all(&base_dir).ok();
 
-    let dem = registry.get::<DemAtom>();
-
     let data = RestartData {
         natoms: atoms.natoms,
         total_cycle: step,
@@ -547,34 +485,40 @@ pub fn write_restart(
         ang_mom_z: atoms.ang_mom_z[..nlocal].to_vec(),
         quaternion: (0..nlocal)
             .map(|i| {
-                let q = atoms.quaterion[i];
+                let q = atoms.quaternion[i];
                 [q.w, q.i, q.j, q.k]
             })
             .collect(),
         mass: atoms.mass[..nlocal].to_vec(),
         skin: atoms.skin[..nlocal].to_vec(),
-        radius: dem
-            .as_ref()
-            .map(|d| d.radius[..nlocal].to_vec())
-            .unwrap_or_default(),
-        density: dem
-            .as_ref()
-            .map(|d| d.density[..nlocal].to_vec())
-            .unwrap_or_default(),
+        atom_data_buffers: registry.pack_all_for_restart(nlocal),
     };
 
+    if let Err(e) = write_restart_inner(&data, &base_dir, step, rank, &restart_config) {
+        eprintln!("WARNING: Restart write failed at step {}: {}", step, e);
+    }
+}
+
+fn write_restart_inner(
+    data: &RestartData,
+    base_dir: &str,
+    step: usize,
+    rank: i32,
+    restart_config: &RestartConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
     match restart_config.format.as_str() {
         "json" => {
             let filename = format!("{}/restart_{}_rank{}.json", base_dir, step, rank);
-            let file = File::create(&filename).unwrap();
-            serde_json::to_writer(BufWriter::new(file), &data).unwrap();
+            let file = File::create(&filename)?;
+            serde_json::to_writer(BufWriter::new(file), data)?;
         }
         _ => {
             let filename = format!("{}/restart_{}_rank{}.bin", base_dir, step, rank);
-            let file = File::create(&filename).unwrap();
-            bincode::serialize_into(BufWriter::new(file), &data).unwrap();
+            let file = File::create(&filename)?;
+            bincode::serialize_into(BufWriter::new(file), data)?;
         }
     }
+    Ok(())
 }
 
 // ── Restart read ────────────────────────────────────────────────────────────
@@ -635,10 +579,19 @@ pub fn read_restart(
         println!("Restart: reading from {}", filename);
     }
 
-    let file = File::open(&filename).unwrap();
+    let file = File::open(&filename).unwrap_or_else(|e| {
+        eprintln!("ERROR: Failed to open restart file '{}': {}", filename, e);
+        std::process::exit(1);
+    });
     let data: RestartData = match ext {
-        "json" => serde_json::from_reader(std::io::BufReader::new(file)).unwrap(),
-        _ => bincode::deserialize_from(std::io::BufReader::new(file)).unwrap(),
+        "json" => serde_json::from_reader(std::io::BufReader::new(file)).unwrap_or_else(|e| {
+            eprintln!("ERROR: Failed to read restart '{}': {}", filename, e);
+            std::process::exit(1);
+        }),
+        _ => bincode::deserialize_from(std::io::BufReader::new(file)).unwrap_or_else(|e| {
+            eprintln!("ERROR: Failed to read restart '{}': {}", filename, e);
+            std::process::exit(1);
+        }),
     };
 
     let n = data.tag.len();
@@ -653,7 +606,6 @@ pub fn read_restart(
     atoms.atom_type = data.atom_type;
     atoms.origin_index = vec![0; n];
     atoms.is_ghost = vec![false; n];
-    atoms.has_ghost = vec![false; n];
     atoms.is_collision = vec![false; n];
     atoms.pos_x = data.pos_x;
     atoms.pos_y = data.pos_y;
@@ -673,7 +625,7 @@ pub fn read_restart(
     atoms.ang_mom_x = data.ang_mom_x;
     atoms.ang_mom_y = data.ang_mom_y;
     atoms.ang_mom_z = data.ang_mom_z;
-    atoms.quaterion = data
+    atoms.quaternion = data
         .quaternion
         .iter()
         .map(|q| {
@@ -685,12 +637,9 @@ pub fn read_restart(
     atoms.mass = data.mass;
     atoms.skin = data.skin;
 
-    // Restore DemAtom data
-    if !data.radius.is_empty() {
-        if let Some(mut dem) = registry.get_mut::<DemAtom>() {
-            dem.radius = data.radius;
-            dem.density = data.density;
-        }
+    // Restore AtomData (DemAtom, etc.) from generic buffers
+    if !data.atom_data_buffers.is_empty() {
+        registry.unpack_all_from_restart(&data.atom_data_buffers);
     }
 
     run_state.total_cycle = data.total_cycle;

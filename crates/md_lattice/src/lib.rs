@@ -1,3 +1,5 @@
+//! FCC lattice initialization with Maxwell-Boltzmann velocity sampling.
+
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use nalgebra::UnitQuaternion;
@@ -24,15 +26,22 @@ fn default_skin() -> f64 {
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+/// TOML `[lattice]` — lattice initialization settings.
 pub struct LatticeConfig {
+    /// Lattice type (currently only `"fcc"`).
     #[serde(default = "default_style")]
     pub style: String,
+    /// Number density (atoms per unit volume).
     #[serde(default = "default_density")]
     pub density: f64,
+    /// Initial temperature for Maxwell-Boltzmann velocity sampling.
     #[serde(default = "default_temperature")]
     pub temperature: f64,
+    /// Atom mass.
     #[serde(default = "default_mass")]
     pub mass: f64,
+    /// Interaction skin distance (neighbor list cutoff parameter).
     #[serde(default = "default_skin")]
     pub skin: f64,
 }
@@ -55,6 +64,7 @@ impl Default for LatticeConfig {
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
+/// Initializes atoms on an FCC lattice with Maxwell-Boltzmann velocities at setup.
 pub struct LatticePlugin;
 
 impl Plugin for LatticePlugin {
@@ -116,10 +126,12 @@ pub fn fcc_insert(
     let nz = (lz / a_ideal).floor() as usize;
 
     if nx == 0 || ny == 0 || nz == 0 {
-        panic!(
-            "Domain too small for FCC lattice: L=({},{},{}), a_ideal={}",
+        eprintln!(
+            "ERROR: Domain too small for FCC lattice: L=({},{},{}), a_ideal={:.4}. \
+             Increase domain size or decrease density.",
             lx, ly, lz, a_ideal
         );
+        std::process::exit(1);
     }
 
     // Adjusted lattice constants to fit domain exactly
@@ -174,9 +186,8 @@ pub fn fcc_insert(
                     atom.mass.push(mass);
                     atom.skin.push(lattice.skin);
                     atom.is_ghost.push(false);
-                    atom.has_ghost.push(false);
-                    atom.is_collision.push(false);
-                    atom.quaterion.push(UnitQuaternion::identity());
+                                        atom.is_collision.push(false);
+                    atom.quaternion.push(UnitQuaternion::identity());
                     max_tag += 1;
                     atom.nlocal += 1;
                     atom.natoms += 1;
@@ -188,6 +199,14 @@ pub fn fcc_insert(
     let n_inserted = atom.len() - start_idx;
 
     // Assign Maxwell-Boltzmann velocities
+    if mass <= 0.0 {
+        eprintln!("ERROR: lattice mass must be positive, got {}", mass);
+        std::process::exit(1);
+    }
+    if temp < 0.0 {
+        eprintln!("ERROR: lattice temperature must be non-negative, got {}", temp);
+        std::process::exit(1);
+    }
     let sigma_v = (temp / mass).sqrt();
     let normal = Normal::new(0.0, sigma_v).unwrap();
     let mut rng = rand::rng();

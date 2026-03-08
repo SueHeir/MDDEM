@@ -1,7 +1,11 @@
+//! DEM granular contact models: Hertz normal, Mindlin tangential, and rotational dynamics.
+
+pub mod granular_temp;
 pub mod normal;
 pub mod rotational;
 pub mod tangential;
 
+pub use granular_temp::GranularTempPlugin;
 pub use normal::HertzNormalForcePlugin;
 pub use rotational::RotationalDynamicsPlugin;
 pub use tangential::MindlinTangentialForcePlugin;
@@ -23,6 +27,7 @@ use dem_atom_insert::DemAtomInsertPlugin;
 ///   Coulomb friction cap and torque accumulation; ordered after Hertz via `.after("hertz_normal")`
 /// - [`RotationalDynamicsPlugin`] — quaternion Velocity Verlet for angular degrees of freedom
 ///   (I = 2/5 m r² for solid spheres)
+/// - [`GranularTempPlugin`] — granular temperature output to file
 ///
 /// Does **not** include infrastructure plugins (input, comm, domain, neighbor,
 /// run, verlet, print). Use [`CorePlugins`] to get all infrastructure.
@@ -45,5 +50,6 @@ impl PluginGroup for GranularDefaultPlugins {
             .add(HertzNormalForcePlugin)
             .add(MindlinTangentialForcePlugin)
             .add(RotationalDynamicsPlugin)
+            .add(GranularTempPlugin)
     }
 }

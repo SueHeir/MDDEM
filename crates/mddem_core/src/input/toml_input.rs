@@ -3,16 +3,23 @@ use std::any::TypeId;
 use mddem_app::prelude::App;
 use serde::Deserialize;
 
+/// Wraps a parsed TOML table. Use [`Config::load::<T>(app, key)`] to extract and register a section.
 pub struct Config {
     pub table: toml::Table,
 }
 
 impl Config {
     pub fn section<T: for<'de> Deserialize<'de> + Default>(&self, key: &str) -> T {
-        self.table
-            .get(key)
-            .and_then(|v| v.clone().try_into().ok())
-            .unwrap_or_default()
+        match self.table.get(key) {
+            None => T::default(),
+            Some(v) => match v.clone().try_into::<T>() {
+                Ok(val) => val,
+                Err(e) => {
+                    eprintln!("WARNING: [{}] config error: {}. Using defaults.", key, e);
+                    T::default()
+                }
+            },
+        }
     }
 
     pub fn load<T: for<'de> Deserialize<'de> + Default + Clone + 'static>(
@@ -39,7 +46,17 @@ impl Config {
             Some(toml::Value::Array(arr)) => {
                 let stages: Vec<StageConfig> = arr
                     .iter()
-                    .map(|v| v.clone().try_into().unwrap_or_default())
+                    .enumerate()
+                    .map(|(idx, v)| match v.clone().try_into::<StageConfig>() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!(
+                                "WARNING: [[run]] stage {} config error: {}. Using defaults.",
+                                idx, e
+                            );
+                            StageConfig::default()
+                        }
+                    })
                     .collect();
                 RunConfig { stages }
             }
@@ -113,6 +130,22 @@ dump_interval = 100
         assert_eq!(run.current_stage(1).thermo, 500);
         assert_eq!(run.current_stage(1).dump_interval, Some(100));
         assert!(run.current_stage(0).dump_interval.is_none());
+    }
+
+    #[test]
+    fn unknown_field_falls_back_to_default() {
+        let toml_str = r#"
+[run]
+steps = 5000
+thermo = 200
+typo_field = true
+"#;
+        let table: toml::Table = toml_str.parse().unwrap();
+        let config = Config { table };
+        let run = config.parse_run_config();
+        // Should fall back to defaults because StageConfig has deny_unknown_fields
+        assert_eq!(run.num_stages(), 1);
+        assert_eq!(run.current_stage(0).steps, 1000); // default, not 5000
     }
 
     #[test]

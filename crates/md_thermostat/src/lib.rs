@@ -1,3 +1,5 @@
+//! Nose-Hoover NVT thermostat with symmetric Liouville splitting.
+
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::Deserialize;
@@ -14,9 +16,13 @@ fn default_coupling() -> f64 {
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+/// TOML `[thermostat]` — Nose-Hoover thermostat settings.
 pub struct ThermostatConfig {
+    /// Target temperature (reduced units).
     #[serde(default = "default_temperature")]
     pub temperature: f64,
+    /// Coupling time constant (reduced units).
     #[serde(default = "default_coupling")]
     pub coupling: f64,
 }
@@ -32,6 +38,7 @@ impl Default for ThermostatConfig {
 
 // ── Resource ────────────────────────────────────────────────────────────────
 
+/// Internal state of the Nose-Hoover thermostat chain variable.
 pub struct NoseHooverState {
     pub p_xi: f64,
     pub q_mass: f64,
@@ -52,6 +59,7 @@ impl Default for NoseHooverState {
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
+/// Registers Nose-Hoover NVT thermostat integration systems.
 pub struct NoseHooverPlugin;
 
 impl Plugin for NoseHooverPlugin {
@@ -163,35 +171,8 @@ pub fn nh_post_final(mut atoms: ResMut<Atom>, mut nh: ResMut<NoseHooverState>, c
 mod tests {
     use super::*;
     fn push_atom(atom: &mut Atom, tag: u32) {
-        use nalgebra::{Quaternion, UnitQuaternion};
-        atom.tag.push(tag);
-        atom.atom_type.push(0);
-        atom.origin_index.push(0);
-        atom.pos_x.push(0.0);
-        atom.pos_y.push(0.0);
-        atom.pos_z.push(0.0);
-        atom.vel_x.push(0.0);
-        atom.vel_y.push(0.0);
-        atom.vel_z.push(0.0);
-        atom.force_x.push(0.0);
-        atom.force_y.push(0.0);
-        atom.force_z.push(0.0);
-        atom.torque_x.push(0.0);
-        atom.torque_y.push(0.0);
-        atom.torque_z.push(0.0);
-        atom.omega_x.push(0.0);
-        atom.omega_y.push(0.0);
-        atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0);
-        atom.ang_mom_y.push(0.0);
-        atom.ang_mom_z.push(0.0);
-        atom.mass.push(1.0);
-        atom.skin.push(0.5);
-        atom.is_ghost.push(false);
-        atom.has_ghost.push(false);
-        atom.is_collision.push(false);
-        atom.quaterion
-            .push(UnitQuaternion::from_quaternion(Quaternion::identity()));
+        use nalgebra::Vector3;
+        atom.push_test_atom(tag, Vector3::zeros(), 0.5, 1.0);
     }
 
     fn make_nh_app(n: usize, velocities: &[(f64, f64, f64)], t_target: f64, tau: f64) -> App {

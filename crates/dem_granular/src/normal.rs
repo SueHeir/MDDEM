@@ -9,6 +9,7 @@ use mddem_neighbor::Neighbor;
 // √(5/3) — appears in the viscoelastic damping formula
 const SQRT_5_3: f64 = 0.9128709291752768;
 
+/// Hertz elastic contact force with viscoelastic normal damping.
 pub struct HertzNormalForcePlugin;
 
 impl Plugin for HertzNormalForcePlugin {
@@ -23,9 +24,12 @@ pub fn hertz_normal_force(
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
 ) {
-    let dem = registry.get::<DemAtom>().unwrap();
+    let dem = registry.expect::<DemAtom>("hertz_normal_force");
 
-    for &(i, j) in &neighbor.neighbor_list {
+    let nlocal = atoms.nlocal as usize;
+    let mut overlap_warnings = 0usize;
+    for (i, j) in neighbor.pairs(nlocal) {
+
         let p1 = Vector3::new(atoms.pos_x[i], atoms.pos_y[i], atoms.pos_z[i]);
         let p2 = Vector3::new(atoms.pos_x[j], atoms.pos_y[j], atoms.pos_z[j]);
 
@@ -41,20 +45,27 @@ pub fn hertz_normal_force(
 
         if distance == 0.0 {
             eprintln!(
-                "warning: zero separation between tags {} {}",
+                "WARNING: zero separation between tags {} {}",
                 atoms.tag[i], atoms.tag[j]
             );
             continue;
         }
 
         if distance / (r1 + r2) < 0.90 {
+            overlap_warnings += 1;
             eprintln!(
-                "large overlap: tags {} {} ratio {:.3}",
+                "WARNING: large overlap tags {} {} ratio {:.3}",
                 atoms.tag[i],
                 atoms.tag[j],
                 distance / (r1 + r2)
             );
-            panic!("excessive overlap detected — check timestep or initial configuration");
+            if overlap_warnings > 100 {
+                panic!(
+                    "Over 100 excessive overlaps this step — aborting. \
+                     Check timestep or initial configuration."
+                );
+            }
+            continue;
         }
 
         atoms.is_collision[i] = true;
@@ -93,19 +104,16 @@ pub fn hertz_normal_force(
         let f_net = (f_spring - f_diss).max(0.0);
 
         let force = f_net * n;
-        let scale = if atoms.is_ghost[i] || atoms.is_ghost[j] {
-            0.5
-        } else {
-            1.0
-        };
 
-        atoms.force_x[i] -= force.x * scale;
-        atoms.force_y[i] -= force.y * scale;
-        atoms.force_z[i] -= force.z * scale;
-        atoms.force_x[j] += force.x * scale;
-        atoms.force_y[j] += force.y * scale;
-        atoms.force_z[j] += force.z * scale;
+        atoms.force_x[i] -= force.x;
+        atoms.force_y[i] -= force.y;
+        atoms.force_z[i] -= force.z;
+        atoms.force_x[j] += force.x;
+        atoms.force_y[j] += force.y;
+        atoms.force_z[j] += force.z;
+
     }
+
 }
 
 #[cfg(test)]
@@ -114,7 +122,7 @@ mod tests {
     use dem_atom::{DemAtom, MaterialTable};
     use mddem_core::{Atom, AtomDataRegistry};
     use mddem_neighbor::Neighbor;
-    use nalgebra::{UnitQuaternion, Vector3};
+    use nalgebra::Vector3;
 
     fn push_test_atom(
         atom: &mut Atom,
@@ -123,35 +131,8 @@ mod tests {
         pos: Vector3<f64>,
         radius: f64,
     ) {
-        atom.tag.push(tag);
-        atom.atom_type.push(0);
-        atom.origin_index.push(0);
-        atom.pos_x.push(pos.x);
-        atom.pos_y.push(pos.y);
-        atom.pos_z.push(pos.z);
-        atom.vel_x.push(0.0);
-        atom.vel_y.push(0.0);
-        atom.vel_z.push(0.0);
-        atom.force_x.push(0.0);
-        atom.force_y.push(0.0);
-        atom.force_z.push(0.0);
-        atom.torque_x.push(0.0);
-        atom.torque_y.push(0.0);
-        atom.torque_z.push(0.0);
-        atom.mass
-            .push(2500.0 * 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3));
-        atom.skin.push(radius);
-        atom.is_ghost.push(false);
-        atom.has_ghost.push(false);
-        atom.is_collision.push(false);
-        atom.quaterion.push(UnitQuaternion::identity());
-        atom.omega_x.push(0.0);
-        atom.omega_y.push(0.0);
-        atom.omega_z.push(0.0);
-        atom.ang_mom_x.push(0.0);
-        atom.ang_mom_y.push(0.0);
-        atom.ang_mom_z.push(0.0);
-
+        let mass = 2500.0 * 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3);
+        atom.push_test_atom(tag, pos, radius, mass);
         dem.radius.push(radius);
         dem.density.push(2500.0);
     }
@@ -183,7 +164,8 @@ mod tests {
         atom.natoms = 2;
 
         let mut neighbor = Neighbor::new();
-        neighbor.neighbor_list.push((0, 1));
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
 
         let mut registry = AtomDataRegistry::new();
         registry.register(dem);
@@ -228,7 +210,8 @@ mod tests {
         atom.natoms = 2;
 
         let mut neighbor = Neighbor::new();
-        neighbor.neighbor_list.push((0, 1));
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
 
         let mut registry = AtomDataRegistry::new();
         registry.register(dem);

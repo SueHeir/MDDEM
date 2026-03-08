@@ -132,16 +132,17 @@ checksum = "ef8ae57c4978a2acd8b869ce6b9ca1dfe817bff704c220209fdef2c0b75a01b9"
 
 [[package]]
 name = "dem_atom"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mddem_app",
  "mddem_core",
+ "mddem_derive",
  "serde",
 ]
 
 [[package]]
 name = "dem_atom_insert"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dem_atom",
  "mddem_app",
@@ -155,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "dem_granular"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dem_atom",
  "dem_atom_insert",
@@ -168,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "dem_gravity"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mddem_app",
  "mddem_core",
@@ -179,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "dem_wall"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dem_atom",
  "mddem_app",
@@ -353,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "md_lattice"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mddem_app",
  "mddem_core",
@@ -366,7 +367,7 @@ dependencies = [
 
 [[package]]
 name = "md_lj"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mddem_app",
  "mddem_core",
@@ -378,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "md_measure"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "md_lj",
  "mddem_app",
@@ -390,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "md_thermostat"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mddem_app",
  "mddem_core",
@@ -401,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "mddem"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dem_atom",
  "dem_atom_insert",
@@ -422,7 +423,7 @@ dependencies = [
 
 [[package]]
 name = "mddem-bin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libffi-sys",
  "mddem",
@@ -430,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "mddem_app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "downcast-rs",
  "mddem_scheduler",
@@ -438,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "mddem_core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libffi-sys",
  "mddem_app",
@@ -450,8 +451,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mddem_derive"
+version = "0.1.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "mddem_neighbor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mddem_app",
  "mddem_core",
@@ -462,10 +472,9 @@ dependencies = [
 
 [[package]]
 name = "mddem_print"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bincode",
- "dem_atom",
  "mddem_app",
  "mddem_core",
  "mddem_neighbor",
@@ -477,11 +486,11 @@ dependencies = [
 
 [[package]]
 name = "mddem_scheduler"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "mddem_verlet"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mddem_app",
  "mddem_core",

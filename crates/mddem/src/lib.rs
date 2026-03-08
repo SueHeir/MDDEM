@@ -1,3 +1,7 @@
+//! Top-level MDDEM crate. Re-exports all sub-crates and provides [`CorePlugins`],
+//! [`GranularDefaultPlugins`](dem_granular::GranularDefaultPlugins), and [`LJDefaultPlugins`]
+//! plugin groups for quick setup.
+
 pub use dem_atom;
 pub use dem_atom_insert;
 pub use dem_granular;

@@ -25,7 +25,15 @@ Quaternion-based Velocity Verlet for angular degrees of freedom:
 
 ## Usage
 
-`GranularDefaultPlugins` bundles all three plugins plus `DemAtomPlugin` and `DemAtomInsertPlugin`:
+### Granular Temperature (`GranularTempPlugin`)
+Time series of granular temperature `T_g = (1/3N) * sum(m * v^2)` written to `data/GranularTemp.txt`. Included in `GranularDefaultPlugins` by default.
+
+### Contact History
+Tangential spring-history contacts are stored per-atom in a `ContactHistoryStore` registered as `AtomData`. Contact history automatically travels with atoms during MPI exchange, is reordered during bin-sorting, and is saved/restored in restart files.
+
+## Usage
+
+`GranularDefaultPlugins` bundles all plugins plus `DemAtomPlugin` and `DemAtomInsertPlugin`:
 
 ```rust
 use mddem::prelude::*;
