@@ -12,6 +12,7 @@ pub use md_lj;
 pub use md_measure;
 pub use md_thermostat;
 pub use mddem_core;
+pub use mddem_fixes;
 pub use mddem_neighbor;
 pub use mddem_print;
 pub use mddem_verlet;
@@ -58,6 +59,7 @@ impl PluginGroup for CorePlugins {
             .add(mddem_neighbor::NeighborPlugin {
                 style: mddem_neighbor::NeighborStyle::Bin,
             })
+            .add(mddem_core::GroupPlugin)
             .add(mddem_core::RunPlugin)
             .add(mddem_verlet::VelocityVerletPlugin)
             .add(mddem_print::PrintPlugin)
@@ -93,7 +95,8 @@ pub mod prelude {
     pub use md_lattice::{LatticeConfig, LatticePlugin};
     pub use md_lj::{LJConfig, LJForcePlugin, LJTailCorrections, VirialAccumulator};
     pub use md_measure::{MeasureConfig, MeasurePlugin};
-    pub use md_thermostat::{NoseHooverPlugin, NoseHooverState, ThermostatConfig};
+    pub use md_thermostat::{LangevinConfig, LangevinPlugin, LangevinState, NoseHooverPlugin, NoseHooverState, ThermostatConfig};
+    pub use mddem_fixes::{AddForceDef, FixesPlugin, FixesRegistry, FreezeDef, MoveLinearDef, SetForceDef};
     pub use mddem_app::prelude::*;
     pub use mddem_core::*;
     pub use mddem_neighbor::*;

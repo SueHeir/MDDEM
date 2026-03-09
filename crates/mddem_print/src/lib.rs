@@ -1,6 +1,7 @@
 //! Output systems: LAMMPS-style thermo, CSV/binary dump, restart files, and VTP (ParaView) output.
 
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{BufWriter, Write},
     time::Instant,
@@ -10,16 +11,80 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, Input, RunConfig, RunState};
+use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, GroupRegistry, Input, RunConfig, RunState};
 use mddem_neighbor::Neighbor;
+
+// ── Thermo config ───────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
+/// TOML `[thermo]` — thermo output column configuration.
+pub struct ThermoConfig {
+    #[serde(default)]
+    pub columns: Option<Vec<String>>,
+}
+
+// ── Thermo column ───────────────────────────────────────────────────────────
+
+/// Parsed column specification for thermo output.
+pub struct ThermoColumn {
+    pub raw: String,
+    pub compute_name: String,
+    pub group_name: Option<String>,
+    pub header: String,
+    pub width: usize,
+}
+
+fn parse_thermo_column(raw: &str) -> ThermoColumn {
+    let parts: Vec<&str> = raw.splitn(2, '/').collect();
+    let compute_name = parts[0].to_string();
+    let group_name = parts.get(1).map(|s| s.to_string());
+
+    let header = if let Some(ref g) = group_name {
+        format!("{}/{}", capitalize(&compute_name), g)
+    } else {
+        capitalize(&compute_name)
+    };
+
+    let width = header.len().max(12);
+
+    ThermoColumn {
+        raw: raw.to_string(),
+        compute_name,
+        group_name,
+        header,
+        width,
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
+fn default_columns() -> Vec<String> {
+    vec![
+        "step".into(),
+        "atoms".into(),
+        "ke".into(),
+        "neighbors".into(),
+        "walltime".into(),
+        "stepps".into(),
+    ]
+}
 
 // ── Thermo ──────────────────────────────────────────────────────────────────
 
-/// Thermo output state: print interval and wall-clock timing.
+/// Thermo output state: print interval, wall-clock timing, column specs, and user values.
 pub struct Thermo {
     pub interval: usize,
     pub start_time: Instant,
     pub last_printed_step: usize,
+    pub columns: Vec<ThermoColumn>,
+    pub values: HashMap<String, f64>,
 }
 
 impl Default for Thermo {
@@ -34,7 +99,15 @@ impl Thermo {
             interval: 100,
             start_time: Instant::now(),
             last_printed_step: 0,
+            columns: Vec::new(),
+            values: HashMap::new(),
         }
+    }
+
+    /// Push a named value into the thermo value map.
+    /// Available as a column if listed in `[thermo] columns`.
+    pub fn set(&mut self, name: &str, value: f64) {
+        self.values.insert(name.to_string(), value);
     }
 }
 
@@ -172,6 +245,7 @@ interval = 0"#,
         Config::load::<DumpConfig>(app, "dump");
         Config::load::<RestartConfig>(app, "restart");
         Config::load::<VtpConfig>(app, "vtp");
+        Config::load::<ThermoConfig>(app, "thermo");
 
         app.add_resource(Thermo::new())
             .add_setup_system(setup_thermo, ScheduleSetupSet::PostSetup)
@@ -187,6 +261,7 @@ interval = 0"#,
 
 pub fn setup_thermo(
     config: Res<RunConfig>,
+    thermo_config: Res<ThermoConfig>,
     scheduler_manager: Res<SchedulerManager>,
     comm: Res<CommResource>,
     run_state: Res<RunState>,
@@ -199,21 +274,38 @@ pub fn setup_thermo(
     thermo.interval = config.current_stage(index).thermo;
     thermo.start_time = Instant::now();
     thermo.last_printed_step = run_state.total_cycle;
+
+    // Parse column specifications (only on first stage, or if columns empty).
+    if thermo.columns.is_empty() {
+        let col_names = thermo_config
+            .columns
+            .clone()
+            .unwrap_or_else(default_columns);
+        thermo.columns = col_names.iter().map(|s| parse_thermo_column(s)).collect();
+    }
+
     if comm.rank() == 0 {
         println!();
-        println!(
-            "{:<12} {:<8} {:<14} {:<12} {:<14} {:<12}",
-            "Step", "Atoms", "KE(J)", "Neighbors", "WallTime(s)", "Step/s"
-        );
-        println!("{}", "-".repeat(74));
+        let header: String = thermo
+            .columns
+            .iter()
+            .map(|c| format!("{:<width$}", c.header, width = c.width))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let total_width: usize = thermo.columns.iter().map(|c| c.width).sum::<usize>()
+            + thermo.columns.len().saturating_sub(1);
+        println!("{}", header);
+        println!("{}", "-".repeat(total_width));
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn print_thermo(
     atoms: Res<Atom>,
     run_state: Res<RunState>,
     comm: Res<CommResource>,
     neighbor: Res<Neighbor>,
+    groups: Res<GroupRegistry>,
     mut thermo: ResMut<Thermo>,
 ) {
     let step = run_state.total_cycle;
@@ -221,18 +313,48 @@ pub fn print_thermo(
         return;
     }
     let nlocal = atoms.nlocal as usize;
-    let local_ke: f64 = (0..nlocal)
+
+    // Pre-compute values that need allreduce (all ranks must participate).
+    // We compute these eagerly so all ranks call allreduce together.
+    let local_ke_all: f64 = (0..nlocal)
         .map(|i| {
-            let vx = atoms.vel_x[i];
-            let vy = atoms.vel_y[i];
-            let vz = atoms.vel_z[i];
-            0.5 * atoms.mass[i] * (vx * vx + vy * vy + vz * vz)
+            0.5 * atoms.mass[i]
+                * (atoms.vel_x[i] * atoms.vel_x[i]
+                    + atoms.vel_y[i] * atoms.vel_y[i]
+                    + atoms.vel_z[i] * atoms.vel_z[i])
         })
         .sum();
+    let global_ke_all = comm.all_reduce_sum_f64(local_ke_all);
+    let global_atoms_all = atoms.natoms as f64;
     let local_neighbors = neighbor.neighbor_indices.len() as f64;
-    let global_ke = comm.all_reduce_sum_f64(local_ke);
-    let global_neighbors_f = comm.all_reduce_sum_f64(local_neighbors);
-    let global_neighbors = global_neighbors_f as usize;
+    let global_neighbors = comm.all_reduce_sum_f64(local_neighbors);
+
+    // Pre-compute group-filtered KE and atom counts for any group columns.
+    // Each group that appears needs its own allreduce.
+    let mut group_ke: HashMap<String, f64> = HashMap::new();
+    let mut group_count: HashMap<String, f64> = HashMap::new();
+    for col in thermo.columns.iter() {
+        if let Some(ref gname) = col.group_name {
+            if group_ke.contains_key(gname) {
+                continue;
+            }
+            if let Some(group) = groups.get(gname) {
+                let local_ke: f64 = (0..nlocal)
+                    .filter(|&i| group.mask[i])
+                    .map(|i| {
+                        0.5 * atoms.mass[i]
+                            * (atoms.vel_x[i] * atoms.vel_x[i]
+                                + atoms.vel_y[i] * atoms.vel_y[i]
+                                + atoms.vel_z[i] * atoms.vel_z[i])
+                    })
+                    .sum();
+                let local_count = group.count as f64;
+                group_ke.insert(gname.clone(), comm.all_reduce_sum_f64(local_ke));
+                group_count.insert(gname.clone(), comm.all_reduce_sum_f64(local_count));
+            }
+        }
+    }
+
     if comm.rank() == 0 {
         let elapsed = thermo.start_time.elapsed().as_secs_f64();
         let steps_since = (step - thermo.last_printed_step) as f64;
@@ -241,10 +363,61 @@ pub fn print_thermo(
         } else {
             0.0
         };
-        println!(
-            "{:<12} {:<8} {:<14.6e} {:<12} {:<14.4} {:<12.1}",
-            step, atoms.natoms, global_ke, global_neighbors, elapsed, steps_per_sec
-        );
+
+        let mut parts: Vec<String> = Vec::new();
+        for col in thermo.columns.iter() {
+            let val_str = match col.compute_name.as_str() {
+                "step" => format!("{:<width$}", step, width = col.width),
+                "atoms" => {
+                    if let Some(ref gname) = col.group_name {
+                        let n = group_count.get(gname).copied().unwrap_or(0.0) as u64;
+                        format!("{:<width$}", n, width = col.width)
+                    } else {
+                        format!("{:<width$}", atoms.natoms, width = col.width)
+                    }
+                }
+                "ke" => {
+                    let ke = if let Some(ref gname) = col.group_name {
+                        group_ke.get(gname).copied().unwrap_or(0.0)
+                    } else {
+                        global_ke_all
+                    };
+                    format!("{:<width$.6e}", ke, width = col.width)
+                }
+                "temp" => {
+                    let (ke, n) = if let Some(ref gname) = col.group_name {
+                        (
+                            group_ke.get(gname).copied().unwrap_or(0.0),
+                            group_count.get(gname).copied().unwrap_or(0.0),
+                        )
+                    } else {
+                        (global_ke_all, global_atoms_all)
+                    };
+                    let ndof = 3.0 * n - 3.0;
+                    let temp = if ndof > 0.0 { 2.0 * ke / ndof } else { 0.0 };
+                    format!("{:<width$.6}", temp, width = col.width)
+                }
+                "neighbors" => {
+                    format!("{:<width$}", global_neighbors as usize, width = col.width)
+                }
+                "walltime" => {
+                    format!("{:<width$.4}", elapsed, width = col.width)
+                }
+                "stepps" => {
+                    format!("{:<width$.1}", steps_per_sec, width = col.width)
+                }
+                other => {
+                    // User-pushed value
+                    if let Some(&v) = thermo.values.get(other) {
+                        format!("{:<width$.6e}", v, width = col.width)
+                    } else {
+                        format!("{:<width$}", "N/A", width = col.width)
+                    }
+                }
+            };
+            parts.push(val_str);
+        }
+        println!("{}", parts.join(" "));
         thermo.start_time = Instant::now();
         thermo.last_printed_step = step;
     }
@@ -645,5 +818,43 @@ pub fn read_restart(
     run_state.total_cycle = data.total_cycle;
     if comm.rank() == 0 {
         println!("Restart: loaded {} atoms from step {}", n, data.total_cycle);
+    }
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_columns_backward_compat() {
+        let config = ThermoConfig::default();
+        assert!(config.columns.is_none());
+        let cols = config.columns.unwrap_or_else(default_columns);
+        assert_eq!(cols, vec!["step", "atoms", "ke", "neighbors", "walltime", "stepps"]);
+    }
+
+    #[test]
+    fn test_column_parsing() {
+        let col = parse_thermo_column("temp/mobile");
+        assert_eq!(col.compute_name, "temp");
+        assert_eq!(col.group_name.as_deref(), Some("mobile"));
+        assert_eq!(col.header, "Temp/mobile");
+
+        let col2 = parse_thermo_column("step");
+        assert_eq!(col2.compute_name, "step");
+        assert!(col2.group_name.is_none());
+        assert_eq!(col2.header, "Step");
+    }
+
+    #[test]
+    fn test_user_value_set_and_read() {
+        let mut thermo = Thermo::new();
+        assert!(thermo.values.get("pe").is_none());
+        thermo.set("pe", 42.0);
+        assert_eq!(*thermo.values.get("pe").unwrap(), 42.0);
+        thermo.set("pe", 99.0);
+        assert_eq!(*thermo.values.get("pe").unwrap(), 99.0);
     }
 }

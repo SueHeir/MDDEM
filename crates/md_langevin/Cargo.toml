@@ -1,19 +1,17 @@
 [package]
-name = "md_thermostat"
+name = "md_langevin"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-readme = "README.md"
-description = "Nose-Hoover NVT thermostat for MDDEM"
-keywords = ["thermostat", "nose-hoover", "nvt", "molecular-dynamics"]
+description = "Langevin thermostat for MDDEM"
+keywords = ["thermostat", "langevin", "stochastic", "molecular-dynamics"]
 categories = ["simulation", "science"]
 
 [dependencies]
 mddem_core = { path = "../mddem_core", version = "0.1.1", default-features = false }
 mddem_app = { path = "../mddem_app", version = "0.1.1" }
 mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.1" }
-nalgebra = "0.33.2"
 serde = { version = "1", features = ["derive"] }
 rand = "0.8"
 rand_chacha = "0.3"

@@ -46,6 +46,18 @@ path = "examples/lj_argon/main.rs"
 name = "lj_performance"
 path = "examples/lj_performance/main.rs"
 
+[[example]]
+name = "group_freeze"
+path = "examples/group_freeze/main.rs"
+
+[[example]]
+name = "lj_langevin"
+path = "examples/lj_langevin/main.rs"
+
+[[example]]
+name = "poiseuille_flow"
+path = "examples/poiseuille_flow/main.rs"
+
 
 [profile.release]
 opt-level = 3

@@ -70,6 +70,27 @@ impl Config {
         }
     }
 
+    /// Parse a `[[key]]` TOML array into a `Vec<T>`.
+    pub fn parse_array<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Vec<T> {
+        match self.table.get(key) {
+            Some(toml::Value::Array(arr)) => arr
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, v)| match v.clone().try_into::<T>() {
+                    Ok(val) => Some(val),
+                    Err(e) => {
+                        eprintln!(
+                            "WARNING: [[{}]] entry {} config error: {}. Skipping.",
+                            key, idx, e
+                        );
+                        None
+                    }
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Load RunConfig from App's Config resource, handling [run] vs [[run]] syntax.
     pub fn load_run_config(app: &mut App) -> crate::RunConfig {
         if let Some(raw_cell) = app.get_mut_resource(TypeId::of::<Config>()) {
