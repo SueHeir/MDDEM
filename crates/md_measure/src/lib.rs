@@ -210,9 +210,9 @@ pub fn accumulate_rdf(
     for i in 0..nlocal {
         // Local-local pairs (i < j to avoid double counting)
         for j in (i + 1)..nlocal {
-            let mut dx = atoms.pos_x[j] - atoms.pos_x[i];
-            let mut dy = atoms.pos_y[j] - atoms.pos_y[i];
-            let mut dz = atoms.pos_z[j] - atoms.pos_z[i];
+            let mut dx = atoms.pos[j][0] - atoms.pos[i][0];
+            let mut dy = atoms.pos[j][1] - atoms.pos[i][1];
+            let mut dz = atoms.pos[j][2] - atoms.pos[i][2];
 
             if domain.is_periodic.x {
                 if dx > half_lx { dx -= lx; } else if dx < -half_lx { dx += lx; }
@@ -233,9 +233,9 @@ pub fn accumulate_rdf(
         // Skip on single-process: minimum-image local-local loop already finds all pairs
         if comm.size() > 1 {
             for j in nlocal..total {
-                let dx = atoms.pos_x[j] - atoms.pos_x[i];
-                let dy = atoms.pos_y[j] - atoms.pos_y[i];
-                let dz = atoms.pos_z[j] - atoms.pos_z[i];
+                let dx = atoms.pos[j][0] - atoms.pos[i][0];
+                let dy = atoms.pos[j][1] - atoms.pos[i][1];
+                let dz = atoms.pos[j][2] - atoms.pos[i][2];
 
                 let r2 = dx * dx + dy * dy + dz * dz;
                 if r2 >= cutoff2 || r2 < 1e-20 { continue; }
@@ -274,6 +274,10 @@ pub fn track_msd(
     comm: Res<CommResource>,
     mut msd: ResMut<MsdTracker>,
 ) {
+    if config.msd_interval == 0 {
+        return;
+    }
+
     let step = run_state.total_cycle;
     let nlocal = atoms.nlocal as usize;
 
@@ -294,15 +298,15 @@ pub fn track_msd(
 
         for i in 0..nlocal {
             let idx = atoms.tag[i] as usize;
-            msd.ref_x[idx] = atoms.pos_x[i];
-            msd.ref_y[idx] = atoms.pos_y[i];
-            msd.ref_z[idx] = atoms.pos_z[i];
-            msd.unwrapped_x[idx] = atoms.pos_x[i];
-            msd.unwrapped_y[idx] = atoms.pos_y[i];
-            msd.unwrapped_z[idx] = atoms.pos_z[i];
-            msd.prev_x[idx] = atoms.pos_x[i];
-            msd.prev_y[idx] = atoms.pos_y[i];
-            msd.prev_z[idx] = atoms.pos_z[i];
+            msd.ref_x[idx] = atoms.pos[i][0];
+            msd.ref_y[idx] = atoms.pos[i][1];
+            msd.ref_z[idx] = atoms.pos[i][2];
+            msd.unwrapped_x[idx] = atoms.pos[i][0];
+            msd.unwrapped_y[idx] = atoms.pos[i][1];
+            msd.unwrapped_z[idx] = atoms.pos[i][2];
+            msd.prev_x[idx] = atoms.pos[i][0];
+            msd.prev_y[idx] = atoms.pos[i][1];
+            msd.prev_z[idx] = atoms.pos[i][2];
             msd.has_entry[idx] = true;
         }
         msd.n_tracked = comm.all_reduce_sum_f64(nlocal as f64);
@@ -344,9 +348,9 @@ pub fn track_msd(
         }
 
         if msd.has_entry[idx] {
-            let mut dx = atoms.pos_x[i] - msd.prev_x[idx];
-            let mut dy = atoms.pos_y[i] - msd.prev_y[idx];
-            let mut dz = atoms.pos_z[i] - msd.prev_z[idx];
+            let mut dx = atoms.pos[i][0] - msd.prev_x[idx];
+            let mut dy = atoms.pos[i][1] - msd.prev_y[idx];
+            let mut dz = atoms.pos[i][2] - msd.prev_z[idx];
 
             // Detect PBC boundary crossing
             if dx > half_lx { dx -= lx; } else if dx < -half_lx { dx += lx; }
@@ -357,9 +361,9 @@ pub fn track_msd(
             msd.unwrapped_y[idx] += dy;
             msd.unwrapped_z[idx] += dz;
         }
-        msd.prev_x[idx] = atoms.pos_x[i];
-        msd.prev_y[idx] = atoms.pos_y[i];
-        msd.prev_z[idx] = atoms.pos_z[i];
+        msd.prev_x[idx] = atoms.pos[i][0];
+        msd.prev_y[idx] = atoms.pos[i][1];
+        msd.prev_z[idx] = atoms.pos[i][2];
         msd.has_entry[idx] = true;
     }
 
@@ -412,7 +416,7 @@ pub fn compute_pressure(
     let local_ke: f64 = (0..nlocal)
         .map(|i| {
             atoms.mass[i]
-                * (atoms.vel_x[i].powi(2) + atoms.vel_y[i].powi(2) + atoms.vel_z[i].powi(2))
+                * (atoms.vel[i][0].powi(2) + atoms.vel[i][1].powi(2) + atoms.vel[i][2].powi(2))
         })
         .sum::<f64>()
         * 0.5;

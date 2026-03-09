@@ -226,9 +226,9 @@ pub fn wall_contact_force(
         let wall_mat = wall.material_index;
 
         for i in 0..atoms.nlocal as usize {
-            let px = atoms.pos_x[i];
-            let py = atoms.pos_y[i];
-            let pz = atoms.pos_z[i];
+            let px = atoms.pos[i][0];
+            let py = atoms.pos[i][1];
+            let pz = atoms.pos[i][2];
 
             // Check if atom is within the wall's bounding region
             if !wall.in_bounds(px, py, pz) {
@@ -259,11 +259,7 @@ pub fn wall_contact_force(
 
             // Wall has infinite radius → r_eff = r_particle
             let r_eff = radius;
-            let e_eff = 1.0
-                / ((1.0 - material_table.poisson_ratio[mat_i].powi(2))
-                    / material_table.youngs_mod[mat_i]
-                    + (1.0 - material_table.poisson_ratio[wall_mat].powi(2))
-                        / material_table.youngs_mod[wall_mat]);
+            let e_eff = material_table.e_eff_ij[mat_i][wall_mat];
 
             let sqrt_dr = (delta * r_eff).sqrt();
             let s_n = 2.0 * e_eff * sqrt_dr;
@@ -274,9 +270,9 @@ pub fn wall_contact_force(
 
             // Relative velocity along wall normal: positive = separating, negative = approaching
             // Matches particle-particle convention where v_n = v_rel . n with n pointing from atom toward wall
-            let v_n = atoms.vel_x[i] * wall.normal_x
-                + atoms.vel_y[i] * wall.normal_y
-                + atoms.vel_z[i] * wall.normal_z;
+            let v_n = atoms.vel[i][0] * wall.normal_x
+                + atoms.vel[i][1] * wall.normal_y
+                + atoms.vel[i][2] * wall.normal_z;
 
             let beta = material_table.beta_ij[mat_i][wall_mat];
 
@@ -285,9 +281,9 @@ pub fn wall_contact_force(
             let f_net = (f_spring - f_diss).max(0.0);
 
             // Force direction: along wall normal (pushes atom away from wall)
-            atoms.force_x[i] += f_net * wall.normal_x;
-            atoms.force_y[i] += f_net * wall.normal_y;
-            atoms.force_z[i] += f_net * wall.normal_z;
+            atoms.force[i][0] += f_net * wall.normal_x;
+            atoms.force[i][1] += f_net * wall.normal_y;
+            atoms.force[i][2] += f_net * wall.normal_z;
         }
     }
 }
@@ -312,6 +308,7 @@ mod tests {
         atom.push_test_atom(tag, Vector3::new(pos_x, pos_y, pos_z), radius, mass);
         dem.radius.push(radius);
         dem.density.push(2500.0);
+        dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
     }
 
     fn make_material_table() -> MaterialTable {
@@ -379,12 +376,12 @@ mod tests {
         let atom = app.get_resource_ref::<Atom>().unwrap();
         // Force should push atom in +z direction (away from wall)
         assert!(
-            atom.force_z[0] > 0.0,
+            atom.force[0][2] > 0.0,
             "atom should be pushed away from wall, got {}",
-            atom.force_z[0]
+            atom.force[0][2]
         );
-        assert!((atom.force_x[0]).abs() < 1e-15);
-        assert!((atom.force_y[0]).abs() < 1e-15);
+        assert!((atom.force[0][0]).abs() < 1e-15);
+        assert!((atom.force[0][1]).abs() < 1e-15);
     }
 
     #[test]
@@ -416,7 +413,7 @@ mod tests {
         app.run();
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
-        assert!((atom.force_z[0]).abs() < 1e-15);
+        assert!((atom.force[0][2]).abs() < 1e-15);
     }
 
     #[test]
@@ -463,7 +460,7 @@ mod tests {
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
         assert!(
-            (atom.force_z[0]).abs() < 1e-15,
+            (atom.force[0][2]).abs() < 1e-15,
             "inactive wall should apply no force"
         );
     }
@@ -500,20 +497,20 @@ mod tests {
         let atom = app.get_resource_ref::<Atom>().unwrap();
         // Force should be along the (1,0,1) normal direction — equal x and z components
         assert!(
-            atom.force_x[0] > 0.0,
+            atom.force[0][0] > 0.0,
             "force_x should be positive, got {}",
-            atom.force_x[0]
+            atom.force[0][0]
         );
         assert!(
-            atom.force_z[0] > 0.0,
+            atom.force[0][2] > 0.0,
             "force_z should be positive, got {}",
-            atom.force_z[0]
+            atom.force[0][2]
         );
         assert!(
-            (atom.force_x[0] - atom.force_z[0]).abs() < 1e-10,
+            (atom.force[0][0] - atom.force[0][2]).abs() < 1e-10,
             "force_x and force_z should be equal for 45-degree wall"
         );
-        assert!((atom.force_y[0]).abs() < 1e-15);
+        assert!((atom.force[0][1]).abs() < 1e-15);
     }
 
     #[test]
@@ -550,7 +547,7 @@ mod tests {
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
         assert!(
-            (atom.force_z[0]).abs() < 1e-15,
+            (atom.force[0][2]).abs() < 1e-15,
             "out-of-bounds atom should get no wall force"
         );
     }

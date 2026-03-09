@@ -57,9 +57,9 @@ gz = -9.81"#,
 
 pub fn apply_gravity(mut atoms: ResMut<Atom>, gravity: Res<GravityConfig>) {
     for i in 0..atoms.nlocal as usize {
-        atoms.force_x[i] += atoms.mass[i] * gravity.gx;
-        atoms.force_y[i] += atoms.mass[i] * gravity.gy;
-        atoms.force_z[i] += atoms.mass[i] * gravity.gz;
+        atoms.force[i][0] += atoms.mass[i] * gravity.gx;
+        atoms.force[i][1] += atoms.mass[i] * gravity.gy;
+        atoms.force[i][2] += atoms.mass[i] * gravity.gz;
     }
 }
 
@@ -95,9 +95,9 @@ mod tests {
         app.run();
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
-        assert!((atom.force_x[0]).abs() < 1e-15);
-        assert!((atom.force_y[0]).abs() < 1e-15);
-        assert!((atom.force_z[0] - mass * gz).abs() < 1e-15);
+        assert!((atom.force[0][0]).abs() < 1e-15);
+        assert!((atom.force[0][1]).abs() < 1e-15);
+        assert!((atom.force[0][2] - mass * gz).abs() < 1e-15);
     }
 
     #[test]
@@ -124,8 +124,8 @@ mod tests {
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
         // Local atom gets force
-        assert!((atom.force_z[0] - mass * gz).abs() < 1e-15);
+        assert!((atom.force[0][2] - mass * gz).abs() < 1e-15);
         // Ghost atom does not
-        assert!((atom.force_z[1]).abs() < 1e-15);
+        assert!((atom.force[1][2]).abs() < 1e-15);
     }
 }

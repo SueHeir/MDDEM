@@ -244,27 +244,16 @@ macro_rules! for_each_atom_vec {
             (origin_index, i32),
             (is_ghost, bool),
             (is_collision, bool),
-            (pos_x, f64),
-            (pos_y, f64),
-            (pos_z, f64),
-            (vel_x, f64),
-            (vel_y, f64),
-            (vel_z, f64),
+            (pos, [f64; 3]),
+            (vel, [f64; 3]),
             (quaternion, nalgebra::UnitQuaternion<f64>),
-            (omega_x, f64),
-            (omega_y, f64),
-            (omega_z, f64),
-            (ang_mom_x, f64),
-            (ang_mom_y, f64),
-            (ang_mom_z, f64),
-            (torque_x, f64),
-            (torque_y, f64),
-            (torque_z, f64),
-            (force_x, f64),
-            (force_y, f64),
-            (force_z, f64),
+            (omega, [f64; 3]),
+            (ang_mom, [f64; 3]),
+            (torque, [f64; 3]),
+            (force, [f64; 3]),
             (skin, f64),
             (mass, f64),
+            (inv_mass, f64),
         }
     };
 }
@@ -285,35 +274,19 @@ pub struct Atom {
     pub is_ghost: Vec<bool>,
     pub is_collision: Vec<bool>,
 
-    // SoA position
-    pub pos_x: Vec<f64>,
-    pub pos_y: Vec<f64>,
-    pub pos_z: Vec<f64>,
-    // SoA velocity
-    pub vel_x: Vec<f64>,
-    pub vel_y: Vec<f64>,
-    pub vel_z: Vec<f64>,
+    // Interleaved arrays: field[i] = [x, y, z]
+    pub pos: Vec<[f64; 3]>,
+    pub vel: Vec<[f64; 3]>,
     // Quaternion (kept as-is, not in hot loops)
     pub quaternion: Vec<UnitQuaternion<f64>>,
-    // SoA angular velocity
-    pub omega_x: Vec<f64>,
-    pub omega_y: Vec<f64>,
-    pub omega_z: Vec<f64>,
-    // SoA angular momentum
-    pub ang_mom_x: Vec<f64>,
-    pub ang_mom_y: Vec<f64>,
-    pub ang_mom_z: Vec<f64>,
-    // SoA torque
-    pub torque_x: Vec<f64>,
-    pub torque_y: Vec<f64>,
-    pub torque_z: Vec<f64>,
-    // SoA force
-    pub force_x: Vec<f64>,
-    pub force_y: Vec<f64>,
-    pub force_z: Vec<f64>,
+    pub omega: Vec<[f64; 3]>,
+    pub ang_mom: Vec<[f64; 3]>,
+    pub torque: Vec<[f64; 3]>,
+    pub force: Vec<[f64; 3]>,
 
     pub skin: Vec<f64>,
     pub mass: Vec<f64>,
+    pub inv_mass: Vec<f64>,
 }
 
 impl Default for Atom {
@@ -383,22 +356,17 @@ impl Atom {
 
     /// Total number of atoms (local + ghost) currently stored.
     pub fn len(&self) -> usize {
-        self.pos_x.len()
+        self.pos.len()
     }
 
     /// Returns true if no atoms are stored.
     pub fn is_empty(&self) -> bool {
-        self.pos_x.is_empty()
+        self.pos.is_empty()
     }
 
     /// Dimension-indexed position access for comm.rs border detection.
     pub fn pos_component(&self, i: usize, dim: usize) -> f64 {
-        match dim {
-            0 => self.pos_x[i],
-            1 => self.pos_y[i],
-            2 => self.pos_z[i],
-            _ => panic!("invalid dimension {}", dim),
-        }
+        self.pos[i][dim]
     }
 
     pub fn get_max_tag(&self) -> u32 {
@@ -411,14 +379,14 @@ impl Atom {
             tag: self.tag[i],
             origin_index: self.origin_index[i] as u32,
             torque: Vector3f64MPI::new_from_components(
-                self.torque_x[i],
-                self.torque_y[i],
-                self.torque_z[i],
+                self.torque[i][0],
+                self.torque[i][1],
+                self.torque[i][2],
             ),
             force: Vector3f64MPI::new_from_components(
-                self.force_x[i],
-                self.force_y[i],
-                self.force_z[i],
+                self.force[i][0],
+                self.force[i][1],
+                self.force[i][2],
             ),
         }
     }
@@ -431,77 +399,53 @@ impl Atom {
             force_mpi.tag, self.tag[i], i
         );
         let f = force_mpi.force;
-        self.force_x[i] += f.x;
-        self.force_y[i] += f.y;
-        self.force_z[i] += f.z;
+        self.force[i][0] += f.x;
+        self.force[i][1] += f.y;
+        self.force[i][2] += f.z;
         let t = force_mpi.torque;
-        self.torque_x[i] += t.x;
-        self.torque_y[i] += t.y;
-        self.torque_z[i] += t.z;
+        self.torque[i][0] += t.x;
+        self.torque[i][1] += t.y;
+        self.torque[i][2] += t.z;
+    }
+
+    fn pack_atom_inner(&self, i: usize, origin_index_val: f64, pos_offset: Vector3<f64>, buf: &mut Vec<f64>) {
+        buf.push(self.tag[i] as f64);
+        buf.push(origin_index_val);
+        buf.push(self.skin[i]);
+        buf.push(self.atom_type[i] as f64);
+        buf.push(self.pos[i][0] + pos_offset.x);
+        buf.push(self.pos[i][1] + pos_offset.y);
+        buf.push(self.pos[i][2] + pos_offset.z);
+        buf.push(self.vel[i][0]);
+        buf.push(self.vel[i][1]);
+        buf.push(self.vel[i][2]);
+        let q = self.quaternion[i];
+        buf.push(q.w);
+        buf.push(q.i);
+        buf.push(q.j);
+        buf.push(q.k);
+        buf.push(self.omega[i][0]);
+        buf.push(self.omega[i][1]);
+        buf.push(self.omega[i][2]);
+        buf.push(self.ang_mom[i][0]);
+        buf.push(self.ang_mom[i][1]);
+        buf.push(self.ang_mom[i][2]);
+        buf.push(self.torque[i][0]);
+        buf.push(self.torque[i][1]);
+        buf.push(self.torque[i][2]);
+        buf.push(self.force[i][0]);
+        buf.push(self.force[i][1]);
+        buf.push(self.force[i][2]);
+        buf.push(self.mass[i]);
+        buf.push(if self.is_collision[i] { 0.0 } else { 1.0 });
     }
 
     pub fn pack_exchange(&self, i: usize, buf: &mut Vec<f64>) {
-        buf.push(self.tag[i] as f64);
-        buf.push(0.0);
-        buf.push(self.skin[i]);
-        buf.push(self.atom_type[i] as f64);
-        buf.push(self.pos_x[i]);
-        buf.push(self.pos_y[i]);
-        buf.push(self.pos_z[i]);
-        buf.push(self.vel_x[i]);
-        buf.push(self.vel_y[i]);
-        buf.push(self.vel_z[i]);
-        let q = self.quaternion[i];
-        buf.push(q.w);
-        buf.push(q.i);
-        buf.push(q.j);
-        buf.push(q.k);
-        buf.push(self.omega_x[i]);
-        buf.push(self.omega_y[i]);
-        buf.push(self.omega_z[i]);
-        buf.push(self.ang_mom_x[i]);
-        buf.push(self.ang_mom_y[i]);
-        buf.push(self.ang_mom_z[i]);
-        buf.push(self.torque_x[i]);
-        buf.push(self.torque_y[i]);
-        buf.push(self.torque_z[i]);
-        buf.push(self.force_x[i]);
-        buf.push(self.force_y[i]);
-        buf.push(self.force_z[i]);
-        buf.push(self.mass[i]);
-        buf.push(if self.is_collision[i] { 0.0 } else { 1.0 });
+        self.pack_atom_inner(i, 0.0, Vector3::zeros(), buf);
     }
 
     pub fn pack_border(&mut self, i: usize, change_pos: Vector3<f64>, buf: &mut Vec<f64>) {
-        buf.push(self.tag[i] as f64);
-        buf.push(i as f64);
-        buf.push(self.skin[i]);
-        buf.push(self.atom_type[i] as f64);
-        buf.push(self.pos_x[i] + change_pos.x);
-        buf.push(self.pos_y[i] + change_pos.y);
-        buf.push(self.pos_z[i] + change_pos.z);
-        buf.push(self.vel_x[i]);
-        buf.push(self.vel_y[i]);
-        buf.push(self.vel_z[i]);
-        let q = self.quaternion[i];
-        buf.push(q.w);
-        buf.push(q.i);
-        buf.push(q.j);
-        buf.push(q.k);
-        buf.push(self.omega_x[i]);
-        buf.push(self.omega_y[i]);
-        buf.push(self.omega_z[i]);
-        buf.push(self.ang_mom_x[i]);
-        buf.push(self.ang_mom_y[i]);
-        buf.push(self.ang_mom_z[i]);
-        buf.push(self.torque_x[i]);
-        buf.push(self.torque_y[i]);
-        buf.push(self.torque_z[i]);
-        buf.push(self.force_x[i]);
-        buf.push(self.force_y[i]);
-        buf.push(self.force_z[i]);
-        buf.push(self.mass[i]);
-        buf.push(if self.is_collision[i] { 0.0 } else { 1.0 });
+        self.pack_atom_inner(i, i as f64, change_pos, buf);
     }
 
     pub fn unpack_atom(&mut self, buf: &[f64], is_ghost: bool) -> usize {
@@ -509,29 +453,18 @@ impl Atom {
         self.origin_index.push(buf[1] as i32);
         self.skin.push(buf[2]);
         self.atom_type.push(buf[3] as u32);
-        self.pos_x.push(buf[4]);
-        self.pos_y.push(buf[5]);
-        self.pos_z.push(buf[6]);
-        self.vel_x.push(buf[7]);
-        self.vel_y.push(buf[8]);
-        self.vel_z.push(buf[9]);
+        self.pos.push([buf[4], buf[5], buf[6]]);
+        self.vel.push([buf[7], buf[8], buf[9]]);
         self.quaternion
             .push(UnitQuaternion::from_quaternion(Quaternion::new(
                 buf[10], buf[11], buf[12], buf[13],
             )));
-        self.omega_x.push(buf[14]);
-        self.omega_y.push(buf[15]);
-        self.omega_z.push(buf[16]);
-        self.ang_mom_x.push(buf[17]);
-        self.ang_mom_y.push(buf[18]);
-        self.ang_mom_z.push(buf[19]);
-        self.torque_x.push(buf[20]);
-        self.torque_y.push(buf[21]);
-        self.torque_z.push(buf[22]);
-        self.force_x.push(buf[23]);
-        self.force_y.push(buf[24]);
-        self.force_z.push(buf[25]);
+        self.omega.push([buf[14], buf[15], buf[16]]);
+        self.ang_mom.push([buf[17], buf[18], buf[19]]);
+        self.torque.push([buf[20], buf[21], buf[22]]);
+        self.force.push([buf[23], buf[24], buf[25]]);
         self.mass.push(buf[26]);
+        self.inv_mass.push(1.0 / buf[26]);
         self.is_collision.push(buf[27] == 0.0);
         self.is_ghost.push(is_ghost);
         ATOM_PACK_SIZE
@@ -541,30 +474,35 @@ impl Atom {
         self.tag.push(tag);
         self.atom_type.push(0);
         self.origin_index.push(0);
-        self.pos_x.push(pos.x);
-        self.pos_y.push(pos.y);
-        self.pos_z.push(pos.z);
-        self.vel_x.push(0.0);
-        self.vel_y.push(0.0);
-        self.vel_z.push(0.0);
-        self.force_x.push(0.0);
-        self.force_y.push(0.0);
-        self.force_z.push(0.0);
-        self.torque_x.push(0.0);
-        self.torque_y.push(0.0);
-        self.torque_z.push(0.0);
+        self.pos.push([pos.x, pos.y, pos.z]);
+        self.vel.push([0.0; 3]);
+        self.force.push([0.0; 3]);
+        self.torque.push([0.0; 3]);
         self.mass.push(mass);
+        self.inv_mass.push(1.0 / mass);
         self.skin.push(radius);
         self.is_ghost.push(false);
         self.is_collision.push(false);
         self.quaternion.push(UnitQuaternion::identity());
-        self.omega_x.push(0.0);
-        self.omega_y.push(0.0);
-        self.omega_z.push(0.0);
-        self.ang_mom_x.push(0.0);
-        self.ang_mom_y.push(0.0);
-        self.ang_mom_z.push(0.0);
+        self.omega.push([0.0; 3]);
+        self.ang_mom.push([0.0; 3]);
     }
+}
+
+/// Compute kinetic energy over local atoms, optionally filtered by a group mask.
+pub fn compute_ke(atoms: &Atom, mask: Option<&[bool]>) -> f64 {
+    let nlocal = atoms.nlocal as usize;
+    let mut ke = 0.0;
+    for i in 0..nlocal {
+        if let Some(m) = mask {
+            if !m[i] {
+                continue;
+            }
+        }
+        let v = atoms.vel[i];
+        ke += atoms.mass[i] * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    }
+    0.5 * ke
 }
 
 // ── Plugin & systems ──────────────────────────────────────────────────────────
@@ -588,13 +526,8 @@ fn remove_ghost_atoms(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) 
 }
 
 fn zero_all_forces(mut atoms: ResMut<Atom>) {
-    for i in 0..atoms.len() {
-        atoms.is_collision[i] = false;
-        atoms.force_x[i] = 0.0;
-        atoms.force_y[i] = 0.0;
-        atoms.force_z[i] = 0.0;
-        atoms.torque_x[i] = 0.0;
-        atoms.torque_y[i] = 0.0;
-        atoms.torque_z[i] = 0.0;
-    }
+    let n = atoms.len();
+    atoms.is_collision[..n].fill(false);
+    atoms.force[..n].fill([0.0; 3]);
+    atoms.torque[..n].fill([0.0; 3]);
 }

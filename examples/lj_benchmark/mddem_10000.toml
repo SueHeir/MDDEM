@@ -34,8 +34,8 @@ temperature = 1.44
 coupling = 1.0
 
 [run]
-steps = 500
-thermo = 500
+steps = 200
+thermo = 200
 
 [measure]
 rdf_interval = 0

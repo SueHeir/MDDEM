@@ -129,6 +129,24 @@ impl CommBackend for SingleProcessComm {
     fn barrier(&self) {}
 }
 
+// ── CommBuffers ──────────────────────────────────────────────────────────────
+
+/// Persistent communication buffers, reused across timesteps to avoid re-allocation.
+pub struct CommBuffers {
+    pub border_send_buff: Vec<f64>,
+    /// Per-rank exchange buffers, reused across exchange() calls.
+    pub exchange_buffs: Vec<Vec<f64>>,
+}
+
+impl Default for CommBuffers {
+    fn default() -> Self {
+        CommBuffers {
+            border_send_buff: Vec::new(),
+            exchange_buffs: Vec::new(),
+        }
+    }
+}
+
 // ── SingleProcessCommPlugin ──────────────────────────────────────────────────
 
 /// Single-process communication plugin with periodic ghost atom exchange.
@@ -149,6 +167,7 @@ processors_z = 1"#,
         Config::load::<CommConfig>(app, "comm");
 
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
+        app.add_resource(CommBuffers::default());
 
         app.add_setup_system(comm_read_input, ScheduleSetupSet::PreSetup)
             .add_update_system(single_process_borders.label("single_process_borders"), ScheduleSet::PreNeighbor)
@@ -163,6 +182,7 @@ fn single_process_borders(
     mut atoms: ResMut<Atom>,
     domain: Res<Domain>,
     registry: Res<AtomDataRegistry>,
+    mut buffers: ResMut<CommBuffers>,
 ) {
     let local_count = atoms.len() as f64;
     let global_count = comm.all_reduce_sum_f64(local_count);
@@ -170,7 +190,7 @@ fn single_process_borders(
     atoms.nlocal = atoms.len() as u32;
     atoms.nghost = 0;
 
-    let mut send_buff: Vec<f64> = Vec::new();
+    let mut send_buff = std::mem::take(&mut buffers.border_send_buff);
     let mut scan_end = atoms.nlocal as usize;
 
     for dim in 0..3 {
@@ -202,13 +222,13 @@ fn single_process_borders(
             );
 
             if count > 0 {
-                let mut self_buf = send_buff.clone();
-                self_buf.push(count as f64);
-                unpack_ghost_atoms(&mut atoms, &registry, &self_buf, count as usize);
+                send_buff.push(count as f64);
+                unpack_ghost_atoms(&mut atoms, &registry, &send_buff, count as usize);
             }
         }
         scan_end = atoms.nlocal as usize + atoms.nghost as usize;
     }
+    buffers.border_send_buff = send_buff;
 }
 
 fn single_process_reverse_force(mut atoms: ResMut<Atom>, comm: Res<CommResource>) {
@@ -218,12 +238,12 @@ fn single_process_reverse_force(mut atoms: ResMut<Atom>, comm: Res<CommResource>
     let nlocal = atoms.nlocal as usize;
     for i in (nlocal..atoms.len()).rev() {
         let origin = atoms.origin_index[i] as usize;
-        atoms.force_x[origin] += atoms.force_x[i];
-        atoms.force_y[origin] += atoms.force_y[i];
-        atoms.force_z[origin] += atoms.force_z[i];
-        atoms.torque_x[origin] += atoms.torque_x[i];
-        atoms.torque_y[origin] += atoms.torque_y[i];
-        atoms.torque_z[origin] += atoms.torque_z[i];
+        atoms.force[origin][0] += atoms.force[i][0];
+        atoms.force[origin][1] += atoms.force[i][1];
+        atoms.force[origin][2] += atoms.force[i][2];
+        atoms.torque[origin][0] += atoms.torque[i][0];
+        atoms.torque[origin][1] += atoms.torque[i][1];
+        atoms.torque[origin][2] += atoms.torque[i][2];
     }
 }
 
@@ -352,6 +372,8 @@ processors_z = 1"#,
             processor_decomposition: Vector3::zeros(),
             processor_position: Vector3::zeros(),
         })));
+
+        app.add_resource(CommBuffers::default());
 
         app.add_resource(MpiCommInternal {
             world: world2,
@@ -510,17 +532,24 @@ pub fn exchange(
     mut atoms: ResMut<Atom>,
     domain: Res<Domain>,
     registry: Res<AtomDataRegistry>,
+    mut buffers: ResMut<CommBuffers>,
 ) {
     let size = comm.size();
     let rank = comm.rank();
     let proc_decomp = comm.processor_decomposition();
-    let mut atoms_buff: Vec<Vec<f64>> = (0..size).map(|_| Vec::new()).collect();
+
+    // Reuse persistent exchange buffers
+    let mut atoms_buff = std::mem::take(&mut buffers.exchange_buffs);
+    atoms_buff.resize_with(size as usize, Vec::new);
+    for buf in atoms_buff.iter_mut() {
+        buf.clear();
+    }
     let mut counts = vec![0.0f64; size as usize];
 
     for i in (0..atoms.len()).rev() {
-        let xi = (atoms.pos_x[i] / domain.sub_length.x).floor() as i32;
-        let yi = (atoms.pos_y[i] / domain.sub_length.y).floor() as i32;
-        let zi = (atoms.pos_z[i] / domain.sub_length.z).floor() as i32;
+        let xi = (atoms.pos[i][0] / domain.sub_length.x).floor() as i32;
+        let yi = (atoms.pos[i][1] / domain.sub_length.y).floor() as i32;
+        let zi = (atoms.pos[i][2] / domain.sub_length.z).floor() as i32;
         let to_processor = xi * proc_decomp.z * proc_decomp.y + yi * proc_decomp.z + zi;
         if to_processor != rank {
             counts[to_processor as usize] += 1.0;
@@ -552,6 +581,7 @@ pub fn exchange(
         }
     }
     mpi.world.barrier();
+    buffers.exchange_buffs = atoms_buff;
 }
 
 // ── Borders ───────────────────────────────────────────────────────────────────
@@ -563,6 +593,7 @@ pub fn borders(
     mut atoms: ResMut<Atom>,
     domain: Res<Domain>,
     registry: Res<AtomDataRegistry>,
+    mut buffers: ResMut<CommBuffers>,
 ) {
     let local_count = atoms.len() as f64;
     let global_count = comm.all_reduce_sum_f64(local_count);
@@ -572,7 +603,7 @@ pub fn borders(
     mpi.world.barrier();
 
     let rank = comm.rank();
-    let mut send_buff: Vec<f64> = Vec::new();
+    let mut send_buff = std::mem::take(&mut buffers.border_send_buff);
     let mut scan_end = atoms.nlocal as usize;
 
     for dim in 0..3 {
@@ -650,9 +681,8 @@ pub fn borders(
                         mpi.world.process_at_rank(to_proc).send(&send_buff);
                     } else {
                         mpi.receive_amount[swap][dim] = count;
-                        let mut self_buf = send_buff.clone();
-                        self_buf.push(count as f64);
-                        unpack_ghost_atoms(&mut atoms, &registry, &self_buf, count as usize);
+                        send_buff.push(count as f64);
+                        unpack_ghost_atoms(&mut atoms, &registry, &send_buff, count as usize);
                     }
                 }
                 if from_proc != -1 && from_proc != rank {
@@ -666,6 +696,7 @@ pub fn borders(
         }
         scan_end = atoms.nlocal as usize + atoms.nghost as usize;
     }
+    buffers.border_send_buff = send_buff;
     mpi.world.barrier();
 }
 
@@ -723,9 +754,8 @@ pub fn reverse_send_force(
                     if from_proc != rank {
                         mpi.world.process_at_rank(from_proc).send(&send_buff);
                     } else {
-                        let msg = send_buff.clone();
-                        for atom in msg {
-                            atoms.apply_force_data(atom);
+                        for &force in &send_buff {
+                            atoms.apply_force_data(force);
                         }
                     }
                 }

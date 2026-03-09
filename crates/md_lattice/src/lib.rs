@@ -165,25 +165,14 @@ pub fn fcc_insert(
                     atom.tag.push(max_tag);
                     atom.atom_type.push(0);
                     atom.origin_index.push(0);
-                    atom.pos_x.push(x);
-                    atom.pos_y.push(y);
-                    atom.pos_z.push(z);
-                    atom.vel_x.push(0.0);
-                    atom.vel_y.push(0.0);
-                    atom.vel_z.push(0.0);
-                    atom.force_x.push(0.0);
-                    atom.force_y.push(0.0);
-                    atom.force_z.push(0.0);
-                    atom.torque_x.push(0.0);
-                    atom.torque_y.push(0.0);
-                    atom.torque_z.push(0.0);
-                    atom.omega_x.push(0.0);
-                    atom.omega_y.push(0.0);
-                    atom.omega_z.push(0.0);
-                    atom.ang_mom_x.push(0.0);
-                    atom.ang_mom_y.push(0.0);
-                    atom.ang_mom_z.push(0.0);
+                    atom.pos.push([x, y, z]);
+                    atom.vel.push([0.0; 3]);
+                    atom.force.push([0.0; 3]);
+                    atom.torque.push([0.0; 3]);
+                    atom.omega.push([0.0; 3]);
+                    atom.ang_mom.push([0.0; 3]);
                     atom.mass.push(mass);
+                    atom.inv_mass.push(1.0 / mass);
                     atom.skin.push(lattice.skin);
                     atom.is_ghost.push(false);
                                         atom.is_collision.push(false);
@@ -212,9 +201,9 @@ pub fn fcc_insert(
     let mut rng = rand::rng();
 
     for i in start_idx..atom.len() {
-        atom.vel_x[i] = normal.sample(&mut rng);
-        atom.vel_y[i] = normal.sample(&mut rng);
-        atom.vel_z[i] = normal.sample(&mut rng);
+        atom.vel[i][0] = normal.sample(&mut rng);
+        atom.vel[i][1] = normal.sample(&mut rng);
+        atom.vel[i][2] = normal.sample(&mut rng);
     }
 
     // Remove COM drift
@@ -223,17 +212,17 @@ pub fn fcc_insert(
     let mut vy_sum = 0.0;
     let mut vz_sum = 0.0;
     for i in start_idx..atom.len() {
-        vx_sum += atom.vel_x[i];
-        vy_sum += atom.vel_y[i];
-        vz_sum += atom.vel_z[i];
+        vx_sum += atom.vel[i][0];
+        vy_sum += atom.vel[i][1];
+        vz_sum += atom.vel[i][2];
     }
     let vx_avg = vx_sum / n;
     let vy_avg = vy_sum / n;
     let vz_avg = vz_sum / n;
     for i in start_idx..atom.len() {
-        atom.vel_x[i] -= vx_avg;
-        atom.vel_y[i] -= vy_avg;
-        atom.vel_z[i] -= vz_avg;
+        atom.vel[i][0] -= vx_avg;
+        atom.vel[i][1] -= vy_avg;
+        atom.vel[i][2] -= vz_avg;
     }
 
     // Rescale to exact target temperature
@@ -243,16 +232,16 @@ pub fn fcc_insert(
         let mut ke = 0.0;
         for i in start_idx..atom.len() {
             ke += mass
-                * (atom.vel_x[i].powi(2) + atom.vel_y[i].powi(2) + atom.vel_z[i].powi(2));
+                * (atom.vel[i][0].powi(2) + atom.vel[i][1].powi(2) + atom.vel[i][2].powi(2));
         }
         ke *= 0.5;
         let current_temp = 2.0 * ke / ndof;
         if current_temp > 1e-20 {
             let scale = (temp / current_temp).sqrt();
             for i in start_idx..atom.len() {
-                atom.vel_x[i] *= scale;
-                atom.vel_y[i] *= scale;
-                atom.vel_z[i] *= scale;
+                atom.vel[i][0] *= scale;
+                atom.vel[i][1] *= scale;
+                atom.vel[i][2] *= scale;
             }
         }
     }
@@ -378,9 +367,9 @@ mod tests {
         app.setup();
         let atom = app.get_resource_ref::<Atom>().unwrap();
         let n = atom.len() as f64;
-        let vx_com: f64 = atom.vel_x.iter().sum::<f64>() / n;
-        let vy_com: f64 = atom.vel_y.iter().sum::<f64>() / n;
-        let vz_com: f64 = atom.vel_z.iter().sum::<f64>() / n;
+        let vx_com: f64 = atom.vel.iter().map(|v| v[0]).sum::<f64>() / n;
+        let vy_com: f64 = atom.vel.iter().map(|v| v[1]).sum::<f64>() / n;
+        let vz_com: f64 = atom.vel.iter().map(|v| v[2]).sum::<f64>() / n;
         assert!(
             vx_com.abs() < 1e-12,
             "COM velocity x should be ~0: {}",

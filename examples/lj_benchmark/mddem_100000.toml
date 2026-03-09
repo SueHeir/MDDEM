@@ -1,12 +1,12 @@
-# LJ benchmark: ~100k atoms (29x29x30 FCC), 500 steps
+# LJ benchmark: ~100k atoms (29x29x30 FCC), 200 steps
 
 [domain]
 x_low = 0.0
-x_high = 48.708
+x_high = 48.7083
 y_low = 0.0
-y_high = 48.708
+y_high = 48.7083
 z_low = 0.0
-z_high = 50.388
+z_high = 50.3879
 periodic_x = true
 periodic_y = true
 periodic_z = true
@@ -34,8 +34,8 @@ temperature = 1.44
 coupling = 1.0
 
 [run]
-steps = 500
-thermo = 500
+steps = 200
+thermo = 200
 
 [dump]
 interval = 0

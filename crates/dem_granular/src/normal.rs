@@ -6,8 +6,7 @@ use dem_atom::{DemAtom, MaterialTable};
 use mddem_core::{Atom, AtomDataRegistry};
 use mddem_neighbor::Neighbor;
 
-// √(5/3) — appears in the viscoelastic damping formula
-const SQRT_5_3: f64 = 0.9128709291752768;
+use crate::{LARGE_OVERLAP_WARN_THRESHOLD, MAX_OVERLAP_WARNINGS, SQRT_5_3};
 
 /// Hertz elastic contact force with viscoelastic normal damping.
 pub struct HertzNormalForcePlugin;
@@ -30,8 +29,8 @@ pub fn hertz_normal_force(
     let mut overlap_warnings = 0usize;
     for (i, j) in neighbor.pairs(nlocal) {
 
-        let p1 = Vector3::new(atoms.pos_x[i], atoms.pos_y[i], atoms.pos_z[i]);
-        let p2 = Vector3::new(atoms.pos_x[j], atoms.pos_y[j], atoms.pos_z[j]);
+        let p1 = Vector3::new(atoms.pos[i][0], atoms.pos[i][1], atoms.pos[i][2]);
+        let p2 = Vector3::new(atoms.pos[j][0], atoms.pos[j][1], atoms.pos[j][2]);
 
         let r1 = dem.radius[i];
         let r2 = dem.radius[j];
@@ -44,6 +43,7 @@ pub fn hertz_normal_force(
         }
 
         if distance == 0.0 {
+            #[cfg(debug_assertions)]
             eprintln!(
                 "WARNING: zero separation between tags {} {}",
                 atoms.tag[i], atoms.tag[j]
@@ -51,18 +51,20 @@ pub fn hertz_normal_force(
             continue;
         }
 
-        if distance / (r1 + r2) < 0.90 {
+        if distance / (r1 + r2) < LARGE_OVERLAP_WARN_THRESHOLD {
             overlap_warnings += 1;
+            #[cfg(debug_assertions)]
             eprintln!(
                 "WARNING: large overlap tags {} {} ratio {:.3}",
                 atoms.tag[i],
                 atoms.tag[j],
                 distance / (r1 + r2)
             );
-            if overlap_warnings > 100 {
+            if overlap_warnings > MAX_OVERLAP_WARNINGS {
                 panic!(
-                    "Over 100 excessive overlaps this step — aborting. \
-                     Check timestep or initial configuration."
+                    "Over {} excessive overlaps this step — aborting. \
+                     Check timestep or initial configuration.",
+                    MAX_OVERLAP_WARNINGS
                 );
             }
             continue;
@@ -78,22 +80,18 @@ pub fn hertz_normal_force(
         let mat_j = atoms.atom_type[j] as usize;
 
         let r_eff = (r1 * r2) / (r1 + r2);
-        let e_eff = 1.0
-            / ((1.0 - material_table.poisson_ratio[mat_i].powi(2))
-                / material_table.youngs_mod[mat_i]
-                + (1.0 - material_table.poisson_ratio[mat_j].powi(2))
-                    / material_table.youngs_mod[mat_j]);
+        let e_eff = material_table.e_eff_ij[mat_i][mat_j];
 
         let sqrt_dr = (delta * r_eff).sqrt();
         let s_n = 2.0 * e_eff * sqrt_dr;
         let k_n = 4.0 / 3.0 * e_eff * sqrt_dr;
 
-        let m_r = (atoms.mass[i] * atoms.mass[j]) / (atoms.mass[i] + atoms.mass[j]);
+        let m_r = 1.0 / (atoms.inv_mass[i] + atoms.inv_mass[j]);
 
         let v_rel = Vector3::new(
-            atoms.vel_x[j] - atoms.vel_x[i],
-            atoms.vel_y[j] - atoms.vel_y[i],
-            atoms.vel_z[j] - atoms.vel_z[i],
+            atoms.vel[j][0] - atoms.vel[i][0],
+            atoms.vel[j][1] - atoms.vel[i][1],
+            atoms.vel[j][2] - atoms.vel[i][2],
         );
         let v_n = v_rel.dot(&n);
 
@@ -105,12 +103,12 @@ pub fn hertz_normal_force(
 
         let force = f_net * n;
 
-        atoms.force_x[i] -= force.x;
-        atoms.force_y[i] -= force.y;
-        atoms.force_z[i] -= force.z;
-        atoms.force_x[j] += force.x;
-        atoms.force_y[j] += force.y;
-        atoms.force_z[j] += force.z;
+        atoms.force[i][0] -= force.x;
+        atoms.force[i][1] -= force.y;
+        atoms.force[i][2] -= force.z;
+        atoms.force[j][0] += force.x;
+        atoms.force[j][1] += force.y;
+        atoms.force[j][2] += force.z;
 
     }
 
@@ -135,6 +133,7 @@ mod tests {
         atom.push_test_atom(tag, pos, radius, mass);
         dem.radius.push(radius);
         dem.density.push(2500.0);
+        dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
     }
 
     fn make_material_table() -> MaterialTable {
@@ -180,14 +179,14 @@ mod tests {
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
         assert!(
-            atom.force_x[0] < 0.0,
+            atom.force[0][0] < 0.0,
             "particle 0 should have negative x force"
         );
         assert!(
-            atom.force_x[1] > 0.0,
+            atom.force[1][0] > 0.0,
             "particle 1 should have positive x force"
         );
-        assert!((atom.force_x[0] + atom.force_x[1]).abs() < 1e-10);
+        assert!((atom.force[0][0] + atom.force[1][0]).abs() < 1e-10);
     }
 
     #[test]
@@ -225,7 +224,7 @@ mod tests {
         app.run();
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
-        assert!((atom.force_x[0]).abs() < 1e-20);
-        assert!((atom.force_x[1]).abs() < 1e-20);
+        assert!((atom.force[0][0]).abs() < 1e-20);
+        assert!((atom.force[1][0]).abs() < 1e-20);
     }
 }

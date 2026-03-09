@@ -16,3 +16,4 @@ serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 nalgebra = "0.33.2"
+mddem_test_utils = { path = "../mddem_test_utils" }

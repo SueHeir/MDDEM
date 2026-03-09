@@ -42,9 +42,9 @@ fn check_settled(
     let nlocal = atoms.nlocal as usize;
     let local_ke: f64 = (0..nlocal)
         .map(|i| {
-            let vx = atoms.vel_x[i];
-            let vy = atoms.vel_y[i];
-            let vz = atoms.vel_z[i];
+            let vx = atoms.vel[i][0];
+            let vy = atoms.vel[i][1];
+            let vz = atoms.vel[i][2];
             0.5 * atoms.mass[i] * (vx * vx + vy * vy + vz * vz)
         })
         .sum();

@@ -679,7 +679,7 @@ pub struct Scheduler {
     pub resources: Vec<RefCell<Box<dyn Any>>>,
     resource_index: HashMap<TypeId, usize>,
     print_schedule: bool,
-    system_timings: HashMap<String, f64>,
+    system_timings: Vec<f64>,
     timing_steps: usize,
 }
 // ANCHOR_END: Scheduler
@@ -694,7 +694,7 @@ impl Default for Scheduler {
             resources: Vec::new(),
             resource_index: HashMap::new(),
             print_schedule: false,
-            system_timings: HashMap::new(),
+            system_timings: Vec::new(),
             timing_steps: 0,
         }
     }
@@ -741,6 +741,9 @@ impl Scheduler {
         for (entry, _) in &mut self.update_systems {
             entry.system.prepare(&self.resource_index);
         }
+
+        // Initialize index-based timing vector
+        self.system_timings = vec![0.0; self.update_systems.len()];
     }
 
     pub fn setup(&mut self) {
@@ -750,11 +753,10 @@ impl Scheduler {
     }
 
     pub fn run(&mut self) {
-        for (entry, _set) in self.update_systems.iter_mut() {
+        for (idx, (entry, _set)) in self.update_systems.iter_mut().enumerate() {
             let t0 = std::time::Instant::now();
             entry.system.run(&self.resources);
-            let elapsed = t0.elapsed().as_secs_f64();
-            *self.system_timings.entry(entry.system.name().to_string()).or_insert(0.0) += elapsed;
+            self.system_timings[idx] += t0.elapsed().as_secs_f64();
         }
         self.timing_steps += 1;
     }
@@ -789,9 +791,12 @@ impl Scheduler {
 
         // Print per-system timing breakdown
         if self.timing_steps > 0 && !self.system_timings.is_empty() {
-            let total: f64 = self.system_timings.values().sum();
-            let mut sorted: Vec<_> = self.system_timings.iter().collect();
-            sorted.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap());
+            let total: f64 = self.system_timings.iter().sum();
+            let mut sorted: Vec<_> = self.update_systems.iter()
+                .zip(self.system_timings.iter())
+                .map(|((entry, _), &time)| (&entry.name, time))
+                .collect::<Vec<_>>();
+            sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
             println!("\n--- Per-system timing ({} steps) ---", self.timing_steps);
             println!("{:<50} {:>10} {:>8}", "System", "Time(s)", "%");
             println!("{}", "-".repeat(70));

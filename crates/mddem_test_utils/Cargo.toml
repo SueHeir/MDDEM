@@ -1,0 +1,11 @@
+[package]
+name = "mddem_test_utils"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared test utilities for MDDEM crates"
+
+[dependencies]
+mddem_core = { path = "../mddem_core", version = "0.1.1", default-features = false }
+nalgebra = "0.33.2"

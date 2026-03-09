@@ -241,9 +241,9 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
     if periodic.x && periodic.y && periodic.z {
         // Fast path: fully periodic, no removals possible
         for i in 0..atoms.len() {
-            atoms.pos_x[i] = wrap_periodic(atoms.pos_x[i], low.x, size.x);
-            atoms.pos_y[i] = wrap_periodic(atoms.pos_y[i], low.y, size.y);
-            atoms.pos_z[i] = wrap_periodic(atoms.pos_z[i], low.z, size.z);
+            atoms.pos[i][0] = wrap_periodic(atoms.pos[i][0], low.x, size.x);
+            atoms.pos[i][1] = wrap_periodic(atoms.pos[i][1], low.y, size.y);
+            atoms.pos[i][2] = wrap_periodic(atoms.pos[i][2], low.z, size.z);
         }
     } else {
         // Slow path: non-periodic axes may require removal
@@ -259,9 +259,9 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
                     }
                 };
             }
-            handle_dim!(atoms.pos_x[i], periodic.x, low.x, high.x, size.x);
-            handle_dim!(atoms.pos_y[i], periodic.y, low.y, high.y, size.y);
-            handle_dim!(atoms.pos_z[i], periodic.z, low.z, high.z, size.z);
+            handle_dim!(atoms.pos[i][0], periodic.x, low.x, high.x, size.x);
+            handle_dim!(atoms.pos[i][1], periodic.y, low.y, high.y, size.y);
+            handle_dim!(atoms.pos[i][2], periodic.z, low.z, high.z, size.z);
         }
     }
 }

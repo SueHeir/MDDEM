@@ -419,6 +419,7 @@ dependencies = [
  "mddem_app",
  "mddem_core",
  "mddem_scheduler",
+ "mddem_test_utils",
  "nalgebra",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -492,6 +493,7 @@ dependencies = [
  "mddem_app",
  "mddem_core",
  "mddem_scheduler",
+ "mddem_test_utils",
  "nalgebra",
  "serde",
 ]
@@ -524,6 +526,14 @@ dependencies = [
 [[package]]
 name = "mddem_scheduler"
 version = "0.1.1"
+
+[[package]]
+name = "mddem_test_utils"
+version = "0.1.1"
+dependencies = [
+ "mddem_core",
+ "nalgebra",
+]
 
 [[package]]
 name = "mddem_verlet"

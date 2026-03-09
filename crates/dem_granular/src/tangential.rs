@@ -1,5 +1,4 @@
 use std::any::{Any, TypeId};
-use std::collections::HashSet;
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
@@ -9,16 +8,16 @@ use dem_atom::{DemAtom, MaterialTable};
 use mddem_core::{Atom, AtomData, AtomDataRegistry};
 use mddem_neighbor::Neighbor;
 
-// sqrt(5/3) — damping coefficient constant shared with Hertz normal model
-const SQRT_5_3: f64 = 0.9128709291752768;
+use crate::{SQRT_5_3, TANGENTIAL_EPSILON};
 
 // ── ContactHistoryStore ─────────────────────────────────────────────────────
 
 /// Stores per-atom tangential spring displacement history for Mindlin contacts.
 pub struct ContactHistoryStore {
-    /// Per-atom list of (partner_tag, spring_displacement).
+    /// Per-atom list of (partner_tag, spring_displacement, active_flag).
     /// The spring displacement is stored in canonical form (lower tag's perspective).
-    pub contacts: Vec<Vec<(u32, Vector3<f64>)>>,
+    /// The bool flag is transient — set to false at start of step, true when contact is touched.
+    pub contacts: Vec<Vec<(u32, Vector3<f64>, bool)>>,
 }
 
 impl ContactHistoryStore {
@@ -50,7 +49,7 @@ impl AtomData for ContactHistoryStore {
     }
 
     fn apply_permutation(&mut self, perm: &[usize], n: usize) {
-        let new_contacts: Vec<Vec<(u32, Vector3<f64>)>> =
+        let new_contacts: Vec<Vec<(u32, Vector3<f64>, bool)>> =
             perm.iter().map(|&p| self.contacts[p].clone()).collect();
         self.contacts[..n].clone_from_slice(&new_contacts);
     }
@@ -59,7 +58,7 @@ impl AtomData for ContactHistoryStore {
         if i < self.contacts.len() {
             let list = &self.contacts[i];
             buf.push(list.len() as f64);
-            for &(tag, ref s) in list {
+            for &(tag, ref s, _) in list {
                 buf.push(tag as f64);
                 buf.push(s.x);
                 buf.push(s.y);
@@ -77,7 +76,7 @@ impl AtomData for ContactHistoryStore {
         for _ in 0..count {
             let tag = buf[pos] as u32;
             let s = Vector3::new(buf[pos + 1], buf[pos + 2], buf[pos + 3]);
-            list.push((tag, s));
+            list.push((tag, s, false));
             pos += 4;
         }
         self.contacts.push(list);
@@ -128,17 +127,21 @@ pub fn mindlin_tangential_force(
 
     let nlocal = atoms.nlocal as usize;
 
-    // Track which partner tags are active per local atom for pruning
-    let mut active_partners: Vec<HashSet<u32>> = (0..nlocal).map(|_| HashSet::new()).collect();
+    // Reset all active flags before pair loop
+    for i in 0..nlocal {
+        for entry in &mut history.contacts[i] {
+            entry.2 = false;
+        }
+    }
 
     for (i, j) in neighbor.pairs(nlocal) {
             let r1 = dem.radius[i];
             let r2 = dem.radius[j];
 
             let diff = Vector3::new(
-                atoms.pos_x[j] - atoms.pos_x[i],
-                atoms.pos_y[j] - atoms.pos_y[i],
-                atoms.pos_z[j] - atoms.pos_z[i],
+                atoms.pos[j][0] - atoms.pos[i][0],
+                atoms.pos[j][1] - atoms.pos[i][1],
+                atoms.pos[j][2] - atoms.pos[i][2],
             );
             let distance = diff.norm();
 
@@ -155,32 +158,20 @@ pub fn mindlin_tangential_force(
             let delta = (r1 + r2) - distance;
 
             let r_eff = (r1 * r2) / (r1 + r2);
-            let e_eff = 1.0
-                / ((1.0 - material_table.poisson_ratio[mat_i].powi(2))
-                    / material_table.youngs_mod[mat_i]
-                    + (1.0 - material_table.poisson_ratio[mat_j].powi(2))
-                        / material_table.youngs_mod[mat_j]);
-            let g_eff = 1.0
-                / (2.0
-                    * (2.0 - material_table.poisson_ratio[mat_i])
-                    * (1.0 + material_table.poisson_ratio[mat_i])
-                    / material_table.youngs_mod[mat_i]
-                    + 2.0
-                        * (2.0 - material_table.poisson_ratio[mat_j])
-                        * (1.0 + material_table.poisson_ratio[mat_j])
-                        / material_table.youngs_mod[mat_j]);
+            let e_eff = material_table.e_eff_ij[mat_i][mat_j];
+            let g_eff = material_table.g_eff_ij[mat_i][mat_j];
 
             let sqrt_dr = (delta * r_eff).sqrt();
             let s_n = 2.0 * e_eff * sqrt_dr;
             let k_n = 4.0 / 3.0 * e_eff * sqrt_dr;
             let k_t = 8.0 * g_eff * sqrt_dr;
 
-            let m_r = (atoms.mass[i] * atoms.mass[j]) / (atoms.mass[i] + atoms.mass[j]);
+            let m_r = 1.0 / (atoms.inv_mass[i] + atoms.inv_mass[j]);
 
-            let vel_i = Vector3::new(atoms.vel_x[i], atoms.vel_y[i], atoms.vel_z[i]);
-            let vel_j = Vector3::new(atoms.vel_x[j], atoms.vel_y[j], atoms.vel_z[j]);
-            let omega_i = Vector3::new(atoms.omega_x[i], atoms.omega_y[i], atoms.omega_z[i]);
-            let omega_j = Vector3::new(atoms.omega_x[j], atoms.omega_y[j], atoms.omega_z[j]);
+            let vel_i = Vector3::new(atoms.vel[i][0], atoms.vel[i][1], atoms.vel[i][2]);
+            let vel_j = Vector3::new(atoms.vel[j][0], atoms.vel[j][1], atoms.vel[j][2]);
+            let omega_i = Vector3::new(atoms.omega[i][0], atoms.omega[i][1], atoms.omega[i][2]);
+            let omega_j = Vector3::new(atoms.omega[j][0], atoms.omega[j][1], atoms.omega[j][2]);
 
             let v_contact_i = vel_i + omega_i.cross(&(r1 * n));
             let v_contact_j = vel_j + omega_j.cross(&(-r2 * n));
@@ -195,13 +186,14 @@ pub fn mindlin_tangential_force(
             let tag_j = atoms.tag[j];
             let sign: f64 = if tag_i < tag_j { 1.0 } else { -1.0 };
 
-            // Look up existing spring in atom i's contact list by partner tag.
-            // The spring is stored in canonical form (from lower tag's perspective).
-            let stored_spring = history.contacts[i]
+            // Look up existing spring (single search, reused for write-back)
+            let entry_idx = history.contacts[i]
                 .iter()
-                .find(|(t, _)| *t == tag_j)
-                .map(|(_, s)| *s)
-                .unwrap_or_else(Vector3::zeros);
+                .position(|(t, _, _)| *t == tag_j);
+            let stored_spring = match entry_idx {
+                Some(idx) => history.contacts[i][idx].1,
+                None => Vector3::zeros(),
+            };
 
             let mut s = sign * stored_spring;
 
@@ -210,47 +202,47 @@ pub fn mindlin_tangential_force(
 
             let f_t_spring_mag = k_t * s.norm();
             let f_t_max = mu * f_n_mag;
-            if f_t_spring_mag > f_t_max && f_t_spring_mag > 1e-30 {
+            if f_t_spring_mag > f_t_max && f_t_spring_mag > TANGENTIAL_EPSILON {
                 s *= f_t_max / f_t_spring_mag;
             }
 
             let gamma_t = -2.0 * SQRT_5_3 * beta * (k_t * m_r).sqrt();
             let mut f_t = k_t * s - gamma_t * v_t;
             let f_t_mag = f_t.norm();
-            if f_t_mag > f_t_max && f_t_mag > 1e-30 {
+            if f_t_mag > f_t_max && f_t_mag > TANGENTIAL_EPSILON {
                 f_t *= f_t_max / f_t_mag;
             }
 
             let torque_i = (r1 * n).cross(&f_t);
             let torque_j = (-r2 * n).cross(&(-f_t));
 
-            atoms.force_x[i] += f_t.x;
-            atoms.force_y[i] += f_t.y;
-            atoms.force_z[i] += f_t.z;
-            atoms.force_x[j] -= f_t.x;
-            atoms.force_y[j] -= f_t.y;
-            atoms.force_z[j] -= f_t.z;
-            atoms.torque_x[i] += torque_i.x;
-            atoms.torque_y[i] += torque_i.y;
-            atoms.torque_z[i] += torque_i.z;
-            atoms.torque_x[j] += torque_j.x;
-            atoms.torque_y[j] += torque_j.y;
-            atoms.torque_z[j] += torque_j.z;
+            atoms.force[i][0] += f_t.x;
+            atoms.force[i][1] += f_t.y;
+            atoms.force[i][2] += f_t.z;
+            atoms.force[j][0] -= f_t.x;
+            atoms.force[j][1] -= f_t.y;
+            atoms.force[j][2] -= f_t.z;
+            atoms.torque[i][0] += torque_i.x;
+            atoms.torque[i][1] += torque_i.y;
+            atoms.torque[i][2] += torque_i.z;
+            atoms.torque[j][0] += torque_j.x;
+            atoms.torque[j][1] += torque_j.y;
+            atoms.torque[j][2] += torque_j.z;
 
-            // Store updated spring back (canonical form)
+            // Store updated spring back (canonical form) and mark active
             let new_spring = sign * s;
-            if let Some(entry) = history.contacts[i].iter_mut().find(|(t, _)| *t == tag_j) {
-                entry.1 = new_spring;
-            } else {
-                history.contacts[i].push((tag_j, new_spring));
+            match entry_idx {
+                Some(idx) => {
+                    history.contacts[i][idx].1 = new_spring;
+                    history.contacts[i][idx].2 = true;
+                }
+                None => history.contacts[i].push((tag_j, new_spring, true)),
             }
-            active_partners[i].insert(tag_j);
     }
 
-    // Prune stale contacts for local atoms
+    // Prune stale contacts for local atoms (remove entries not touched this step)
     for i in 0..nlocal {
-        let active = &active_partners[i];
-        history.contacts[i].retain(|(partner_tag, _)| active.contains(partner_tag));
+        history.contacts[i].retain(|(_, _, active)| *active);
     }
 }
 
@@ -283,6 +275,7 @@ mod tests {
         atom.push_test_atom(tag, pos, radius, mass);
         dem.radius.push(radius);
         dem.density.push(density);
+        dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
         history.contacts.push(Vec::new());
     }
 
@@ -304,7 +297,7 @@ mod tests {
             Vector3::new(0.0019, 0.0, 0.0),
             radius,
         );
-        atom.vel_y[1] = 0.1;
+        atom.vel[1][1] = 0.1;
         atom.nlocal = 2;
         atom.natoms = 2;
 
@@ -326,19 +319,19 @@ mod tests {
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
         assert!(
-            atom.force_y[0].abs() > 0.0,
+            atom.force[0][1].abs() > 0.0,
             "atom 0 should have nonzero tangential force y"
         );
         assert!(
-            atom.force_y[1].abs() > 0.0,
+            atom.force[1][1].abs() > 0.0,
             "atom 1 should have nonzero tangential force y"
         );
         assert!(
-            (atom.force_y[0] + atom.force_y[1]).abs() < 1e-10,
+            (atom.force[0][1] + atom.force[1][1]).abs() < 1e-10,
             "tangential forces should be equal and opposite"
         );
         let torque_mag_0 =
-            (atom.torque_x[0].powi(2) + atom.torque_y[0].powi(2) + atom.torque_z[0].powi(2)).sqrt();
+            (atom.torque[0][0].powi(2) + atom.torque[0][1].powi(2) + atom.torque[0][2].powi(2)).sqrt();
         assert!(torque_mag_0 > 0.0, "atom 0 should have nonzero torque");
     }
 
@@ -360,7 +353,7 @@ mod tests {
             Vector3::new(0.0019, 0.0, 0.0),
             radius,
         );
-        atom.vel_y[1] = 1000.0;
+        atom.vel[1][1] = 1000.0;
         atom.nlocal = 2;
         atom.natoms = 2;
 
@@ -383,7 +376,7 @@ mod tests {
         app.run();
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
-        let f_t_mag = (atom.force_y[0].powi(2) + atom.force_z[0].powi(2)).sqrt();
+        let f_t_mag = (atom.force[0][1].powi(2) + atom.force[0][2].powi(2)).sqrt();
         assert!(f_t_mag > 0.0, "tangential force should be nonzero");
         assert!(
             f_t_mag < 1e6,
@@ -409,7 +402,7 @@ mod tests {
             Vector3::new(0.003, 0.0, 0.0),
             radius,
         );
-        atom.vel_y[1] = 0.1;
+        atom.vel[1][1] = 0.1;
         atom.nlocal = 2;
         atom.natoms = 2;
 
@@ -431,13 +424,13 @@ mod tests {
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
         let f_mag_0 =
-            (atom.force_x[0].powi(2) + atom.force_y[0].powi(2) + atom.force_z[0].powi(2)).sqrt();
+            (atom.force[0][0].powi(2) + atom.force[0][1].powi(2) + atom.force[0][2].powi(2)).sqrt();
         let f_mag_1 =
-            (atom.force_x[1].powi(2) + atom.force_y[1].powi(2) + atom.force_z[1].powi(2)).sqrt();
+            (atom.force[1][0].powi(2) + atom.force[1][1].powi(2) + atom.force[1][2].powi(2)).sqrt();
         assert!(f_mag_0 < 1e-20, "no force for separated atoms");
         assert!(f_mag_1 < 1e-20, "no force for separated atoms");
         let t_mag_0 =
-            (atom.torque_x[0].powi(2) + atom.torque_y[0].powi(2) + atom.torque_z[0].powi(2)).sqrt();
+            (atom.torque[0][0].powi(2) + atom.torque[0][1].powi(2) + atom.torque[0][2].powi(2)).sqrt();
         assert!(t_mag_0 < 1e-20, "no torque for separated atoms");
     }
 }

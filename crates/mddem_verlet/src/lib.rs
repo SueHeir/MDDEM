@@ -19,13 +19,13 @@ pub fn initial_integration(mut atoms: ResMut<Atom>) {
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
     for i in 0..nlocal {
-        let half_dt_over_m = 0.5 * dt / atoms.mass[i];
-        atoms.vel_x[i] += half_dt_over_m * atoms.force_x[i];
-        atoms.vel_y[i] += half_dt_over_m * atoms.force_y[i];
-        atoms.vel_z[i] += half_dt_over_m * atoms.force_z[i];
-        atoms.pos_x[i] += atoms.vel_x[i] * dt;
-        atoms.pos_y[i] += atoms.vel_y[i] * dt;
-        atoms.pos_z[i] += atoms.vel_z[i] * dt;
+        let half_dt_over_m = 0.5 * dt * atoms.inv_mass[i];
+        atoms.vel[i][0] += half_dt_over_m * atoms.force[i][0];
+        atoms.vel[i][1] += half_dt_over_m * atoms.force[i][1];
+        atoms.vel[i][2] += half_dt_over_m * atoms.force[i][2];
+        atoms.pos[i][0] += atoms.vel[i][0] * dt;
+        atoms.pos[i][1] += atoms.vel[i][1] * dt;
+        atoms.pos[i][2] += atoms.vel[i][2] * dt;
     }
 }
 
@@ -33,10 +33,10 @@ pub fn final_integration(mut atoms: ResMut<Atom>) {
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
     for i in 0..nlocal {
-        let half_dt_over_m = 0.5 * dt / atoms.mass[i];
-        atoms.vel_x[i] += half_dt_over_m * atoms.force_x[i];
-        atoms.vel_y[i] += half_dt_over_m * atoms.force_y[i];
-        atoms.vel_z[i] += half_dt_over_m * atoms.force_z[i];
+        let half_dt_over_m = 0.5 * dt * atoms.inv_mass[i];
+        atoms.vel[i][0] += half_dt_over_m * atoms.force[i][0];
+        atoms.vel[i][1] += half_dt_over_m * atoms.force[i][1];
+        atoms.vel[i][2] += half_dt_over_m * atoms.force[i][2];
     }
 }
 
@@ -50,8 +50,8 @@ mod tests {
         let mut atom = Atom::new();
         atom.dt = 0.01;
         atom.push_test_atom(0, Vector3::zeros(), 0.001, 1.0);
-        atom.vel_x[0] = 1.0;
-        atom.force_x[0] = 2.0;
+        atom.vel[0][0] = 1.0;
+        atom.force[0][0] = 2.0;
         atom.nlocal = 1;
         atom.natoms = 1;
         atom
@@ -68,8 +68,8 @@ mod tests {
         let atom = app.get_resource_ref::<Atom>().unwrap();
         // v += 0.5 * 0.01 * 2.0 / 1.0 = 0.01 → v = 1.01
         // x += 1.01 * 0.01 = 0.0101
-        assert!((atom.vel_x[0] - 1.01).abs() < 1e-10);
-        assert!((atom.pos_x[0] - 0.0101).abs() < 1e-10);
+        assert!((atom.vel[0][0] - 1.01).abs() < 1e-10);
+        assert!((atom.pos[0][0] - 0.0101).abs() < 1e-10);
     }
 
     #[test]
@@ -81,8 +81,8 @@ mod tests {
         app.run();
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
-        assert!((atom.vel_x[0] - 1.01).abs() < 1e-10);
+        assert!((atom.vel[0][0] - 1.01).abs() < 1e-10);
         // Position should be unchanged
-        assert!((atom.pos_x[0] - 0.0).abs() < 1e-10);
+        assert!((atom.pos[0][0] - 0.0).abs() < 1e-10);
     }
 }

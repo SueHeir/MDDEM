@@ -143,7 +143,21 @@ impl Plugin for FixesPlugin {
 
 // ── Systems ────────────────────────────────────────────────────────────────
 
-fn setup_fixes(registry: Res<FixesRegistry>, comm: Res<CommResource>) {
+fn setup_fixes(registry: Res<FixesRegistry>, comm: Res<CommResource>, groups: Res<GroupRegistry>) {
+    // Validate all group names at setup time.
+    for f in &registry.add_forces {
+        groups.validate_name(&f.group, "fix addforce");
+    }
+    for f in &registry.set_forces {
+        groups.validate_name(&f.group, "fix setforce");
+    }
+    for f in &registry.move_linears {
+        groups.validate_name(&f.group, "fix move_linear");
+    }
+    for f in &registry.freezes {
+        groups.validate_name(&f.group, "fix freeze");
+    }
+
     if comm.rank() != 0 {
         return;
     }
@@ -181,9 +195,9 @@ fn apply_move_linear_pre(
         let group = groups.expect(&def.group);
         for i in 0..nlocal {
             if group.mask[i] {
-                atoms.vel_x[i] = def.vx;
-                atoms.vel_y[i] = def.vy;
-                atoms.vel_z[i] = def.vz;
+                atoms.vel[i][0] = def.vx;
+                atoms.vel[i][1] = def.vy;
+                atoms.vel[i][2] = def.vz;
             }
         }
     }
@@ -200,9 +214,9 @@ fn apply_add_force(
         let group = groups.expect(&def.group);
         for i in 0..nlocal {
             if group.mask[i] {
-                atoms.force_x[i] += def.fx;
-                atoms.force_y[i] += def.fy;
-                atoms.force_z[i] += def.fz;
+                atoms.force[i][0] += def.fx;
+                atoms.force[i][1] += def.fy;
+                atoms.force[i][2] += def.fz;
             }
         }
     }
@@ -219,9 +233,9 @@ fn apply_set_force(
         let group = groups.expect(&def.group);
         for i in 0..nlocal {
             if group.mask[i] {
-                atoms.force_x[i] = def.fx;
-                atoms.force_y[i] = def.fy;
-                atoms.force_z[i] = def.fz;
+                atoms.force[i][0] = def.fx;
+                atoms.force[i][1] = def.fy;
+                atoms.force[i][2] = def.fz;
             }
         }
     }
@@ -238,12 +252,12 @@ fn apply_freeze(
         let group = groups.expect(&def.group);
         for i in 0..nlocal {
             if group.mask[i] {
-                atoms.vel_x[i] = 0.0;
-                atoms.vel_y[i] = 0.0;
-                atoms.vel_z[i] = 0.0;
-                atoms.force_x[i] = 0.0;
-                atoms.force_y[i] = 0.0;
-                atoms.force_z[i] = 0.0;
+                atoms.vel[i][0] = 0.0;
+                atoms.vel[i][1] = 0.0;
+                atoms.vel[i][2] = 0.0;
+                atoms.force[i][0] = 0.0;
+                atoms.force[i][1] = 0.0;
+                atoms.force[i][2] = 0.0;
             }
         }
     }
@@ -260,9 +274,9 @@ fn apply_move_linear_post(
         let group = groups.expect(&def.group);
         for i in 0..nlocal {
             if group.mask[i] {
-                atoms.force_x[i] = 0.0;
-                atoms.force_y[i] = 0.0;
-                atoms.force_z[i] = 0.0;
+                atoms.force[i][0] = 0.0;
+                atoms.force[i][1] = 0.0;
+                atoms.force[i][2] = 0.0;
             }
         }
     }
@@ -273,40 +287,7 @@ fn apply_move_linear_post(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mddem_core::group::{Group, GroupDef};
-    use nalgebra::Vector3;
-
-    fn make_group_registry(name: &str, mask: Vec<bool>) -> GroupRegistry {
-        let count = mask.iter().filter(|&&m| m).count();
-        let mut registry = GroupRegistry::new();
-        registry.groups.push(Group {
-            name: name.to_string(),
-            def: GroupDef {
-                name: name.to_string(),
-                atom_types: None,
-                region_x_low: None,
-                region_x_high: None,
-                region_y_low: None,
-                region_y_high: None,
-                region_z_low: None,
-                region_z_high: None,
-            },
-            mask,
-            count,
-        });
-        registry
-    }
-
-    fn make_atoms(n: usize) -> Atom {
-        let mut atom = Atom::new();
-        for i in 0..n {
-            atom.push_test_atom(i as u32, Vector3::new(i as f64, 0.0, 0.0), 0.5, 1.0);
-        }
-        atom.nlocal = n as u32;
-        atom.natoms = n as u64;
-        atom.dt = 0.001;
-        atom
-    }
+    use mddem_test_utils::{make_atoms, make_group_registry};
 
     #[test]
     fn test_addforce_applies_constant_force() {
@@ -325,8 +306,8 @@ mod tests {
         };
 
         // Set some initial force
-        atoms.force_x[0] = 2.0;
-        atoms.force_x[2] = 3.0;
+        atoms.force[0][0] = 2.0;
+        atoms.force[2][0] = 3.0;
 
         let mut app = App::new();
         app.add_resource(atoms);
@@ -337,19 +318,19 @@ mod tests {
         app.run();
 
         let a = app.get_resource_ref::<Atom>().unwrap();
-        assert!((a.force_x[0] - 3.5).abs() < 1e-12); // 2.0 + 1.5
-        assert!((a.force_x[1]).abs() < 1e-12); // not in group
-        assert!((a.force_x[2] - 4.5).abs() < 1e-12); // 3.0 + 1.5
-        assert!((a.force_z[0] - (-0.5)).abs() < 1e-12);
-        assert!((a.force_z[1]).abs() < 1e-12);
+        assert!((a.force[0][0] - 3.5).abs() < 1e-12); // 2.0 + 1.5
+        assert!((a.force[1][0]).abs() < 1e-12); // not in group
+        assert!((a.force[2][0] - 4.5).abs() < 1e-12); // 3.0 + 1.5
+        assert!((a.force[0][2] - (-0.5)).abs() < 1e-12);
+        assert!((a.force[1][2]).abs() < 1e-12);
     }
 
     #[test]
     fn test_setforce_overrides_force() {
         let mut atoms = make_atoms(2);
-        atoms.force_x[0] = 100.0;
-        atoms.force_y[0] = 200.0;
-        atoms.force_z[0] = 300.0;
+        atoms.force[0][0] = 100.0;
+        atoms.force[0][1] = 200.0;
+        atoms.force[0][2] = 300.0;
 
         let groups = make_group_registry("wall", vec![true, false]);
         let registry = FixesRegistry {
@@ -373,20 +354,20 @@ mod tests {
         app.run();
 
         let a = app.get_resource_ref::<Atom>().unwrap();
-        assert!((a.force_x[0] - 1.0).abs() < 1e-12);
-        assert!((a.force_y[0] - 2.0).abs() < 1e-12);
-        assert!((a.force_z[0] - 3.0).abs() < 1e-12);
+        assert!((a.force[0][0] - 1.0).abs() < 1e-12);
+        assert!((a.force[0][1] - 2.0).abs() < 1e-12);
+        assert!((a.force[0][2] - 3.0).abs() < 1e-12);
     }
 
     #[test]
     fn test_freeze_zeros_vel_and_force() {
         let mut atoms = make_atoms(3);
-        atoms.vel_x[1] = 5.0;
-        atoms.vel_y[1] = 6.0;
-        atoms.vel_z[1] = 7.0;
-        atoms.force_x[1] = 10.0;
-        atoms.force_y[1] = 20.0;
-        atoms.force_z[1] = 30.0;
+        atoms.vel[1][0] = 5.0;
+        atoms.vel[1][1] = 6.0;
+        atoms.vel[1][2] = 7.0;
+        atoms.force[1][0] = 10.0;
+        atoms.force[1][1] = 20.0;
+        atoms.force[1][2] = 30.0;
 
         let groups = make_group_registry("frozen", vec![false, true, false]);
         let registry = FixesRegistry {
@@ -407,12 +388,12 @@ mod tests {
         app.run();
 
         let a = app.get_resource_ref::<Atom>().unwrap();
-        assert!((a.vel_x[1]).abs() < 1e-12);
-        assert!((a.vel_y[1]).abs() < 1e-12);
-        assert!((a.vel_z[1]).abs() < 1e-12);
-        assert!((a.force_x[1]).abs() < 1e-12);
-        assert!((a.force_y[1]).abs() < 1e-12);
-        assert!((a.force_z[1]).abs() < 1e-12);
+        assert!((a.vel[1][0]).abs() < 1e-12);
+        assert!((a.vel[1][1]).abs() < 1e-12);
+        assert!((a.vel[1][2]).abs() < 1e-12);
+        assert!((a.force[1][0]).abs() < 1e-12);
+        assert!((a.force[1][1]).abs() < 1e-12);
+        assert!((a.force[1][2]).abs() < 1e-12);
     }
 
     #[test]
@@ -442,9 +423,9 @@ mod tests {
         app.run();
 
         let a = app.get_resource_ref::<Atom>().unwrap();
-        assert!((a.vel_z[0] - (-0.5)).abs() < 1e-12);
-        assert!((a.vel_z[1]).abs() < 1e-12); // not in group
-        assert!((a.force_x[0]).abs() < 1e-12); // force zeroed by post
-        assert!((a.force_z[0]).abs() < 1e-12);
+        assert!((a.vel[0][2] - (-0.5)).abs() < 1e-12);
+        assert!((a.vel[1][2]).abs() < 1e-12); // not in group
+        assert!((a.force[0][0]).abs() < 1e-12); // force zeroed by post
+        assert!((a.force[0][2]).abs() < 1e-12);
     }
 }

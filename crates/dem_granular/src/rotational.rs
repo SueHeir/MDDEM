@@ -21,13 +21,13 @@ pub fn initial_rotation(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>
     let nlocal = atoms.nlocal as usize;
 
     for i in 0..nlocal {
-        let inertia = 0.4 * atoms.mass[i] * dem.radius[i] * dem.radius[i];
+        let inv_inertia = dem.inv_inertia[i];
 
-        atoms.omega_x[i] += 0.5 * dt * atoms.torque_x[i] / inertia;
-        atoms.omega_y[i] += 0.5 * dt * atoms.torque_y[i] / inertia;
-        atoms.omega_z[i] += 0.5 * dt * atoms.torque_z[i] / inertia;
+        atoms.omega[i][0] += 0.5 * dt * atoms.torque[i][0] * inv_inertia;
+        atoms.omega[i][1] += 0.5 * dt * atoms.torque[i][1] * inv_inertia;
+        atoms.omega[i][2] += 0.5 * dt * atoms.torque[i][2] * inv_inertia;
 
-        let omega = Vector3::new(atoms.omega_x[i], atoms.omega_y[i], atoms.omega_z[i]);
+        let omega = Vector3::new(atoms.omega[i][0], atoms.omega[i][1], atoms.omega[i][2]);
         let angle = omega.norm() * dt;
         if angle > 1e-14 {
             let axis = UnitVector3::new_normalize(omega);
@@ -43,11 +43,11 @@ pub fn final_rotation(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) 
     let nlocal = atoms.nlocal as usize;
 
     for i in 0..nlocal {
-        let inertia = 0.4 * atoms.mass[i] * dem.radius[i] * dem.radius[i];
+        let inv_inertia = dem.inv_inertia[i];
 
-        atoms.omega_x[i] += 0.5 * dt * atoms.torque_x[i] / inertia;
-        atoms.omega_y[i] += 0.5 * dt * atoms.torque_y[i] / inertia;
-        atoms.omega_z[i] += 0.5 * dt * atoms.torque_z[i] / inertia;
+        atoms.omega[i][0] += 0.5 * dt * atoms.torque[i][0] * inv_inertia;
+        atoms.omega[i][1] += 0.5 * dt * atoms.torque[i][1] * inv_inertia;
+        atoms.omega[i][2] += 0.5 * dt * atoms.torque[i][2] * inv_inertia;
     }
 }
 
@@ -65,6 +65,7 @@ mod tests {
         atom.push_test_atom(tag, Vector3::zeros(), radius, mass);
         dem.radius.push(radius);
         dem.density.push(density);
+        dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
     }
 
     #[test]
@@ -81,7 +82,7 @@ mod tests {
         let inertia = 0.4 * mass * radius * radius;
 
         // Apply torque around z-axis
-        atom.torque_z[0] = 1.0;
+        atom.torque[0][2] = 1.0;
         atom.nlocal = 1;
         atom.natoms = 1;
 
@@ -97,10 +98,10 @@ mod tests {
         let atom = app.get_resource_ref::<Atom>().unwrap();
         let expected_omega_z = 0.5 * dt * 1.0 / inertia;
         assert!(
-            (atom.omega_z[0] - expected_omega_z).abs() < 1e-20,
+            (atom.omega[0][2] - expected_omega_z).abs() < 1e-20,
             "omega_z should be {}, got {}",
             expected_omega_z,
-            atom.omega_z[0]
+            atom.omega[0][2]
         );
     }
 
@@ -113,7 +114,7 @@ mod tests {
         atom.dt = 1e-5;
 
         push_test_atom(&mut atom, &mut dem, 0, radius);
-        atom.omega_z[0] = 100.0;
+        atom.omega[0][2] = 100.0;
         atom.nlocal = 1;
         atom.natoms = 1;
 

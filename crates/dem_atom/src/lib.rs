@@ -49,6 +49,10 @@ pub struct MaterialTable {
     pub restitution: Vec<f64>,
     pub beta_ij: Vec<Vec<f64>>,
     pub friction_ij: Vec<Vec<f64>>,
+    /// Precomputed effective Young's modulus for each material pair (Hertz contact).
+    pub e_eff_ij: Vec<Vec<f64>>,
+    /// Precomputed effective shear modulus for each material pair (Mindlin contact).
+    pub g_eff_ij: Vec<Vec<f64>>,
 }
 
 impl Default for MaterialTable {
@@ -67,6 +71,8 @@ impl MaterialTable {
             restitution: Vec::new(),
             beta_ij: Vec::new(),
             friction_ij: Vec::new(),
+            e_eff_ij: Vec::new(),
+            g_eff_ij: Vec::new(),
         }
     }
 
@@ -95,6 +101,8 @@ impl MaterialTable {
         let n = self.names.len();
         self.beta_ij = vec![vec![0.0; n]; n];
         self.friction_ij = vec![vec![0.0; n]; n];
+        self.e_eff_ij = vec![vec![0.0; n]; n];
+        self.g_eff_ij = vec![vec![0.0; n]; n];
         for i in 0..n {
             for j in 0..n {
                 // Geometric mean mixing for restitution
@@ -104,6 +112,18 @@ impl MaterialTable {
 
                 // Geometric mean mixing for friction
                 self.friction_ij[i][j] = (self.friction[i] * self.friction[j]).sqrt();
+
+                // Effective Young's modulus (Hertz)
+                let nu_i = self.poisson_ratio[i];
+                let nu_j = self.poisson_ratio[j];
+                self.e_eff_ij[i][j] = 1.0
+                    / ((1.0 - nu_i * nu_i) / self.youngs_mod[i]
+                        + (1.0 - nu_j * nu_j) / self.youngs_mod[j]);
+
+                // Effective shear modulus (Mindlin)
+                self.g_eff_ij[i][j] = 1.0
+                    / (2.0 * (2.0 - nu_i) * (1.0 + nu_i) / self.youngs_mod[i]
+                        + 2.0 * (2.0 - nu_j) * (1.0 + nu_j) / self.youngs_mod[j]);
             }
         }
     }
@@ -111,11 +131,12 @@ impl MaterialTable {
 
 // ── DemAtom per-atom data ────────────────────────────────────────────────────
 
-/// Per-atom DEM extension data: particle radius and density.
+/// Per-atom DEM extension data: particle radius, density, and precomputed inverse inertia.
 #[derive(AtomData)]
 pub struct DemAtom {
     pub radius: Vec<f64>,
     pub density: Vec<f64>,
+    pub inv_inertia: Vec<f64>,
 }
 
 impl Default for DemAtom {
@@ -129,6 +150,7 @@ impl DemAtom {
         DemAtom {
             radius: Vec::new(),
             density: Vec::new(),
+            inv_inertia: Vec::new(),
         }
     }
 }
@@ -192,6 +214,35 @@ mod tests {
         assert!(
             (mt.beta_ij[0][1] - expected_beta).abs() < 1e-12,
             "beta_ij should use geometric mean restitution"
+        );
+
+        // e_eff and g_eff symmetry
+        assert!(
+            (mt.e_eff_ij[0][1] - mt.e_eff_ij[1][0]).abs() < 1e-6,
+            "e_eff_ij should be symmetric"
+        );
+        assert!(
+            (mt.g_eff_ij[0][1] - mt.g_eff_ij[1][0]).abs() < 1e-6,
+            "g_eff_ij should be symmetric"
+        );
+        assert!(mt.e_eff_ij[0][0] > 0.0, "e_eff should be positive");
+        assert!(mt.g_eff_ij[0][0] > 0.0, "g_eff should be positive");
+    }
+
+    #[test]
+    fn e_eff_matches_manual_computation() {
+        let mut mt = MaterialTable::new();
+        mt.add_material("glass", 8.7e9, 0.3, 0.95, 0.4);
+        mt.build_pair_tables();
+
+        let nu = 0.3_f64;
+        let e = 8.7e9_f64;
+        let expected = 1.0 / (2.0 * (1.0 - nu * nu) / e);
+        assert!(
+            (mt.e_eff_ij[0][0] - expected).abs() < 1.0,
+            "e_eff_ij[0][0] should be {}, got {}",
+            expected,
+            mt.e_eff_ij[0][0]
         );
     }
 }

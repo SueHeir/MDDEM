@@ -36,9 +36,9 @@ pub fn print_granular_temperature(
     let mut local_mv_z = 0.0;
     let mut local_mass = 0.0;
     for i in 0..nlocal {
-        local_mv_x += atoms.mass[i] * atoms.vel_x[i];
-        local_mv_y += atoms.mass[i] * atoms.vel_y[i];
-        local_mv_z += atoms.mass[i] * atoms.vel_z[i];
+        local_mv_x += atoms.mass[i] * atoms.vel[i][0];
+        local_mv_y += atoms.mass[i] * atoms.vel[i][1];
+        local_mv_z += atoms.mass[i] * atoms.vel[i][2];
         local_mass += atoms.mass[i];
     }
     let global_mv_x = comm.all_reduce_sum_f64(local_mv_x);
@@ -50,9 +50,9 @@ pub fn print_granular_temperature(
     let avg_vz = global_mv_z / global_mass;
     let mut vel_diff = 0.0;
     for i in 0..nlocal {
-        vel_diff += atoms.mass[i] * (atoms.vel_x[i] - avg_vx).powi(2)
-            + atoms.mass[i] * (atoms.vel_y[i] - avg_vy).powi(2)
-            + atoms.mass[i] * (atoms.vel_z[i] - avg_vz).powi(2);
+        vel_diff += atoms.mass[i] * (atoms.vel[i][0] - avg_vx).powi(2)
+            + atoms.mass[i] * (atoms.vel[i][1] - avg_vy).powi(2)
+            + atoms.mass[i] * (atoms.vel[i][2] - avg_vz).powi(2);
     }
     let vel_diff_sum = comm.all_reduce_sum_f64(vel_diff);
     let granular_temperature = vel_diff_sum / (3.0 * global_mass);

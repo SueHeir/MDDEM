@@ -15,7 +15,7 @@ pub mod run;
 pub use atom::*;
 pub use comm::*;
 pub use domain::*;
-pub use group::{Group, GroupDef, GroupPlugin, GroupRegistry};
+pub use group::{group_includes, Group, GroupDef, GroupPlugin, GroupRegistry};
 pub use input::{load_toml, print_banner, Config, Input, InputPlugin};
 pub use run::*;
 

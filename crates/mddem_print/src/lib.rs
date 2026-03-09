@@ -11,7 +11,7 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, GroupRegistry, Input, RunConfig, RunState};
+use mddem_core::{compute_ke, Atom, AtomDataRegistry, CommResource, Config, GroupRegistry, Input, RunConfig, RunState};
 use mddem_neighbor::Neighbor;
 
 // ── Thermo config ───────────────────────────────────────────────────────────
@@ -312,18 +312,10 @@ pub fn print_thermo(
     if !step.is_multiple_of(thermo.interval) {
         return;
     }
-    let nlocal = atoms.nlocal as usize;
 
     // Pre-compute values that need allreduce (all ranks must participate).
     // We compute these eagerly so all ranks call allreduce together.
-    let local_ke_all: f64 = (0..nlocal)
-        .map(|i| {
-            0.5 * atoms.mass[i]
-                * (atoms.vel_x[i] * atoms.vel_x[i]
-                    + atoms.vel_y[i] * atoms.vel_y[i]
-                    + atoms.vel_z[i] * atoms.vel_z[i])
-        })
-        .sum();
+    let local_ke_all = compute_ke(&atoms, None);
     let global_ke_all = comm.all_reduce_sum_f64(local_ke_all);
     let global_atoms_all = atoms.natoms as f64;
     let local_neighbors = neighbor.neighbor_indices.len() as f64;
@@ -339,15 +331,7 @@ pub fn print_thermo(
                 continue;
             }
             if let Some(group) = groups.get(gname) {
-                let local_ke: f64 = (0..nlocal)
-                    .filter(|&i| group.mask[i])
-                    .map(|i| {
-                        0.5 * atoms.mass[i]
-                            * (atoms.vel_x[i] * atoms.vel_x[i]
-                                + atoms.vel_y[i] * atoms.vel_y[i]
-                                + atoms.vel_z[i] * atoms.vel_z[i])
-                    })
-                    .sum();
+                let local_ke = compute_ke(&atoms, Some(&group.mask));
                 let local_count = group.count as f64;
                 group_ke.insert(gname.clone(), comm.all_reduce_sum_f64(local_ke));
                 group_count.insert(gname.clone(), comm.all_reduce_sum_f64(local_count));
@@ -488,7 +472,7 @@ fn print_vtp_inner(
     // Points
     write!(&mut file, "<Points><DataArray type=\"Float32\" NumberOfComponents=\"3\" format=\"ascii\">")?;
     for i in 0..n {
-        writeln!(&mut file, "{} {} {}", atoms.pos_x[i], atoms.pos_y[i], atoms.pos_z[i])?;
+        writeln!(&mut file, "{} {} {}", atoms.pos[i][0], atoms.pos[i][1], atoms.pos[i][2])?;
     }
     write!(&mut file, "</DataArray>\n</Points>\n")?;
 
@@ -496,7 +480,7 @@ fn print_vtp_inner(
     writeln!(&mut file, "<PointData Scalars=\"\" Vectors=\"\">")?;
     write_vtp_data_array(&mut file, "Float32", "Radius", n, |i| format!("{}", atoms.skin[i]))?;
     write_vtp_data_array(&mut file, "Float32", "Vel_Mag", n, |i| {
-        let vmag = (atoms.vel_x[i].powi(2) + atoms.vel_y[i].powi(2) + atoms.vel_z[i].powi(2)).sqrt();
+        let vmag = (atoms.vel[i][0].powi(2) + atoms.vel[i][1].powi(2) + atoms.vel[i][2].powi(2)).sqrt();
         format!("{}", vmag)
     })?;
     write_vtp_data_array(&mut file, "Int32", "IsGhost", n, |i| {
@@ -560,15 +544,15 @@ fn dump_atoms_inner(
             for i in 0..nlocal {
                 w.write_all(&atoms.tag[i].to_le_bytes())?;
                 w.write_all(&atoms.atom_type[i].to_le_bytes())?;
-                w.write_all(&atoms.pos_x[i].to_le_bytes())?;
-                w.write_all(&atoms.pos_y[i].to_le_bytes())?;
-                w.write_all(&atoms.pos_z[i].to_le_bytes())?;
-                w.write_all(&atoms.vel_x[i].to_le_bytes())?;
-                w.write_all(&atoms.vel_y[i].to_le_bytes())?;
-                w.write_all(&atoms.vel_z[i].to_le_bytes())?;
-                w.write_all(&atoms.force_x[i].to_le_bytes())?;
-                w.write_all(&atoms.force_y[i].to_le_bytes())?;
-                w.write_all(&atoms.force_z[i].to_le_bytes())?;
+                w.write_all(&atoms.pos[i][0].to_le_bytes())?;
+                w.write_all(&atoms.pos[i][1].to_le_bytes())?;
+                w.write_all(&atoms.pos[i][2].to_le_bytes())?;
+                w.write_all(&atoms.vel[i][0].to_le_bytes())?;
+                w.write_all(&atoms.vel[i][1].to_le_bytes())?;
+                w.write_all(&atoms.vel[i][2].to_le_bytes())?;
+                w.write_all(&atoms.force[i][0].to_le_bytes())?;
+                w.write_all(&atoms.force[i][1].to_le_bytes())?;
+                w.write_all(&atoms.force[i][2].to_le_bytes())?;
                 w.write_all(&atoms.skin[i].to_le_bytes())?;
             }
         }
@@ -584,15 +568,15 @@ fn dump_atoms_inner(
                     "{},{},{},{},{},{},{},{},{},{},{},{}",
                     atoms.tag[i],
                     atoms.atom_type[i],
-                    atoms.pos_x[i],
-                    atoms.pos_y[i],
-                    atoms.pos_z[i],
-                    atoms.vel_x[i],
-                    atoms.vel_y[i],
-                    atoms.vel_z[i],
-                    atoms.force_x[i],
-                    atoms.force_y[i],
-                    atoms.force_z[i],
+                    atoms.pos[i][0],
+                    atoms.pos[i][1],
+                    atoms.pos[i][2],
+                    atoms.vel[i][0],
+                    atoms.vel[i][1],
+                    atoms.vel[i][2],
+                    atoms.force[i][0],
+                    atoms.force[i][1],
+                    atoms.force[i][2],
                     atoms.skin[i],
                 )?;
             }
@@ -638,24 +622,24 @@ pub fn write_restart(
         dt: atoms.dt,
         tag: atoms.tag[..nlocal].to_vec(),
         atom_type: atoms.atom_type[..nlocal].to_vec(),
-        pos_x: atoms.pos_x[..nlocal].to_vec(),
-        pos_y: atoms.pos_y[..nlocal].to_vec(),
-        pos_z: atoms.pos_z[..nlocal].to_vec(),
-        vel_x: atoms.vel_x[..nlocal].to_vec(),
-        vel_y: atoms.vel_y[..nlocal].to_vec(),
-        vel_z: atoms.vel_z[..nlocal].to_vec(),
-        omega_x: atoms.omega_x[..nlocal].to_vec(),
-        omega_y: atoms.omega_y[..nlocal].to_vec(),
-        omega_z: atoms.omega_z[..nlocal].to_vec(),
-        force_x: atoms.force_x[..nlocal].to_vec(),
-        force_y: atoms.force_y[..nlocal].to_vec(),
-        force_z: atoms.force_z[..nlocal].to_vec(),
-        torque_x: atoms.torque_x[..nlocal].to_vec(),
-        torque_y: atoms.torque_y[..nlocal].to_vec(),
-        torque_z: atoms.torque_z[..nlocal].to_vec(),
-        ang_mom_x: atoms.ang_mom_x[..nlocal].to_vec(),
-        ang_mom_y: atoms.ang_mom_y[..nlocal].to_vec(),
-        ang_mom_z: atoms.ang_mom_z[..nlocal].to_vec(),
+        pos_x: atoms.pos[..nlocal].iter().map(|p| p[0]).collect(),
+        pos_y: atoms.pos[..nlocal].iter().map(|p| p[1]).collect(),
+        pos_z: atoms.pos[..nlocal].iter().map(|p| p[2]).collect(),
+        vel_x: atoms.vel[..nlocal].iter().map(|v| v[0]).collect(),
+        vel_y: atoms.vel[..nlocal].iter().map(|v| v[1]).collect(),
+        vel_z: atoms.vel[..nlocal].iter().map(|v| v[2]).collect(),
+        omega_x: atoms.omega[..nlocal].iter().map(|v| v[0]).collect(),
+        omega_y: atoms.omega[..nlocal].iter().map(|v| v[1]).collect(),
+        omega_z: atoms.omega[..nlocal].iter().map(|v| v[2]).collect(),
+        force_x: atoms.force[..nlocal].iter().map(|v| v[0]).collect(),
+        force_y: atoms.force[..nlocal].iter().map(|v| v[1]).collect(),
+        force_z: atoms.force[..nlocal].iter().map(|v| v[2]).collect(),
+        torque_x: atoms.torque[..nlocal].iter().map(|v| v[0]).collect(),
+        torque_y: atoms.torque[..nlocal].iter().map(|v| v[1]).collect(),
+        torque_z: atoms.torque[..nlocal].iter().map(|v| v[2]).collect(),
+        ang_mom_x: atoms.ang_mom[..nlocal].iter().map(|v| v[0]).collect(),
+        ang_mom_y: atoms.ang_mom[..nlocal].iter().map(|v| v[1]).collect(),
+        ang_mom_z: atoms.ang_mom[..nlocal].iter().map(|v| v[2]).collect(),
         quaternion: (0..nlocal)
             .map(|i| {
                 let q = atoms.quaternion[i];
@@ -780,24 +764,18 @@ pub fn read_restart(
     atoms.origin_index = vec![0; n];
     atoms.is_ghost = vec![false; n];
     atoms.is_collision = vec![false; n];
-    atoms.pos_x = data.pos_x;
-    atoms.pos_y = data.pos_y;
-    atoms.pos_z = data.pos_z;
-    atoms.vel_x = data.vel_x;
-    atoms.vel_y = data.vel_y;
-    atoms.vel_z = data.vel_z;
-    atoms.omega_x = data.omega_x;
-    atoms.omega_y = data.omega_y;
-    atoms.omega_z = data.omega_z;
-    atoms.force_x = data.force_x;
-    atoms.force_y = data.force_y;
-    atoms.force_z = data.force_z;
-    atoms.torque_x = data.torque_x;
-    atoms.torque_y = data.torque_y;
-    atoms.torque_z = data.torque_z;
-    atoms.ang_mom_x = data.ang_mom_x;
-    atoms.ang_mom_y = data.ang_mom_y;
-    atoms.ang_mom_z = data.ang_mom_z;
+    atoms.pos = data.pos_x.iter().zip(data.pos_y.iter()).zip(data.pos_z.iter())
+        .map(|((&x, &y), &z)| [x, y, z]).collect();
+    atoms.vel = data.vel_x.iter().zip(data.vel_y.iter()).zip(data.vel_z.iter())
+        .map(|((&x, &y), &z)| [x, y, z]).collect();
+    atoms.omega = data.omega_x.iter().zip(data.omega_y.iter()).zip(data.omega_z.iter())
+        .map(|((&x, &y), &z)| [x, y, z]).collect();
+    atoms.force = data.force_x.iter().zip(data.force_y.iter()).zip(data.force_z.iter())
+        .map(|((&x, &y), &z)| [x, y, z]).collect();
+    atoms.torque = data.torque_x.iter().zip(data.torque_y.iter()).zip(data.torque_z.iter())
+        .map(|((&x, &y), &z)| [x, y, z]).collect();
+    atoms.ang_mom = data.ang_mom_x.iter().zip(data.ang_mom_y.iter()).zip(data.ang_mom_z.iter())
+        .map(|((&x, &y), &z)| [x, y, z]).collect();
     atoms.quaternion = data
         .quaternion
         .iter()
@@ -808,6 +786,7 @@ pub fn read_restart(
         })
         .collect();
     atoms.mass = data.mass;
+    atoms.inv_mass = atoms.mass.iter().map(|&m| 1.0 / m).collect();
     atoms.skin = data.skin;
 
     // Restore AtomData (DemAtom, etc.) from generic buffers

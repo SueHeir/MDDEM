@@ -134,9 +134,9 @@ pub fn dem_insert_atoms(
 
                     let mut no_overlap = true;
                     for i in 0..atom.len() {
-                        let dx = x - atom.pos_x[i];
-                        let dy = y - atom.pos_y[i];
-                        let dz = z - atom.pos_z[i];
+                        let dx = x - atom.pos[i][0];
+                        let dy = y - atom.pos[i][1];
+                        let dz = z - atom.pos[i][2];
                         let distance = (dx * dx + dy * dy + dz * dz).sqrt();
                         if distance <= (radius + dem_data.radius[i]) * 1.1 {
                             no_overlap = false;
@@ -154,35 +154,26 @@ pub fn dem_insert_atoms(
                         atom.is_collision.push(false);
                         atom.is_ghost.push(false);
                                                 max_tag += 1;
-                        atom.pos_x.push(x);
-                        atom.pos_y.push(y);
-                        atom.pos_z.push(z);
-                        atom.vel_x.push(0.0);
-                        atom.vel_y.push(0.0);
-                        atom.vel_z.push(0.0);
+                        atom.pos.push([x, y, z]);
+                        atom.vel.push([0.0; 3]);
                         atom.quaternion.push(UnitQuaternion::identity());
-                        atom.omega_x.push(0.0);
-                        atom.omega_y.push(0.0);
-                        atom.omega_z.push(0.0);
-                        atom.ang_mom_x.push(0.0);
-                        atom.ang_mom_y.push(0.0);
-                        atom.ang_mom_z.push(0.0);
-                        atom.torque_x.push(0.0);
-                        atom.torque_y.push(0.0);
-                        atom.torque_z.push(0.0);
-                        atom.force_x.push(0.0);
-                        atom.force_y.push(0.0);
-                        atom.force_z.push(0.0);
-                        atom.mass.push(density * 4.0 / 3.0 * PI * radius.powi(3));
+                        atom.omega.push([0.0; 3]);
+                        atom.ang_mom.push([0.0; 3]);
+                        atom.torque.push([0.0; 3]);
+                        atom.force.push([0.0; 3]);
+                        let mass = density * 4.0 / 3.0 * PI * radius.powi(3);
+                        atom.mass.push(mass);
+                        atom.inv_mass.push(1.0 / mass);
 
                         atom.atom_type.push(mat_idx);
                         dem_data.radius.push(radius);
                         dem_data.density.push(density);
+                        dem_data.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
                     }
                 }
 
                 // Apply per-insert velocity to this batch
-                let total_len = atom.vel_x.len();
+                let total_len = atom.vel.len();
                 let start = total_len - insert.count as usize;
                 if let Some(rand_vel) = insert.velocity {
                     if rand_vel < 0.0 {
@@ -191,9 +182,9 @@ pub fn dem_insert_atoms(
                     }
                     let normal = Normal::new(0.0, rand_vel).unwrap();
                     for i in start..total_len {
-                        atom.vel_x[i] = normal.sample(&mut rng);
-                        atom.vel_y[i] = normal.sample(&mut rng);
-                        atom.vel_z[i] = normal.sample(&mut rng);
+                        atom.vel[i][0] = normal.sample(&mut rng);
+                        atom.vel[i][1] = normal.sample(&mut rng);
+                        atom.vel[i][2] = normal.sample(&mut rng);
                     }
                 }
                 // Apply directional velocity components (additive with random)
@@ -202,9 +193,9 @@ pub fn dem_insert_atoms(
                 let vz = insert.velocity_z.unwrap_or(0.0);
                 if vx != 0.0 || vy != 0.0 || vz != 0.0 {
                     for i in start..total_len {
-                        atom.vel_x[i] += vx;
-                        atom.vel_y[i] += vy;
-                        atom.vel_z[i] += vz;
+                        atom.vel[i][0] += vx;
+                        atom.vel[i][1] += vy;
+                        atom.vel[i][2] += vz;
                     }
                 }
             }

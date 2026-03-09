@@ -216,17 +216,17 @@ DEM examples include `validate.py` scripts for physics checks (Haff's law coolin
 
 ## Performance
 
-Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). Identical physics: LJ 12-6 with cutoff 2.5 sigma, FCC lattice at rho\*=0.8442, Nose-Hoover NVT at T\*=1.44, neighbor rebuild every 20 steps, 500 timesteps. Compiled with `--release` on Apple M1. RDF/MSD disabled in both codes for fair comparison.
+Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). Identical physics: LJ 12-6 with cutoff 2.5 sigma, FCC lattice at rho\*=0.8442, Nose-Hoover NVT at T\*=1.44, neighbor rebuild every 20 steps, 200 timesteps. Compiled with `--release` on Apple M1 Pro. RDF/MSD disabled in both codes for fair comparison.
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
 |--------:|---------------:|----------------:|------:|
-|     108 |          5,889 |          30,580 |  5.2x |
-|   1,000 |            712 |           2,931 |  4.1x |
-|  10,000 |             78 |             295 |  3.8x |
-|  32,000 |             26 |              92 |  3.6x |
-| 100,000 |            9.5 |            28.2 |  3.0x |
+|     108 |          3,519 |          30,580 |  8.7x |
+|   1,000 |            395 |           2,931 |  7.4x |
+|  10,000 |           38.1 |             295 |  7.7x |
+|  32,000 |           10.9 |              92 |  8.4x |
+| 100,920 |            3.7 |            28.2 |  7.6x |
 
-LAMMPS is 3-5x faster, with consistent O(N) scaling in both codes. The gap is primarily in the force loop and neighbor build, where LAMMPS benefits from decades of hand-tuned SIMD and cache optimization.
+LAMMPS is ~8x faster, with consistent O(N) scaling in both codes. The gap is primarily in the neighbor list build (73% of runtime) and force loop (22%), where LAMMPS benefits from decades of hand-tuned SIMD and cache optimization. MDDEM prioritizes safe Rust and code clarity over raw performance.
 
 ## Roadmap
 

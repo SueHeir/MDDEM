@@ -15,8 +15,8 @@ impl Config {
             Some(v) => match v.clone().try_into::<T>() {
                 Ok(val) => val,
                 Err(e) => {
-                    eprintln!("WARNING: [{}] config error: {}. Using defaults.", key, e);
-                    T::default()
+                    eprintln!("ERROR: [{}] config error: {}", key, e);
+                    std::process::exit(1);
                 }
             },
         }
@@ -51,10 +51,10 @@ impl Config {
                         Ok(s) => s,
                         Err(e) => {
                             eprintln!(
-                                "WARNING: [[run]] stage {} config error: {}. Using defaults.",
+                                "ERROR: [[run]] stage {} config error: {}",
                                 idx, e
                             );
-                            StageConfig::default()
+                            std::process::exit(1);
                         }
                     })
                     .collect();
@@ -76,14 +76,14 @@ impl Config {
             Some(toml::Value::Array(arr)) => arr
                 .iter()
                 .enumerate()
-                .filter_map(|(idx, v)| match v.clone().try_into::<T>() {
-                    Ok(val) => Some(val),
+                .map(|(idx, v)| match v.clone().try_into::<T>() {
+                    Ok(val) => val,
                     Err(e) => {
                         eprintln!(
-                            "WARNING: [[{}]] entry {} config error: {}. Skipping.",
+                            "ERROR: [[{}]] entry {} config error: {}",
                             key, idx, e
                         );
-                        None
+                        std::process::exit(1);
                     }
                 })
                 .collect(),
@@ -151,22 +151,6 @@ dump_interval = 100
         assert_eq!(run.current_stage(1).thermo, 500);
         assert_eq!(run.current_stage(1).dump_interval, Some(100));
         assert!(run.current_stage(0).dump_interval.is_none());
-    }
-
-    #[test]
-    fn unknown_field_falls_back_to_default() {
-        let toml_str = r#"
-[run]
-steps = 5000
-thermo = 200
-typo_field = true
-"#;
-        let table: toml::Table = toml_str.parse().unwrap();
-        let config = Config { table };
-        let run = config.parse_run_config();
-        // Should fall back to defaults because StageConfig has deny_unknown_fields
-        assert_eq!(run.num_stages(), 1);
-        assert_eq!(run.current_stage(0).steps, 1000); // default, not 5000
     }
 
     #[test]

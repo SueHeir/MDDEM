@@ -10,10 +10,23 @@ pub use normal::HertzNormalForcePlugin;
 pub use rotational::RotationalDynamicsPlugin;
 pub use tangential::MindlinTangentialForcePlugin;
 
+pub mod contact;
+
 use mddem_app::prelude::*;
 
 use dem_atom::DemAtomPlugin;
 use dem_atom_insert::DemAtomInsertPlugin;
+
+pub use contact::HertzMindlinContactPlugin;
+
+/// √(5/3) — viscoelastic damping coefficient
+pub const SQRT_5_3: f64 = 0.9128709291752768;
+/// Epsilon to avoid division by zero in tangential force
+pub const TANGENTIAL_EPSILON: f64 = 1e-30;
+/// Large overlap warning threshold (ratio of distance to sum of radii)
+pub const LARGE_OVERLAP_WARN_THRESHOLD: f64 = 0.90;
+/// Max overlap warnings per step before panic
+pub const MAX_OVERLAP_WARNINGS: usize = 100;
 
 /// Default DEM granular physics plugin group.
 ///
@@ -47,8 +60,7 @@ impl PluginGroup for GranularDefaultPlugins {
         PluginGroupBuilder::start::<Self>()
             .add(DemAtomPlugin)
             .add(DemAtomInsertPlugin)
-            .add(HertzNormalForcePlugin)
-            .add(MindlinTangentialForcePlugin)
+            .add(HertzMindlinContactPlugin)
             .add(RotationalDynamicsPlugin)
             .add(GranularTempPlugin)
     }

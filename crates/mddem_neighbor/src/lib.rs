@@ -18,6 +18,9 @@ fn default_zero_usize() -> usize {
 fn default_true() -> bool {
     true
 }
+fn default_sort_every() -> usize {
+    1000
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +38,9 @@ pub struct NeighborConfig {
     /// When true and every > 0, also check displacement threshold (like LAMMPS "check yes")
     #[serde(default = "default_true")]
     pub check: bool,
+    /// Sort atoms by spatial bin every N steps for cache locality (0 = disabled).
+    #[serde(default = "default_sort_every")]
+    pub sort_every: usize,
 }
 
 impl Default for NeighborConfig {
@@ -44,6 +50,7 @@ impl Default for NeighborConfig {
             bin_size: 1.0,
             every: 0,
             check: true,
+            sort_every: 1000,
         }
     }
 }
@@ -66,9 +73,7 @@ pub struct Neighbor {
     pub bin_min_size: f64,
     pub bin_size: Vector3<f64>,
     pub bin_count: Vector3<i32>,
-    pub last_build_pos_x: Vec<f64>,
-    pub last_build_pos_y: Vec<f64>,
-    pub last_build_pos_z: Vec<f64>,
+    pub last_build_pos: Vec<[f64; 3]>,
     pub last_build_tags: Vec<u32>,
     pub steps_since_build: usize,
     pub last_build_total: usize,
@@ -80,6 +85,14 @@ pub struct Neighbor {
     pub every: usize,             // rebuild every N steps (0 = displacement only)
     pub check: bool,              // also check displacement when every > 0
     pub ghost_cutoff: f64,        // max distance for ghost atom communication
+    pub cached_min_skin: f64,     // cached minimum skin value, computed at rebuild time
+    pub sort_every: usize,        // sort atoms by bin every N steps (0 = disabled)
+    pub sort_counter: usize,      // steps since last sort
+    // Persistent bin arrays (reused across rebuilds to avoid per-rebuild allocations)
+    pub bin_atom_cell: Vec<u32>,
+    pub bin_count_arr: Vec<u32>,
+    pub bin_start: Vec<u32>,
+    pub bin_sorted_atoms: Vec<u32>,
 }
 
 impl Default for Neighbor {
@@ -149,9 +162,7 @@ impl Neighbor {
             bin_min_size: 1.0,
             bin_size: Vector3::new(1.0, 1.0, 1.0),
             bin_count: Vector3::new(1, 1, 1),
-            last_build_pos_x: Vec::new(),
-            last_build_pos_y: Vec::new(),
-            last_build_pos_z: Vec::new(),
+            last_build_pos: Vec::new(),
             last_build_tags: Vec::new(),
             steps_since_build: 0,
             last_build_total: 0,
@@ -163,6 +174,13 @@ impl Neighbor {
             every: 0,
             check: true,
             ghost_cutoff: 0.0,
+            cached_min_skin: f64::MAX,
+            sort_every: 1000,
+            sort_counter: 0,
+            bin_atom_cell: Vec::new(),
+            bin_count_arr: Vec::new(),
+            bin_start: Vec::new(),
+            bin_sorted_atoms: Vec::new(),
         }
     }
 }
@@ -183,7 +201,9 @@ bin_size = 1.0
 # Rebuild every N steps (0 = displacement-based only)
 every = 0
 # Also check displacement when every > 0 (like LAMMPS "check yes")
-check = true"#,
+check = true
+# Sort atoms by spatial bin every N steps for cache locality (0 = disabled)
+sort_every = 1000"#,
         )
     }
 
@@ -223,6 +243,7 @@ pub fn neighbor_read_input(
     neighbor.bin_min_size = config.bin_size;
     neighbor.every = config.every;
     neighbor.check = config.check;
+    neighbor.sort_every = config.sort_every;
     if comm.rank() == 0 {
         let rebuild_str = if config.every == 0 {
             "displacement".to_string()
@@ -344,31 +365,27 @@ fn build_csr_from_pairs(neighbor: &mut Neighbor, nlocal: usize) {
 /// Saves local atom positions and all atom tags (including ghosts) for identity tracking.
 fn save_build_positions(atoms: &Atom, neighbor: &mut Neighbor) {
     let nlocal = atoms.nlocal as usize;
-    neighbor.last_build_pos_x.resize(nlocal, 0.0);
-    neighbor.last_build_pos_y.resize(nlocal, 0.0);
-    neighbor.last_build_pos_z.resize(nlocal, 0.0);
-    neighbor.last_build_pos_x[..nlocal].copy_from_slice(&atoms.pos_x[..nlocal]);
-    neighbor.last_build_pos_y[..nlocal].copy_from_slice(&atoms.pos_y[..nlocal]);
-    neighbor.last_build_pos_z[..nlocal].copy_from_slice(&atoms.pos_z[..nlocal]);
+    neighbor.last_build_pos.resize(nlocal, [0.0; 3]);
+    neighbor.last_build_pos[..nlocal].copy_from_slice(&atoms.pos[..nlocal]);
     neighbor.last_build_tags.clear();
     neighbor.last_build_tags.extend_from_slice(&atoms.tag[..]);
     neighbor.last_build_total = atoms.len();
     neighbor.steps_since_build = 0;
+    neighbor.cached_min_skin = atoms.skin[..nlocal]
+        .iter()
+        .cloned()
+        .fold(f64::MAX, f64::min);
 }
 
 /// Helper: check displacement threshold
 fn displacement_exceeded(atoms: &Atom, neighbor: &Neighbor) -> bool {
-    let nlocal = atoms.nlocal as usize;
-    let min_r = atoms.skin[..nlocal]
-        .iter()
-        .cloned()
-        .fold(f64::MAX, f64::min);
+    let min_r = neighbor.cached_min_skin;
     let half_skin = (neighbor.skin_fraction - 1.0) * min_r * 0.5;
     let threshold_sq = half_skin * half_skin;
-    for idx in 0..neighbor.last_build_pos_x.len() {
-        let dx = atoms.pos_x[idx] - neighbor.last_build_pos_x[idx];
-        let dy = atoms.pos_y[idx] - neighbor.last_build_pos_y[idx];
-        let dz = atoms.pos_z[idx] - neighbor.last_build_pos_z[idx];
+    for idx in 0..neighbor.last_build_pos.len() {
+        let dx = atoms.pos[idx][0] - neighbor.last_build_pos[idx][0];
+        let dy = atoms.pos[idx][1] - neighbor.last_build_pos[idx][1];
+        let dz = atoms.pos[idx][2] - neighbor.last_build_pos[idx][2];
         if dx * dx + dy * dy + dz * dz > threshold_sq {
             return true;
         }
@@ -381,7 +398,7 @@ fn displacement_exceeded(atoms: &Atom, neighbor: &Neighbor) -> bool {
 fn needs_rebuild(atoms: &Atom, neighbor: &Neighbor) -> bool {
     let nlocal = atoms.nlocal as usize;
     // Always rebuild on first call, local atom count change, or total count change
-    if neighbor.last_build_pos_x.len() != nlocal || nlocal == 0 || neighbor.last_build_total != atoms.len() {
+    if neighbor.last_build_pos.len() != nlocal || nlocal == 0 || neighbor.last_build_total != atoms.len() {
         return true;
     }
     // Check all tags (local + ghost) — ghost atoms are recreated each step and
@@ -422,7 +439,7 @@ pub fn sweep_and_prune_neighbor_list(
     neighbor.neighbor_list.clear();
 
     for j in 0..atoms.len() {
-        neighbor.sweep_and_prune.push((j, atoms.pos_x[j]));
+        neighbor.sweep_and_prune.push((j, atoms.pos[j][0]));
     }
     neighbor
         .sweep_and_prune
@@ -431,9 +448,9 @@ pub fn sweep_and_prune_neighbor_list(
     let skin_fraction = neighbor.skin_fraction;
     for i in 0..neighbor.sweep_and_prune.len() {
         let index = neighbor.sweep_and_prune[i].0;
-        let px = atoms.pos_x[index];
-        let py = atoms.pos_y[index];
-        let pz = atoms.pos_z[index];
+        let px = atoms.pos[index][0];
+        let py = atoms.pos[index][1];
+        let pz = atoms.pos[index][2];
         let r = atoms.skin[index];
         for j in (i + 1)..neighbor.sweep_and_prune.len() {
             if (neighbor.sweep_and_prune[j].1 - px) > (r * 2.0 * skin_fraction) {
@@ -446,9 +463,9 @@ pub fn sweep_and_prune_neighbor_list(
                 continue;
             }
             let r2 = atoms.skin[index2];
-            let dx = atoms.pos_x[index2] - px;
-            let dy = atoms.pos_y[index2] - py;
-            let dz = atoms.pos_z[index2] - pz;
+            let dx = atoms.pos[index2][0] - px;
+            let dy = atoms.pos[index2][1] - py;
+            let dz = atoms.pos[index2][2] - pz;
             let distance = (dx * dx + dy * dy + dz * dz).sqrt();
             if distance < (r + r2) * skin_fraction {
                 neighbor.neighbor_list.push((index, index2));
@@ -467,9 +484,9 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
             if atoms.tag[i] == atoms.tag[j] {
                 continue;
             }
-            let dx = atoms.pos_x[j] - atoms.pos_x[i];
-            let dy = atoms.pos_y[j] - atoms.pos_y[i];
-            let dz = atoms.pos_z[j] - atoms.pos_z[i];
+            let dx = atoms.pos[j][0] - atoms.pos[i][0];
+            let dy = atoms.pos[j][1] - atoms.pos[i][1];
+            let dz = atoms.pos[j][2] - atoms.pos[i][2];
             let distance = (dx * dx + dy * dy + dz * dz).sqrt();
             if distance < (atoms.skin[i] + atoms.skin[j]) * neighbor.skin_fraction {
                 neighbor.neighbor_list.push((i, j));
@@ -479,19 +496,24 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
     build_csr_from_pairs(&mut neighbor, nlocal);
 }
 
-pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>, comm: Res<CommResource>, registry: Res<AtomDataRegistry>) {
+pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>, comm: Res<CommResource>, registry: Res<AtomDataRegistry>) {
     // Skip sort in MPI mode — atom reordering interacts with ghost exchange
     if comm.size() > 1 {
         return;
     }
     let nlocal = atoms.nlocal as usize;
-    if nlocal == 0 || neighbor.bin_total_cells == 0 || nlocal > atoms.pos_x.len() {
+    if nlocal == 0 || neighbor.bin_total_cells == 0 || nlocal > atoms.pos.len() {
         return;
     }
 
-    // Only sort when a neighbor rebuild will happen
-    if !needs_rebuild(&atoms, &neighbor) {
+    // Sort when neighbor rebuild is needed, or periodically based on sort_every
+    neighbor.sort_counter += 1;
+    let periodic_sort = neighbor.sort_every > 0 && neighbor.sort_counter >= neighbor.sort_every;
+    if !periodic_sort && !needs_rebuild(&atoms, &neighbor) {
         return;
+    }
+    if periodic_sort {
+        neighbor.sort_counter = 0;
     }
 
     let inv_bsx = 1.0 / neighbor.bin_size.x;
@@ -503,9 +525,9 @@ pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>, comm:
 
     let mut indices: Vec<(u32, usize)> = (0..nlocal)
         .map(|i| {
-            let cx = ((atoms.pos_x[i] - neighbor.bin_origin.x) * inv_bsx).floor() as i32;
-            let cy = ((atoms.pos_y[i] - neighbor.bin_origin.y) * inv_bsy).floor() as i32;
-            let cz = ((atoms.pos_z[i] - neighbor.bin_origin.z) * inv_bsz).floor() as i32;
+            let cx = ((atoms.pos[i][0] - neighbor.bin_origin.x) * inv_bsx).floor() as i32;
+            let cy = ((atoms.pos[i][1] - neighbor.bin_origin.y) * inv_bsy).floor() as i32;
+            let cz = ((atoms.pos[i][2] - neighbor.bin_origin.z) * inv_bsz).floor() as i32;
             let cx = cx.clamp(0, nx - 1);
             let cy = cy.clamp(0, ny - 1);
             let cz = cz.clamp(0, nz - 1);
@@ -554,14 +576,18 @@ pub fn bin_neighbor_list(
     let bin_oy = neighbor.bin_origin.y;
     let bin_oz = neighbor.bin_origin.z;
 
-    // Step 1: Assign each atom to a bin cell
-    let mut atom_cell = vec![0u32; total];
-    let mut bin_count_arr = vec![0u32; total_cells];
+    // Step 1: Assign each atom to a bin cell (reuse persistent arrays)
+    let mut atom_cell = std::mem::take(&mut neighbor.bin_atom_cell);
+    atom_cell.clear();
+    atom_cell.resize(total, 0u32);
+    let mut bin_count_arr = std::mem::take(&mut neighbor.bin_count_arr);
+    bin_count_arr.clear();
+    bin_count_arr.resize(total_cells, 0u32);
 
     for i in 0..total {
-        let cx = ((atoms.pos_x[i] - bin_ox) * inv_bsx).floor() as i32;
-        let cy = ((atoms.pos_y[i] - bin_oy) * inv_bsy).floor() as i32;
-        let cz = ((atoms.pos_z[i] - bin_oz) * inv_bsz).floor() as i32;
+        let cx = ((atoms.pos[i][0] - bin_ox) * inv_bsx).floor() as i32;
+        let cy = ((atoms.pos[i][1] - bin_oy) * inv_bsy).floor() as i32;
+        let cz = ((atoms.pos[i][2] - bin_oz) * inv_bsz).floor() as i32;
         let cx = cx.clamp(0, nx - 1);
         let cy = cy.clamp(0, ny - 1);
         let cz = cz.clamp(0, nz - 1);
@@ -570,19 +596,23 @@ pub fn bin_neighbor_list(
         bin_count_arr[cell as usize] += 1;
     }
 
-    // Step 2: Build CSR bin offsets
-    let mut bin_start = vec![0u32; total_cells + 1];
+    // Step 2: Build CSR bin offsets (reuse persistent array)
+    let mut bin_start = std::mem::take(&mut neighbor.bin_start);
+    bin_start.clear();
+    bin_start.resize(total_cells + 1, 0u32);
     for c in 0..total_cells {
         bin_start[c + 1] = bin_start[c] + bin_count_arr[c];
     }
 
-    // Place atoms into sorted order by bin
-    let mut sorted_atoms = vec![0u32; total];
-    let mut write_pos = bin_start[..total_cells].to_vec();
+    // Place atoms into sorted order by bin — reuse bin_count_arr as write cursor
+    let mut sorted_atoms = std::mem::take(&mut neighbor.bin_sorted_atoms);
+    sorted_atoms.clear();
+    sorted_atoms.resize(total, 0u32);
+    bin_count_arr[..total_cells].copy_from_slice(&bin_start[..total_cells]);
     for i in 0..total {
         let c = atom_cell[i] as usize;
-        sorted_atoms[write_pos[c] as usize] = i as u32;
-        write_pos[c] += 1;
+        sorted_atoms[bin_count_arr[c] as usize] = i as u32;
+        bin_count_arr[c] += 1;
     }
 
     // Step 3: Build CSR neighbor lists using forward stencil.
@@ -602,19 +632,12 @@ pub fn bin_neighbor_list(
     offsets.reserve(nlocal + 1);
     indices.reserve(prev_count + prev_count / 4);
 
-    // Track tags seen per atom i to avoid duplicate ghost pairs
-    // (multi-dimensional MPI decomposition can create multiple ghosts of the same atom)
-    let mut seen_tags: Vec<u32> = Vec::new();
-
     for i in 0..nlocal {
         offsets.push(indices.len() as u32);
 
         let my_cell = atom_cell[i] as usize;
-        let xi = atoms.pos_x[i];
-        let yi = atoms.pos_y[i];
-        let zi = atoms.pos_z[i];
+        let pi = atoms.pos[i];
         let si = atoms.skin[i];
-        seen_tags.clear();
 
         // Self cell: j > i dedup (ghost j always > i since j >= nlocal > i)
         if has_self {
@@ -625,18 +648,13 @@ pub fn bin_neighbor_list(
                 if j <= i {
                     continue;
                 }
-                let tag_j = atoms.tag[j];
-                if seen_tags.contains(&tag_j) {
-                    continue;
-                }
-                let dx = atoms.pos_x[j] - xi;
-                let dy = atoms.pos_y[j] - yi;
-                let dz = atoms.pos_z[j] - zi;
+                let dx = atoms.pos[j][0] - pi[0];
+                let dy = atoms.pos[j][1] - pi[1];
+                let dz = atoms.pos[j][2] - pi[2];
                 let r2 = dx * dx + dy * dy + dz * dz;
                 let cutoff = (si + atoms.skin[j]) * skin_fraction;
                 if r2 < cutoff * cutoff {
                     indices.push(j as u32);
-                    seen_tags.push(tag_j);
                 }
             }
         }
@@ -648,18 +666,13 @@ pub fn bin_neighbor_list(
             let end = bin_start[c + 1] as usize;
             for m in start..end {
                 let j = sorted_atoms[m] as usize;
-                let tag_j = atoms.tag[j];
-                if seen_tags.contains(&tag_j) {
-                    continue;
-                }
-                let dx = atoms.pos_x[j] - xi;
-                let dy = atoms.pos_y[j] - yi;
-                let dz = atoms.pos_z[j] - zi;
+                let dx = atoms.pos[j][0] - pi[0];
+                let dy = atoms.pos[j][1] - pi[1];
+                let dz = atoms.pos[j][2] - pi[2];
                 let r2 = dx * dx + dy * dy + dz * dz;
                 let cutoff = (si + atoms.skin[j]) * skin_fraction;
                 if r2 < cutoff * cutoff {
                     indices.push(j as u32);
-                    seen_tags.push(tag_j);
                 }
             }
         }
@@ -669,6 +682,10 @@ pub fn bin_neighbor_list(
     neighbor.neighbor_offsets = offsets;
     neighbor.neighbor_indices = indices;
     neighbor.bin_stencil_forward = stencil_forward;
+    neighbor.bin_atom_cell = atom_cell;
+    neighbor.bin_count_arr = bin_count_arr;
+    neighbor.bin_start = bin_start;
+    neighbor.bin_sorted_atoms = sorted_atoms;
 }
 
 #[cfg(test)]

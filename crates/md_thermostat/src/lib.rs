@@ -7,7 +7,7 @@ use rand_chacha::ChaCha8Rng;
 use rand::SeedableRng;
 use serde::Deserialize;
 
-use mddem_core::{Atom, CommResource, Config, GroupRegistry};
+use mddem_core::{compute_ke, group_includes, Atom, CommResource, Config, GroupRegistry};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -105,6 +105,10 @@ pub fn setup_nose_hoover(
         return;
     }
 
+    if let Some(ref gname) = config.group {
+        groups.validate_name(gname, "Nose-Hoover thermostat");
+    }
+
     nh.group_name = config.group.clone();
 
     let n = if let Some(ref gname) = config.group {
@@ -139,22 +143,16 @@ pub fn setup_nose_hoover(
     }
 }
 
-fn compute_ke_filtered(atoms: &Atom, groups: &GroupRegistry, group_name: &Option<String>) -> f64 {
+fn rescale_velocities(atoms: &mut Atom, scale: f64, mask: Option<&[bool]>) {
     let nlocal = atoms.nlocal as usize;
-    let mask = group_name.as_ref().map(|gname| &groups.expect(gname).mask);
-    let mut ke = 0.0;
     for i in 0..nlocal {
-        if let Some(m) = mask {
-            if !m[i] {
-                continue;
-            }
+        if !group_includes(mask, i) {
+            continue;
         }
-        let vx = atoms.vel_x[i];
-        let vy = atoms.vel_y[i];
-        let vz = atoms.vel_z[i];
-        ke += atoms.mass[i] * (vx * vx + vy * vy + vz * vz);
+        atoms.vel[i][0] *= scale;
+        atoms.vel[i][1] *= scale;
+        atoms.vel[i][2] *= scale;
     }
-    0.5 * ke
 }
 
 /// Pre-initial integration: half-step NH thermostat
@@ -168,27 +166,14 @@ pub fn nh_pre_initial(
     groups: Res<GroupRegistry>,
 ) {
     let dt = atoms.dt;
-    let nlocal = atoms.nlocal as usize;
+    let mask = groups.mask_for(&nh.group_name);
 
-    let ke_local = compute_ke_filtered(&atoms, &groups, &nh.group_name);
+    let ke_local = compute_ke(&atoms, mask);
     let ke = comm.all_reduce_sum_f64(ke_local);
     nh.p_xi += (dt / 2.0) * (2.0 * ke - nh.ndof * nh.target_temp);
 
     let scale = (-dt / 2.0 * nh.p_xi / nh.q_mass).exp();
-    let mask = nh
-        .group_name
-        .as_ref()
-        .map(|gname| &groups.expect(gname).mask);
-    for i in 0..nlocal {
-        if let Some(m) = mask {
-            if !m[i] {
-                continue;
-            }
-        }
-        atoms.vel_x[i] *= scale;
-        atoms.vel_y[i] *= scale;
-        atoms.vel_z[i] *= scale;
-    }
+    rescale_velocities(&mut atoms, scale, mask);
 }
 
 /// Post-final integration: second half-step NH thermostat
@@ -202,25 +187,12 @@ pub fn nh_post_final(
     groups: Res<GroupRegistry>,
 ) {
     let dt = atoms.dt;
-    let nlocal = atoms.nlocal as usize;
+    let mask = groups.mask_for(&nh.group_name);
 
     let scale = (-dt / 2.0 * nh.p_xi / nh.q_mass).exp();
-    let mask = nh
-        .group_name
-        .as_ref()
-        .map(|gname| &groups.expect(gname).mask);
-    for i in 0..nlocal {
-        if let Some(m) = mask {
-            if !m[i] {
-                continue;
-            }
-        }
-        atoms.vel_x[i] *= scale;
-        atoms.vel_y[i] *= scale;
-        atoms.vel_z[i] *= scale;
-    }
+    rescale_velocities(&mut atoms, scale, mask);
 
-    let ke_local = compute_ke_filtered(&atoms, &groups, &nh.group_name);
+    let ke_local = compute_ke(&atoms, mask);
     let ke = comm.all_reduce_sum_f64(ke_local);
     nh.p_xi += (dt / 2.0) * (2.0 * ke - nh.ndof * nh.target_temp);
 }
@@ -304,11 +276,16 @@ seed = 12345         # RNG seed
 pub fn setup_langevin(
     config: Res<LangevinConfig>,
     comm: Res<CommResource>,
+    groups: Res<GroupRegistry>,
     mut state: ResMut<LangevinState>,
     scheduler_manager: Res<SchedulerManager>,
 ) {
     if scheduler_manager.index != 0 {
         return;
+    }
+
+    if let Some(ref gname) = config.group {
+        groups.validate_name(gname, "Langevin thermostat");
     }
 
     // Seed RNG per-rank to get different random numbers on each process
@@ -351,30 +328,25 @@ pub fn langevin_force(
         return;
     }
 
-    let mask = state
-        .group_name
-        .as_ref()
-        .map(|gname| &groups.expect(gname).mask);
+    let mask = groups.mask_for(&state.group_name);
 
     for i in 0..nlocal {
-        if let Some(m) = mask {
-            if !m[i] {
-                continue;
-            }
+        if !group_includes(mask, i) {
+            continue;
         }
         let m = atoms.mass[i];
         let drag_coeff = gamma * m;
         let rand_coeff = (2.0 * drag_coeff * kt / dt).sqrt();
 
         // Drag force
-        atoms.force_x[i] -= drag_coeff * atoms.vel_x[i];
-        atoms.force_y[i] -= drag_coeff * atoms.vel_y[i];
-        atoms.force_z[i] -= drag_coeff * atoms.vel_z[i];
+        atoms.force[i][0] -= drag_coeff * atoms.vel[i][0];
+        atoms.force[i][1] -= drag_coeff * atoms.vel[i][1];
+        atoms.force[i][2] -= drag_coeff * atoms.vel[i][2];
 
         // Random force (3 components, normal distribution)
-        atoms.force_x[i] += rand_coeff * normal_sample(&mut state.rng);
-        atoms.force_y[i] += rand_coeff * normal_sample(&mut state.rng);
-        atoms.force_z[i] += rand_coeff * normal_sample(&mut state.rng);
+        atoms.force[i][0] += rand_coeff * normal_sample(&mut state.rng);
+        atoms.force[i][1] += rand_coeff * normal_sample(&mut state.rng);
+        atoms.force[i][2] += rand_coeff * normal_sample(&mut state.rng);
     }
 }
 
@@ -391,6 +363,8 @@ fn normal_sample(rng: &mut ChaCha8Rng) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mddem_test_utils::make_single_comm;
+
     fn push_atom(atom: &mut Atom, tag: u32) {
         use nalgebra::Vector3;
         atom.push_test_atom(tag, Vector3::zeros(), 0.5, 1.0);
@@ -419,9 +393,9 @@ mod tests {
         atom.dt = 0.001;
         for i in 0..n {
             push_atom(&mut atom, i as u32);
-            atom.vel_x[i] = velocities[i].0;
-            atom.vel_y[i] = velocities[i].1;
-            atom.vel_z[i] = velocities[i].2;
+            atom.vel[i][0] = velocities[i].0;
+            atom.vel[i][1] = velocities[i].1;
+            atom.vel[i][2] = velocities[i].2;
         }
         atom.nlocal = n as u32;
         atom.natoms = n as u64;
@@ -429,9 +403,7 @@ mod tests {
         app.add_resource(config);
         app.add_resource(nh);
         app.add_resource(atom);
-        app.add_resource(CommResource(Box::new(
-            mddem_core::SingleProcessComm::new(),
-        )));
+        app.add_resource(make_single_comm());
         app.add_resource(GroupRegistry::default());
         app.add_update_system(nh_pre_initial, ScheduleSet::PreInitialIntegration);
         app.add_update_system(nh_post_final, ScheduleSet::PostFinalIntegration);
@@ -449,7 +421,7 @@ mod tests {
 
         let ke_before = {
             let a = app.get_resource_ref::<Atom>().unwrap();
-            compute_ke_filtered(&a, &GroupRegistry::default(), &None)
+            compute_ke(&a, None)
         };
 
         for _ in 0..1000 {
@@ -458,7 +430,7 @@ mod tests {
 
         let ke_after = {
             let a = app.get_resource_ref::<Atom>().unwrap();
-            compute_ke_filtered(&a, &GroupRegistry::default(), &None)
+            compute_ke(&a, None)
         };
 
         let t_before = 2.0 * ke_before / ndof;
@@ -496,9 +468,9 @@ mod tests {
         atom.dt = 0.005;
         for i in 0..n {
             push_atom(&mut atom, i as u32);
-            atom.vel_x[i] = velocities[i].0;
-            atom.vel_y[i] = velocities[i].1;
-            atom.vel_z[i] = velocities[i].2;
+            atom.vel[i][0] = velocities[i].0;
+            atom.vel[i][1] = velocities[i].1;
+            atom.vel[i][2] = velocities[i].2;
         }
         atom.nlocal = n as u32;
         atom.natoms = n as u64;
@@ -506,9 +478,7 @@ mod tests {
         app.add_resource(config);
         app.add_resource(state);
         app.add_resource(atom);
-        app.add_resource(CommResource(Box::new(
-            mddem_core::SingleProcessComm::new(),
-        )));
+        app.add_resource(make_single_comm());
         app.add_resource(GroupRegistry::default());
         app.add_update_system(langevin_force, ScheduleSet::PostForce);
         app.organize_systems();
@@ -529,7 +499,7 @@ mod tests {
         // Random ~ sqrt(2*gamma*m*kT/dt) * N(0,1), averages to 0 over 100 atoms
         let mut total_fx = 0.0;
         for i in 0..n {
-            total_fx += a.force_x[i];
+            total_fx += a.force[i][0];
         }
         assert!(total_fx < 0.0, "Drag should dominate: total_fx={}", total_fx);
     }
@@ -546,10 +516,10 @@ mod tests {
         // gamma=0 → no forces applied
         for i in 0..n {
             assert!(
-                a.force_x[i].abs() < 1e-12,
+                a.force[i][0].abs() < 1e-12,
                 "Expected zero force at atom {}: {}",
                 i,
-                a.force_x[i]
+                a.force[i][0]
             );
         }
     }
@@ -575,7 +545,7 @@ mod tests {
 
         let a = app.get_resource_ref::<Atom>().unwrap();
         let nh_state = app.get_resource_ref::<NoseHooverState>().unwrap();
-        let ke = compute_ke_filtered(&a, &GroupRegistry::default(), &None);
+        let ke = compute_ke(&a, None);
         assert!(ke.is_finite(), "KE should be finite: {}", ke);
         assert!(
             nh_state.p_xi.is_finite(),

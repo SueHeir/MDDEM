@@ -17,3 +17,6 @@ nalgebra = "0.33.2"
 serde = { version = "1", features = ["derive"] }
 rand = "0.8"
 rand_chacha = "0.3"
+
+[dev-dependencies]
+mddem_test_utils = { path = "../mddem_test_utils" }

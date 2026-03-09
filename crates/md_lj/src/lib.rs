@@ -168,9 +168,9 @@ pub fn lj_force(
     let mut virial_sum = 0.0f64;
 
     for (i, j) in neighbor.pairs(nlocal) {
-        let dx = atoms.pos_x[j] - atoms.pos_x[i];
-        let dy = atoms.pos_y[j] - atoms.pos_y[i];
-        let dz = atoms.pos_z[j] - atoms.pos_z[i];
+        let dx = atoms.pos[j][0] - atoms.pos[i][0];
+        let dy = atoms.pos[j][1] - atoms.pos[i][1];
+        let dz = atoms.pos[j][2] - atoms.pos[i][2];
         let r2 = dx * dx + dy * dy + dz * dz;
 
         if r2 >= cutoff2 {
@@ -189,12 +189,12 @@ pub fn lj_force(
         let fy = f_over_r * dy;
         let fz = f_over_r * dz;
 
-        atoms.force_x[i] -= fx;
-        atoms.force_y[i] -= fy;
-        atoms.force_z[i] -= fz;
-        atoms.force_x[j] += fx;
-        atoms.force_y[j] += fy;
-        atoms.force_z[j] += fz;
+        atoms.force[i][0] -= fx;
+        atoms.force[i][1] -= fy;
+        atoms.force[i][2] -= fz;
+        atoms.force[j][0] += fx;
+        atoms.force[j][1] += fy;
+        atoms.force[j][2] += fz;
     }
 
     if compute_virial {
@@ -250,14 +250,14 @@ mod tests {
         app.run();
         let atom = app.get_resource_ref::<Atom>().unwrap();
         assert!(
-            atom.force_x[0] < 0.0,
+            atom.force[0][0] < 0.0,
             "atom 0 should be pushed in -x: got {}",
-            atom.force_x[0]
+            atom.force[0][0]
         );
         assert!(
-            atom.force_x[1] > 0.0,
+            atom.force[1][0] > 0.0,
             "atom 1 should be pushed in +x: got {}",
-            atom.force_x[1]
+            atom.force[1][0]
         );
     }
 
@@ -267,14 +267,14 @@ mod tests {
         app.run();
         let atom = app.get_resource_ref::<Atom>().unwrap();
         assert!(
-            atom.force_x[0] > 0.0,
+            atom.force[0][0] > 0.0,
             "atom 0 should be pulled in +x: got {}",
-            atom.force_x[0]
+            atom.force[0][0]
         );
         assert!(
-            atom.force_x[1] < 0.0,
+            atom.force[1][0] < 0.0,
             "atom 1 should be pulled in -x: got {}",
-            atom.force_x[1]
+            atom.force[1][0]
         );
     }
 
@@ -284,11 +284,11 @@ mod tests {
         app.run();
         let atom = app.get_resource_ref::<Atom>().unwrap();
         assert!(
-            atom.force_x[0].abs() < 1e-15,
+            atom.force[0][0].abs() < 1e-15,
             "force should be zero beyond cutoff"
         );
         assert!(
-            atom.force_x[1].abs() < 1e-15,
+            atom.force[1][0].abs() < 1e-15,
             "force should be zero beyond cutoff"
         );
     }
@@ -299,15 +299,15 @@ mod tests {
         app.run();
         let atom = app.get_resource_ref::<Atom>().unwrap();
         assert!(
-            (atom.force_x[0] + atom.force_x[1]).abs() < 1e-10,
+            (atom.force[0][0] + atom.force[1][0]).abs() < 1e-10,
             "Newton's 3rd law violated in x"
         );
         assert!(
-            (atom.force_y[0] + atom.force_y[1]).abs() < 1e-10,
+            (atom.force[0][1] + atom.force[1][1]).abs() < 1e-10,
             "Newton's 3rd law violated in y"
         );
         assert!(
-            (atom.force_z[0] + atom.force_z[1]).abs() < 1e-10,
+            (atom.force[0][2] + atom.force[1][2]).abs() < 1e-10,
             "Newton's 3rd law violated in z"
         );
     }

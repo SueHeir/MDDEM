@@ -68,11 +68,39 @@ impl GroupRegistry {
             );
         })
     }
+
+    /// Validate that a group name exists. Prints an error and exits if not found.
+    pub fn validate_name(&self, name: &str, context: &str) {
+        if self.get(name).is_none() {
+            let available: Vec<&str> = self.groups.iter().map(|g| g.name.as_str()).collect();
+            eprintln!(
+                "ERROR: {}: group '{}' not found. Available groups: {:?}",
+                context, name, available
+            );
+            std::process::exit(1);
+        }
+    }
+
+    /// Return the mask for a named group, or `None` if no group is specified (meaning "all atoms").
+    pub fn mask_for(&self, group_name: &Option<String>) -> Option<&[bool]> {
+        group_name
+            .as_ref()
+            .map(|gname| self.expect(gname).mask.as_slice())
+    }
 }
 
 impl Default for GroupRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Returns `true` if atom `i` passes the group filter (or if no mask is active).
+#[inline(always)]
+pub fn group_includes(mask: Option<&[bool]>, i: usize) -> bool {
+    match mask {
+        Some(m) => m[i],
+        None => true,
     }
 }
 
@@ -86,32 +114,32 @@ fn evaluate_membership(def: &GroupDef, atoms: &Atom, i: usize) -> bool {
         }
     }
     if let Some(lo) = def.region_x_low {
-        if atoms.pos_x[i] < lo {
+        if atoms.pos[i][0] < lo {
             return false;
         }
     }
     if let Some(hi) = def.region_x_high {
-        if atoms.pos_x[i] > hi {
+        if atoms.pos[i][0] > hi {
             return false;
         }
     }
     if let Some(lo) = def.region_y_low {
-        if atoms.pos_y[i] < lo {
+        if atoms.pos[i][1] < lo {
             return false;
         }
     }
     if let Some(hi) = def.region_y_high {
-        if atoms.pos_y[i] > hi {
+        if atoms.pos[i][1] > hi {
             return false;
         }
     }
     if let Some(lo) = def.region_z_low {
-        if atoms.pos_z[i] < lo {
+        if atoms.pos[i][2] < lo {
             return false;
         }
     }
     if let Some(hi) = def.region_z_high {
-        if atoms.pos_z[i] > hi {
+        if atoms.pos[i][2] > hi {
             return false;
         }
     }
