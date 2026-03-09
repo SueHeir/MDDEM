@@ -18,25 +18,44 @@ impl Plugin for VelocityVerletPlugin {
 pub fn initial_integration(mut atoms: ResMut<Atom>) {
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
+    // SAFETY: i < nlocal <= len for all arrays (inv_mass, force, vel, pos).
+    // Use raw pointers to avoid borrow checker conflicts between different fields.
+    let inv_mass_ptr = atoms.inv_mass.as_ptr();
+    let force_ptr = atoms.force.as_ptr();
+    let vel_ptr = atoms.vel.as_mut_ptr();
+    let pos_ptr = atoms.pos.as_mut_ptr();
     for i in 0..nlocal {
-        let half_dt_over_m = 0.5 * dt * atoms.inv_mass[i];
-        atoms.vel[i][0] += half_dt_over_m * atoms.force[i][0];
-        atoms.vel[i][1] += half_dt_over_m * atoms.force[i][1];
-        atoms.vel[i][2] += half_dt_over_m * atoms.force[i][2];
-        atoms.pos[i][0] += atoms.vel[i][0] * dt;
-        atoms.pos[i][1] += atoms.vel[i][1] * dt;
-        atoms.pos[i][2] += atoms.vel[i][2] * dt;
+        unsafe {
+            let half_dt_over_m = 0.5 * dt * *inv_mass_ptr.add(i);
+            let f = &*force_ptr.add(i);
+            let v = &mut *vel_ptr.add(i);
+            v[0] += half_dt_over_m * f[0];
+            v[1] += half_dt_over_m * f[1];
+            v[2] += half_dt_over_m * f[2];
+            let p = &mut *pos_ptr.add(i);
+            p[0] += v[0] * dt;
+            p[1] += v[1] * dt;
+            p[2] += v[2] * dt;
+        }
     }
 }
 
 pub fn final_integration(mut atoms: ResMut<Atom>) {
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
+    // SAFETY: i < nlocal <= len for all arrays (inv_mass, force, vel).
+    let inv_mass_ptr = atoms.inv_mass.as_ptr();
+    let force_ptr = atoms.force.as_ptr();
+    let vel_ptr = atoms.vel.as_mut_ptr();
     for i in 0..nlocal {
-        let half_dt_over_m = 0.5 * dt * atoms.inv_mass[i];
-        atoms.vel[i][0] += half_dt_over_m * atoms.force[i][0];
-        atoms.vel[i][1] += half_dt_over_m * atoms.force[i][1];
-        atoms.vel[i][2] += half_dt_over_m * atoms.force[i][2];
+        unsafe {
+            let half_dt_over_m = 0.5 * dt * *inv_mass_ptr.add(i);
+            let f = &*force_ptr.add(i);
+            let v = &mut *vel_ptr.add(i);
+            v[0] += half_dt_over_m * f[0];
+            v[1] += half_dt_over_m * f[1];
+            v[2] += half_dt_over_m * f[2];
+        }
     }
 }
 

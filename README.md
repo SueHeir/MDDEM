@@ -220,13 +220,13 @@ Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). 
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
 |--------:|---------------:|----------------:|------:|
-|     108 |          3,519 |          30,580 |  8.7x |
-|   1,000 |            395 |           2,931 |  7.4x |
-|  10,000 |           38.1 |             295 |  7.7x |
-|  32,000 |           10.9 |              92 |  8.4x |
-| 100,920 |            3.7 |            28.2 |  7.6x |
+|     108 |         10,665 |          30,580 |  2.9x |
+|   1,000 |          1,473 |           2,931 |  2.0x |
+|  10,000 |          171.6 |             295 |  1.7x |
+|  32,000 |           56.5 |              92 |  1.6x |
+| 100,920 |           17.8 |            28.2 |  1.6x |
 
-LAMMPS is ~8x faster, with consistent O(N) scaling in both codes. The gap is primarily in the neighbor list build (73% of runtime) and force loop (22%), where LAMMPS benefits from decades of hand-tuned SIMD and cache optimization. MDDEM prioritizes safe Rust and code clarity over raw performance.
+LAMMPS is ~1.6x faster at scale, with consistent O(N) scaling in both codes. The gap is primarily in the force loop (64% of MDDEM runtime), where LAMMPS benefits from decades of hand-tuned SIMD and cache optimization. The neighbor list build (21% of runtime) uses CSR bins with a forward stencil, sorted position caches, sorted neighbor indices for sequential cache access, and unsafe bounds-check elimination.
 
 ## Roadmap
 

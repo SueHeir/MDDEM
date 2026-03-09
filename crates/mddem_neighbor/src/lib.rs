@@ -74,9 +74,10 @@ pub struct Neighbor {
     pub bin_size: Vector3<f64>,
     pub bin_count: Vector3<i32>,
     pub last_build_pos: Vec<[f64; 3]>,
-    pub last_build_tags: Vec<u32>,
     pub steps_since_build: usize,
     pub last_build_total: usize,
+    pub pbc_box: [f64; 3],           // box dimensions for minimum-image displacement check
+    pub pbc_flags: [bool; 3],        // which axes are periodic
     pub bin_stencil: Vec<i32>,    // flat offsets for neighbor cell stencil (full)
     pub bin_stencil_forward: Vec<i32>, // offsets > 0 (half stencil for local-local dedup)
     pub bin_stencil_self: bool,        // whether self-cell (offset 0) is in stencil
@@ -93,6 +94,12 @@ pub struct Neighbor {
     pub bin_count_arr: Vec<u32>,
     pub bin_start: Vec<u32>,
     pub bin_sorted_atoms: Vec<u32>,
+    // Per-atom position in sorted_atoms array (for self-cell skip optimization)
+    pub bin_atom_sorted_idx: Vec<u32>,
+    // Sorted position cache for cache-friendly inner loop access
+    pub bin_sorted_pos: Vec<[f64; 3]>,
+    // Cached uniform cutoff squared (Some when all atoms have the same skin)
+    pub cached_uniform_cutoff_sq: Option<f64>,
 }
 
 impl Default for Neighbor {
@@ -120,10 +127,14 @@ impl<'a> Iterator for PairIter<'a> {
             if self.i >= self.nlocal {
                 return None;
             }
-            self.k = self.offsets[self.i] as usize;
-            self.end = self.offsets[self.i + 1] as usize;
+            // SAFETY: self.i < self.nlocal <= offsets.len() - 1, so self.i and self.i + 1 are in bounds.
+            unsafe {
+                self.k = *self.offsets.get_unchecked(self.i) as usize;
+                self.end = *self.offsets.get_unchecked(self.i + 1) as usize;
+            }
         }
-        let j = self.indices[self.k] as usize;
+        // SAFETY: self.k < self.end <= indices.len() (from CSR construction).
+        let j = unsafe { *self.indices.get_unchecked(self.k) } as usize;
         self.k += 1;
         Some((self.i, j))
     }
@@ -163,9 +174,10 @@ impl Neighbor {
             bin_size: Vector3::new(1.0, 1.0, 1.0),
             bin_count: Vector3::new(1, 1, 1),
             last_build_pos: Vec::new(),
-            last_build_tags: Vec::new(),
             steps_since_build: 0,
             last_build_total: 0,
+            pbc_box: [0.0; 3],
+            pbc_flags: [false; 3],
             bin_stencil: Vec::new(),
             bin_stencil_forward: Vec::new(),
             bin_stencil_self: false,
@@ -181,6 +193,9 @@ impl Neighbor {
             bin_count_arr: Vec::new(),
             bin_start: Vec::new(),
             bin_sorted_atoms: Vec::new(),
+            bin_atom_sorted_idx: Vec::new(),
+            bin_sorted_pos: Vec::new(),
+            cached_uniform_cutoff_sq: None,
         }
     }
 }
@@ -270,8 +285,9 @@ pub fn neighbor_setup(mut neighbor: ResMut<Neighbor>, mut domain: ResMut<Domain>
     if comm.rank() == 0 {
         println!("Neighbor: ghost_cutoff={:.4}", max_cutoff);
     }
-    // Single-process: bin_size >= cutoff gives stencil range=1, 13 forward cells
-    // Multi-process: use cutoff/2 so subdomains have enough bins for correct stencil
+    // Single-process: bin_size >= cutoff gives stencil range=1, keeping bin_start
+    // small enough (< 64KB) for L1 cache and only 13 forward stencil cells.
+    // Multi-process: use cutoff/2 so subdomains have enough bins for correct stencil.
     let required_bin = if comm.size() > 1 { max_cutoff * 0.5 } else { max_cutoff };
     if neighbor.bin_min_size < required_bin {
         neighbor.bin_min_size = required_bin;
@@ -330,6 +346,14 @@ pub fn neighbor_setup(mut neighbor: ResMut<Neighbor>, mut domain: ResMut<Domain>
         }
     }
 
+    // Store box dimensions for minimum-image displacement check
+    neighbor.pbc_box = [
+        domain.boundaries_high.x - domain.boundaries_low.x,
+        domain.boundaries_high.y - domain.boundaries_low.y,
+        domain.boundaries_high.z - domain.boundaries_low.z,
+    ];
+    neighbor.pbc_flags = [domain.is_periodic.x, domain.is_periodic.y, domain.is_periodic.z];
+
     if comm.rank() == 0 {
         println!(
             "Neighbor: bins {}x{}x{} (with ghost layers), {} forward stencil cells",
@@ -367,25 +391,47 @@ fn save_build_positions(atoms: &Atom, neighbor: &mut Neighbor) {
     let nlocal = atoms.nlocal as usize;
     neighbor.last_build_pos.resize(nlocal, [0.0; 3]);
     neighbor.last_build_pos[..nlocal].copy_from_slice(&atoms.pos[..nlocal]);
-    neighbor.last_build_tags.clear();
-    neighbor.last_build_tags.extend_from_slice(&atoms.tag[..]);
     neighbor.last_build_total = atoms.len();
     neighbor.steps_since_build = 0;
-    neighbor.cached_min_skin = atoms.skin[..nlocal]
+    let (min_skin, max_skin) = atoms.skin[..nlocal]
         .iter()
-        .cloned()
-        .fold(f64::MAX, f64::min);
+        .fold((f64::MAX, f64::MIN), |(mn, mx), &s| (mn.min(s), mx.max(s)));
+    neighbor.cached_min_skin = min_skin;
+    if (max_skin - min_skin).abs() < 1e-15 {
+        let cutoff = 2.0 * min_skin * neighbor.skin_fraction;
+        neighbor.cached_uniform_cutoff_sq = Some(cutoff * cutoff);
+    } else {
+        neighbor.cached_uniform_cutoff_sq = None;
+    }
 }
 
 /// Helper: check displacement threshold
 fn displacement_exceeded(atoms: &Atom, neighbor: &Neighbor) -> bool {
     let min_r = neighbor.cached_min_skin;
-    let half_skin = (neighbor.skin_fraction - 1.0) * min_r * 0.5;
-    let threshold_sq = half_skin * half_skin;
+    // Per-atom displacement budget: for a pair (i,j), the skin margin is
+    // (si + sj) * (skin_fraction - 1). Each atom's share is s * (skin_fraction - 1).
+    // If no atom exceeds this, no pair can have closed the full skin margin.
+    let per_atom_skin = (neighbor.skin_fraction - 1.0) * min_r;
+    let threshold_sq = per_atom_skin * per_atom_skin;
+    let [bx, by, bz] = neighbor.pbc_box;
+    let [px, py, pz] = neighbor.pbc_flags;
+    let hbx = bx * 0.5;
+    let hby = by * 0.5;
+    let hbz = bz * 0.5;
     for idx in 0..neighbor.last_build_pos.len() {
-        let dx = atoms.pos[idx][0] - neighbor.last_build_pos[idx][0];
-        let dy = atoms.pos[idx][1] - neighbor.last_build_pos[idx][1];
-        let dz = atoms.pos[idx][2] - neighbor.last_build_pos[idx][2];
+        let mut dx = atoms.pos[idx][0] - neighbor.last_build_pos[idx][0];
+        let mut dy = atoms.pos[idx][1] - neighbor.last_build_pos[idx][1];
+        let mut dz = atoms.pos[idx][2] - neighbor.last_build_pos[idx][2];
+        // Minimum-image convention for periodic axes
+        if px {
+            if dx > hbx { dx -= bx; } else if dx < -hbx { dx += bx; }
+        }
+        if py {
+            if dy > hby { dy -= by; } else if dy < -hby { dy += by; }
+        }
+        if pz {
+            if dz > hbz { dz -= bz; } else if dz < -hbz { dz += bz; }
+        }
         if dx * dx + dy * dy + dz * dz > threshold_sq {
             return true;
         }
@@ -393,21 +439,12 @@ fn displacement_exceeded(atoms: &Atom, neighbor: &Neighbor) -> bool {
     false
 }
 
-/// Helper: check if a rebuild is needed.
-/// Compares local + ghost atom tags and local displacement to determine staleness.
+///// Helper: check if a rebuild is needed based on atom count change,
+/// step count, and displacement since last build.
 fn needs_rebuild(atoms: &Atom, neighbor: &Neighbor) -> bool {
     let nlocal = atoms.nlocal as usize;
-    // Always rebuild on first call, local atom count change, or total count change
-    if neighbor.last_build_pos.len() != nlocal || nlocal == 0 || neighbor.last_build_total != atoms.len() {
-        return true;
-    }
-    // Check all tags (local + ghost) — ghost atoms are recreated each step and
-    // may have different identities even when the count is unchanged
-    let tags_unchanged = atoms.tag.len() == neighbor.last_build_tags.len()
-        && atoms.tag.iter()
-            .zip(neighbor.last_build_tags.iter())
-            .all(|(t, lt)| t == lt);
-    if !tags_unchanged {
+    // Always rebuild on first call or local atom count change
+    if neighbor.last_build_pos.len() != nlocal || nlocal == 0 {
         return true;
     }
 
@@ -547,6 +584,15 @@ pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>
 
     atoms.apply_permutation(&perm, nlocal);
     registry.apply_permutation_all(&perm, nlocal);
+
+    // Apply the same permutation to last_build_pos so displacement checks
+    // compare the correct atom's current position against its saved position.
+    if neighbor.last_build_pos.len() >= nlocal {
+        let old = neighbor.last_build_pos.clone();
+        for (new_i, &old_i) in perm.iter().enumerate() {
+            neighbor.last_build_pos[new_i] = old[old_i];
+        }
+    }
 }
 
 pub fn bin_neighbor_list(
@@ -584,16 +630,20 @@ pub fn bin_neighbor_list(
     bin_count_arr.clear();
     bin_count_arr.resize(total_cells, 0u32);
 
+    // SAFETY: i < total = atoms.len(), cell is clamped to 0..total_cells by clamp on cx/cy/cz.
     for i in 0..total {
-        let cx = ((atoms.pos[i][0] - bin_ox) * inv_bsx).floor() as i32;
-        let cy = ((atoms.pos[i][1] - bin_oy) * inv_bsy).floor() as i32;
-        let cz = ((atoms.pos[i][2] - bin_oz) * inv_bsz).floor() as i32;
+        let pi = unsafe { atoms.pos.get_unchecked(i) };
+        let cx = ((pi[0] - bin_ox) * inv_bsx).floor() as i32;
+        let cy = ((pi[1] - bin_oy) * inv_bsy).floor() as i32;
+        let cz = ((pi[2] - bin_oz) * inv_bsz).floor() as i32;
         let cx = cx.clamp(0, nx - 1);
         let cy = cy.clamp(0, ny - 1);
         let cz = cz.clamp(0, nz - 1);
         let cell = (cx * ny * nz + cy * nz + cz) as u32;
-        atom_cell[i] = cell;
-        bin_count_arr[cell as usize] += 1;
+        unsafe {
+            *atom_cell.get_unchecked_mut(i) = cell;
+            *bin_count_arr.get_unchecked_mut(cell as usize) += 1;
+        }
     }
 
     // Step 2: Build CSR bin offsets (reuse persistent array)
@@ -605,14 +655,29 @@ pub fn bin_neighbor_list(
     }
 
     // Place atoms into sorted order by bin — reuse bin_count_arr as write cursor
+    // Also record each atom's position in sorted_atoms for self-cell skip optimization
     let mut sorted_atoms = std::mem::take(&mut neighbor.bin_sorted_atoms);
     sorted_atoms.clear();
     sorted_atoms.resize(total, 0u32);
+    let mut atom_sorted_idx = std::mem::take(&mut neighbor.bin_atom_sorted_idx);
+    atom_sorted_idx.clear();
+    atom_sorted_idx.resize(total, 0u32);
     bin_count_arr[..total_cells].copy_from_slice(&bin_start[..total_cells]);
     for i in 0..total {
         let c = atom_cell[i] as usize;
-        sorted_atoms[bin_count_arr[c] as usize] = i as u32;
-        bin_count_arr[c] += 1;
+        let pos = bin_count_arr[c];
+        sorted_atoms[pos as usize] = i as u32;
+        atom_sorted_idx[i] = pos;
+        bin_count_arr[c] = pos + 1;
+    }
+
+    // Step 2b: Build sorted position cache for cache-friendly inner loop access
+    let mut sorted_pos = std::mem::take(&mut neighbor.bin_sorted_pos);
+    sorted_pos.clear();
+    sorted_pos.resize(total, [0.0; 3]);
+    for m in 0..total {
+        // SAFETY: sorted_atoms[m] was populated from 0..total, so < atoms.pos.len().
+        sorted_pos[m] = unsafe { *atoms.pos.get_unchecked(*sorted_atoms.get_unchecked(m) as usize) };
     }
 
     // Step 3: Build CSR neighbor lists using forward stencil.
@@ -620,6 +685,7 @@ pub fn bin_neighbor_list(
     // forward cells have positive offset so each pair appears once.
     let has_self = neighbor.bin_stencil_self;
     let skin_fraction = neighbor.skin_fraction;
+    let uniform_cutoff_sq = neighbor.cached_uniform_cutoff_sq;
     // Take stencil to avoid borrow conflict with neighbor_indices
     let stencil_forward = std::mem::take(&mut neighbor.bin_stencil_forward);
 
@@ -630,54 +696,132 @@ pub fn bin_neighbor_list(
     offsets.clear();
     indices.clear();
     offsets.reserve(nlocal + 1);
-    indices.reserve(prev_count + prev_count / 4);
+    // Pre-allocate indices buffer generously; use unchecked writes with a counter
+    let indices_cap = (prev_count + prev_count / 4).max(nlocal * 40);
+    indices.reserve(indices_cap);
+    let mut nidx: usize = 0;
 
-    for i in 0..nlocal {
-        offsets.push(indices.len() as u32);
+    // Macro to grow indices if needed, then write unchecked
+    macro_rules! push_index {
+        ($val:expr) => {
+            if nidx >= indices.capacity() {
+                // SAFETY: nidx == current logical length
+                unsafe { indices.set_len(nidx) };
+                indices.reserve(nidx / 2 + 256);
+                // indices_ptr is stale after realloc — but we shadow it below
+            }
+            // SAFETY: nidx < capacity after potential growth
+            unsafe { *indices.as_mut_ptr().add(nidx) = $val };
+            nidx += 1;
+        };
+    }
 
-        let my_cell = atom_cell[i] as usize;
-        let pi = atoms.pos[i];
-        let si = atoms.skin[i];
+    // SAFETY invariants for all inner loops below:
+    // - m ranges bin_start[c]..bin_start[c+1], both < total (prefix sum of counts summing to total)
+    // - sorted_atoms[m] < total (populated from 0..total)
+    // - sorted_pos[m] valid for same range as sorted_atoms
+    // - c = my_cell + offset, where my_cell is clamped to valid bin range and offset is from stencil
+    // - bin_start has total_cells + 1 entries; c and c+1 are within bounds by stencil construction
+    // - Self-cell: start from atom_sorted_idx[i]+1 to skip all atoms at or before i in the bin.
+    //   Within the same bin, local atoms appear in index order (counting sort preserves insertion
+    //   order, and sort_atoms_by_bin pre-sorts locals by bin). Ghosts have index >= nlocal > i.
+    if let Some(cutoff_sq) = uniform_cutoff_sq {
+        // Fast path: all atoms have the same skin — skip per-pair skin load
+        for i in 0..nlocal {
+            offsets.push(nidx as u32);
+            let my_cell = unsafe { *atom_cell.get_unchecked(i) } as usize;
+            let pi = unsafe { *atoms.pos.get_unchecked(i) };
 
-        // Self cell: j > i dedup (ghost j always > i since j >= nlocal > i)
-        if has_self {
-            let start = bin_start[my_cell] as usize;
-            let end = bin_start[my_cell + 1] as usize;
-            for m in start..end {
-                let j = sorted_atoms[m] as usize;
-                if j <= i {
-                    continue;
+            if has_self {
+                // Start after atom i's position in the sorted array — all subsequent atoms
+                // in this bin have j > i (locals in order, ghosts have index >= nlocal > i).
+                let self_start = unsafe { *atom_sorted_idx.get_unchecked(i) } as usize + 1;
+                let end = unsafe { *bin_start.get_unchecked(my_cell + 1) } as usize;
+                for m in self_start..end {
+                    let pj = unsafe { *sorted_pos.get_unchecked(m) };
+                    let dx = pj[0] - pi[0];
+                    let dy = pj[1] - pi[1];
+                    let dz = pj[2] - pi[2];
+                    let r2 = dx * dx + dy * dy + dz * dz;
+                    if r2 < cutoff_sq {
+                        let j = unsafe { *sorted_atoms.get_unchecked(m) };
+                        push_index!(j);
+                    }
                 }
-                let dx = atoms.pos[j][0] - pi[0];
-                let dy = atoms.pos[j][1] - pi[1];
-                let dz = atoms.pos[j][2] - pi[2];
-                let r2 = dx * dx + dy * dy + dz * dz;
-                let cutoff = (si + atoms.skin[j]) * skin_fraction;
-                if r2 < cutoff * cutoff {
-                    indices.push(j as u32);
+            }
+
+            for &offset in &stencil_forward {
+                let c = (my_cell as i32 + offset) as usize;
+                let start = unsafe { *bin_start.get_unchecked(c) } as usize;
+                let end = unsafe { *bin_start.get_unchecked(c + 1) } as usize;
+                for m in start..end {
+                    let pj = unsafe { *sorted_pos.get_unchecked(m) };
+                    let dx = pj[0] - pi[0];
+                    let dy = pj[1] - pi[1];
+                    let dz = pj[2] - pi[2];
+                    let r2 = dx * dx + dy * dy + dz * dz;
+                    if r2 < cutoff_sq {
+                        let j = unsafe { *sorted_atoms.get_unchecked(m) };
+                        push_index!(j);
+                    }
                 }
             }
         }
+    } else {
+        // Slow path: per-pair skin computation
+        for i in 0..nlocal {
+            offsets.push(nidx as u32);
+            let my_cell = unsafe { *atom_cell.get_unchecked(i) } as usize;
+            let pi = unsafe { *atoms.pos.get_unchecked(i) };
+            let si = unsafe { *atoms.skin.get_unchecked(i) };
 
-        // Forward stencil cells
-        for &offset in &stencil_forward {
-            let c = (my_cell as i32 + offset) as usize;
-            let start = bin_start[c] as usize;
-            let end = bin_start[c + 1] as usize;
-            for m in start..end {
-                let j = sorted_atoms[m] as usize;
-                let dx = atoms.pos[j][0] - pi[0];
-                let dy = atoms.pos[j][1] - pi[1];
-                let dz = atoms.pos[j][2] - pi[2];
-                let r2 = dx * dx + dy * dy + dz * dz;
-                let cutoff = (si + atoms.skin[j]) * skin_fraction;
-                if r2 < cutoff * cutoff {
-                    indices.push(j as u32);
+            if has_self {
+                let self_start = unsafe { *atom_sorted_idx.get_unchecked(i) } as usize + 1;
+                let end = unsafe { *bin_start.get_unchecked(my_cell + 1) } as usize;
+                for m in self_start..end {
+                    let j = unsafe { *sorted_atoms.get_unchecked(m) } as usize;
+                    let pj = unsafe { *sorted_pos.get_unchecked(m) };
+                    let dx = pj[0] - pi[0];
+                    let dy = pj[1] - pi[1];
+                    let dz = pj[2] - pi[2];
+                    let r2 = dx * dx + dy * dy + dz * dz;
+                    let cutoff = (si + unsafe { *atoms.skin.get_unchecked(j) }) * skin_fraction;
+                    if r2 < cutoff * cutoff {
+                        push_index!(j as u32);
+                    }
+                }
+            }
+
+            for &offset in &stencil_forward {
+                let c = (my_cell as i32 + offset) as usize;
+                let start = unsafe { *bin_start.get_unchecked(c) } as usize;
+                let end = unsafe { *bin_start.get_unchecked(c + 1) } as usize;
+                for m in start..end {
+                    let j = unsafe { *sorted_atoms.get_unchecked(m) } as usize;
+                    let pj = unsafe { *sorted_pos.get_unchecked(m) };
+                    let dx = pj[0] - pi[0];
+                    let dy = pj[1] - pi[1];
+                    let dz = pj[2] - pi[2];
+                    let r2 = dx * dx + dy * dy + dz * dz;
+                    let cutoff = (si + unsafe { *atoms.skin.get_unchecked(j) }) * skin_fraction;
+                    if r2 < cutoff * cutoff {
+                        push_index!(j as u32);
+                    }
                 }
             }
         }
     }
-    offsets.push(indices.len() as u32);
+    // SAFETY: nidx elements were written via raw pointer; all < capacity.
+    unsafe { indices.set_len(nidx) };
+    offsets.push(nidx as u32);
+
+    // Sort each atom's neighbor indices by j for cache-friendly access in force loops.
+    // Sequential j access improves prefetching for atoms.pos[j] and atoms.force[j].
+    for i in 0..nlocal {
+        let s = offsets[i] as usize;
+        let e = offsets[i + 1] as usize;
+        indices[s..e].sort_unstable();
+    }
 
     neighbor.neighbor_offsets = offsets;
     neighbor.neighbor_indices = indices;
@@ -686,6 +830,8 @@ pub fn bin_neighbor_list(
     neighbor.bin_count_arr = bin_count_arr;
     neighbor.bin_start = bin_start;
     neighbor.bin_sorted_atoms = sorted_atoms;
+    neighbor.bin_atom_sorted_idx = atom_sorted_idx;
+    neighbor.bin_sorted_pos = sorted_pos;
 }
 
 #[cfg(test)]

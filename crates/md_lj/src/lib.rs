@@ -164,42 +164,52 @@ pub fn lj_force(
     let eps24 = 24.0 * lj.epsilon;
 
     let nlocal = atoms.nlocal as usize;
-    let compute_virial = virial.active;
     let mut virial_sum = 0.0f64;
 
-    for (i, j) in neighbor.pairs(nlocal) {
-        let dx = atoms.pos[j][0] - atoms.pos[i][0];
-        let dy = atoms.pos[j][1] - atoms.pos[i][1];
-        let dz = atoms.pos[j][2] - atoms.pos[i][2];
-        let r2 = dx * dx + dy * dy + dz * dz;
+    // Direct CSR loop with batch force accumulation — load/store force[i] once per atom.
+    // Virial is always accumulated (1 fma per pair, negligible cost vs branching every pair).
+    // SAFETY: i < nlocal <= atoms.len(), neighbor_offsets has nlocal+1 entries,
+    // neighbor_indices[k] < atoms.len() (from CSR construction), j < atoms.len().
+    for i in 0..nlocal {
+        let pi = unsafe { *atoms.pos.get_unchecked(i) };
+        let mut fi = unsafe { *atoms.force.get_unchecked(i) };
+        let start = unsafe { *neighbor.neighbor_offsets.get_unchecked(i) } as usize;
+        let end = unsafe { *neighbor.neighbor_offsets.get_unchecked(i + 1) } as usize;
 
-        if r2 >= cutoff2 {
-            continue;
-        }
+        for k in start..end {
+            let j = unsafe { *neighbor.neighbor_indices.get_unchecked(k) } as usize;
+            let pj = unsafe { *atoms.pos.get_unchecked(j) };
+            let dx = pj[0] - pi[0];
+            let dy = pj[1] - pi[1];
+            let dz = pj[2] - pi[2];
+            let r2 = dx * dx + dy * dy + dz * dz;
 
-        let sr2 = sigma2 / r2;
-        let sr6 = sr2 * sr2 * sr2;
-        let f_over_r = eps24 / r2 * (2.0 * sr6 * sr6 - sr6);
+            if r2 >= cutoff2 {
+                continue;
+            }
 
-        if compute_virial {
+            let sr2 = sigma2 / r2;
+            let sr6 = sr2 * sr2 * sr2;
+            let f_over_r = eps24 / r2 * (2.0 * sr6 * sr6 - sr6);
+
             virial_sum += f_over_r * r2;
+
+            let fx = f_over_r * dx;
+            let fy = f_over_r * dy;
+            let fz = f_over_r * dz;
+
+            fi[0] -= fx;
+            fi[1] -= fy;
+            fi[2] -= fz;
+            let fj = unsafe { atoms.force.get_unchecked_mut(j) };
+            fj[0] += fx;
+            fj[1] += fy;
+            fj[2] += fz;
         }
-
-        let fx = f_over_r * dx;
-        let fy = f_over_r * dy;
-        let fz = f_over_r * dz;
-
-        atoms.force[i][0] -= fx;
-        atoms.force[i][1] -= fy;
-        atoms.force[i][2] -= fz;
-        atoms.force[j][0] += fx;
-        atoms.force[j][1] += fy;
-        atoms.force[j][2] += fz;
+        unsafe { *atoms.force.get_unchecked_mut(i) = fi };
     }
 
-    if compute_virial {
-        virial.virial_sum = virial_sum;
-    }
+    virial.virial_sum = virial_sum;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
