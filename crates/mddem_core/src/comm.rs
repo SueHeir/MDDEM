@@ -5,9 +5,7 @@ use mddem_scheduler::prelude::*;
 use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "mpi_backend")]
-use crate::ForceMPI;
-use crate::{Atom, AtomDataRegistry, Config, Domain};
+use crate::{Atom, AtomDataRegistry, Config, Domain, ForceMPI};
 
 #[cfg(feature = "mpi_backend")]
 use std::sync::Mutex;
@@ -60,6 +58,13 @@ pub trait CommBackend: Send + Sync + 'static {
     fn all_reduce_sum_f64(&self, local: f64) -> f64;
     fn all_reduce_min_f64(&self, local: f64) -> f64;
     fn barrier(&self);
+
+    // Point-to-point communication for borders/exchange/reverse_send_force
+    fn send_f64(&self, dest: i32, buf: &[f64]);
+    fn recv_f64(&self, source: i32) -> Vec<f64>;
+    fn recv_f64_any(&self) -> Vec<f64>;
+    fn send_force(&self, dest: i32, buf: &[ForceMPI]);
+    fn recv_force(&self, source: i32) -> Vec<ForceMPI>;
 }
 
 /// Wraps a [`CommBackend`] implementation, used as `Res<CommResource>` in systems.
@@ -127,6 +132,24 @@ impl CommBackend for SingleProcessComm {
         local
     }
     fn barrier(&self) {}
+
+    // Single-process always hits the to_proc == rank (local copy) branch,
+    // so actual send/recv is never called.
+    fn send_f64(&self, _dest: i32, _buf: &[f64]) {
+        unreachable!("SingleProcessComm::send_f64 should never be called");
+    }
+    fn recv_f64(&self, _source: i32) -> Vec<f64> {
+        unreachable!("SingleProcessComm::recv_f64 should never be called");
+    }
+    fn recv_f64_any(&self) -> Vec<f64> {
+        unreachable!("SingleProcessComm::recv_f64_any should never be called");
+    }
+    fn send_force(&self, _dest: i32, _buf: &[ForceMPI]) {
+        unreachable!("SingleProcessComm::send_force should never be called");
+    }
+    fn recv_force(&self, _source: i32) -> Vec<ForceMPI> {
+        unreachable!("SingleProcessComm::recv_force should never be called");
+    }
 }
 
 // ── CommBuffers ──────────────────────────────────────────────────────────────
@@ -147,111 +170,29 @@ impl Default for CommBuffers {
     }
 }
 
-// ── SingleProcessCommPlugin ──────────────────────────────────────────────────
+// ── SwapData ─────────────────────────────────────────────────────────────────
 
-/// Single-process communication plugin with periodic ghost atom exchange.
-pub struct SingleProcessCommPlugin;
-
-impl Plugin for SingleProcessCommPlugin {
-    fn default_config(&self) -> Option<&str> {
-        Some(
-            r#"[comm]
-# Number of MPI processors in each dimension
-processors_x = 1
-processors_y = 1
-processors_z = 1"#,
-        )
-    }
-
-    fn build(&self, app: &mut App) {
-        Config::load::<CommConfig>(app, "comm");
-
-        app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
-        app.add_resource(CommBuffers::default());
-
-        app.add_setup_system(comm_read_input, ScheduleSetupSet::PreSetup)
-            .add_update_system(single_process_borders.label("single_process_borders"), ScheduleSet::PreNeighbor)
-            .add_update_system(single_process_reverse_force, ScheduleSet::PostForce);
-
-        app.add_cleanup(finalize_mpi);
-    }
+/// Saved sendlist data for a single border swap, enabling lightweight forward_comm
+/// position updates without full ghost rebuild.
+pub struct SwapData {
+    pub send_indices: Vec<usize>,   // atom indices packed in this swap
+    pub recv_start: usize,          // first ghost index for received atoms
+    pub recv_count: usize,          // number of ghosts received
+    pub to_proc: i32,
+    pub from_proc: i32,
+    pub periodic_offset: [f64; 3],  // precomputed position shift
 }
 
-fn single_process_borders(
-    comm: Res<CommResource>,
-    mut atoms: ResMut<Atom>,
-    domain: Res<Domain>,
-    registry: Res<AtomDataRegistry>,
-    mut buffers: ResMut<CommBuffers>,
-) {
-    // Full ghost rebuild: remove old ghosts first
-    if atoms.nghost > 0 {
-        atoms.truncate_to_nlocal();
-        registry.truncate_all(atoms.nlocal as usize);
-        atoms.nghost = 0;
-    }
+// ── CommTopology ─────────────────────────────────────────────────────────────
 
-    let local_count = atoms.len() as f64;
-    let global_count = comm.all_reduce_sum_f64(local_count);
-    atoms.natoms = global_count as u64;
-    atoms.nlocal = atoms.len() as u32;
-    atoms.nghost = 0;
-
-    let mut send_buff = std::mem::take(&mut buffers.border_send_buff);
-    let mut scan_end = atoms.nlocal as usize;
-
-    for dim in 0..3 {
-        let dim_scan_end = scan_end;
-        for swap in 0..2 {
-            let periodic = match dim {
-                0 => domain.is_periodic.x,
-                1 => domain.is_periodic.y,
-                2 => domain.is_periodic.z,
-                _ => false,
-            };
-            if !periodic {
-                continue;
-            }
-
-            let periodic_offset = if swap == 0 { 1.0 } else { -1.0 };
-            send_buff.clear();
-
-            let count = pack_border_atoms(
-                &mut atoms,
-                &registry,
-                dim,
-                swap,
-                periodic_offset,
-                &domain,
-                &mut send_buff,
-                dim_scan_end,
-                domain.ghost_cutoff,
-            );
-
-            if count > 0 {
-                send_buff.push(count as f64);
-                unpack_ghost_atoms(&mut atoms, &registry, &send_buff, count as usize);
-            }
-        }
-        scan_end = atoms.nlocal as usize + atoms.nghost as usize;
-    }
-    buffers.border_send_buff = send_buff;
-}
-
-fn single_process_reverse_force(mut atoms: ResMut<Atom>, comm: Res<CommResource>) {
-    if comm.size() > 1 {
-        return;
-    }
-    let nlocal = atoms.nlocal as usize;
-    for i in (nlocal..atoms.len()).rev() {
-        let origin = atoms.origin_index[i] as usize;
-        atoms.force[origin][0] += atoms.force[i][0];
-        atoms.force[origin][1] += atoms.force[i][1];
-        atoms.force[origin][2] += atoms.force[i][2];
-        atoms.torque[origin][0] += atoms.torque[i][0];
-        atoms.torque[origin][1] += atoms.torque[i][1];
-        atoms.torque[origin][2] += atoms.torque[i][2];
-    }
+/// Swap directions and counts for ghost communication (replaces MpiCommInternal).
+/// Works for both single-process and MPI.
+pub struct CommTopology {
+    pub swap_directions: [Vector3<i32>; 2],
+    pub periodic_swap: [Vector3<f64>; 2],
+    pub send_amount: [Vector3<i32>; 2],
+    pub receive_amount: [Vector3<i32>; 2],
+    pub swap_data: Vec<SwapData>,   // sendlists for forward_comm
 }
 
 // ── MPI backend ──────────────────────────────────────────────────────────────
@@ -331,28 +272,35 @@ impl CommBackend for MpiCommBackend {
     fn barrier(&self) {
         self.world.barrier();
     }
+
+    fn send_f64(&self, dest: i32, buf: &[f64]) {
+        self.world.process_at_rank(dest).send(buf);
+    }
+
+    fn recv_f64(&self, source: i32) -> Vec<f64> {
+        let (msg, _status) = self.world.process_at_rank(source).receive_vec::<f64>();
+        msg
+    }
+
+    fn recv_f64_any(&self) -> Vec<f64> {
+        let (msg, _status) = self.world.any_process().receive_vec::<f64>();
+        msg
+    }
+
+    fn send_force(&self, dest: i32, buf: &[ForceMPI]) {
+        self.world.process_at_rank(dest).send(buf);
+    }
+
+    fn recv_force(&self, source: i32) -> Vec<ForceMPI> {
+        let (msg, _status) = self.world.process_at_rank(source).receive_vec::<ForceMPI>();
+        msg
+    }
 }
 
-#[cfg(feature = "mpi_backend")]
-pub struct MpiCommInternal {
-    pub world: mpi::topology::SimpleCommunicator,
-    pub swap_directions: [Vector3<i32>; 2],
-    pub periodic_swap: [Vector3<f64>; 2],
-    pub send_amount: [Vector3<i32>; 2],
-    pub receive_amount: [Vector3<i32>; 2],
-}
+// ── Unified CommunicationPlugin ──────────────────────────────────────────────
 
-#[cfg(feature = "mpi_backend")]
-unsafe impl Send for MpiCommInternal {}
-#[cfg(feature = "mpi_backend")]
-unsafe impl Sync for MpiCommInternal {}
-
-// ── MPI Plugin ──────────────────────────────────────────────────────────────
-
-#[cfg(feature = "mpi_backend")]
 pub struct CommunicationPlugin;
 
-#[cfg(feature = "mpi_backend")]
 impl Plugin for CommunicationPlugin {
     fn default_config(&self) -> Option<&str> {
         Some(
@@ -367,34 +315,41 @@ processors_z = 1"#,
     fn build(&self, app: &mut App) {
         Config::load::<CommConfig>(app, "comm");
 
-        let world1 = get_mpi_world();
-        let world2 = get_mpi_world();
-        let rank = world1.rank();
-        let size = world1.size();
-
-        app.add_resource(CommResource(Box::new(MpiCommBackend {
-            world: world1,
-            rank,
-            size,
-            processor_decomposition: Vector3::zeros(),
-            processor_position: Vector3::zeros(),
-        })));
+        // Select backend based on feature flag
+        #[cfg(feature = "mpi_backend")]
+        {
+            let world = get_mpi_world();
+            let rank = world.rank();
+            let size = world.size();
+            app.add_resource(CommResource(Box::new(MpiCommBackend {
+                world,
+                rank,
+                size,
+                processor_decomposition: Vector3::zeros(),
+                processor_position: Vector3::zeros(),
+            })));
+        }
+        #[cfg(not(feature = "mpi_backend"))]
+        {
+            app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
+        }
 
         app.add_resource(CommBuffers::default());
-
-        app.add_resource(MpiCommInternal {
-            world: world2,
+        app.add_resource(CommTopology {
             swap_directions: [Vector3::new(-1, -1, -1), Vector3::new(-1, -1, -1)],
             periodic_swap: [Vector3::zeros(), Vector3::zeros()],
             send_amount: [Vector3::new(0, 0, 0), Vector3::new(0, 0, 0)],
             receive_amount: [Vector3::new(0, 0, 0), Vector3::new(0, 0, 0)],
+            swap_data: Vec::new(),
         });
 
         app.add_setup_system(comm_read_input, ScheduleSetupSet::PreSetup)
             .add_setup_system(comm_setup, ScheduleSetupSet::PostSetup)
-            .add_update_system(exchange, ScheduleSet::Exchange)
             .add_update_system(borders.label("borders"), ScheduleSet::PreNeighbor)
             .add_update_system(reverse_send_force, ScheduleSet::PostForce);
+
+        #[cfg(feature = "mpi_backend")]
+        app.add_update_system(exchange, ScheduleSet::Exchange);
 
         app.add_cleanup(finalize_mpi);
     }
@@ -442,6 +397,44 @@ pub fn comm_read_input(config: Res<CommConfig>, mut comm: ResMut<CommResource>) 
     comm.set_processor_grid(decomp, position);
 }
 
+fn pos_to_rank(pos: Vector3<i32>, decomp: Vector3<i32>) -> i32 {
+    pos.x * decomp.y * decomp.z + pos.y * decomp.z + pos.z
+}
+
+pub fn comm_setup(comm: Res<CommResource>, mut topo: ResMut<CommTopology>, domain: Res<Domain>) {
+    let decomp = comm.processor_decomposition();
+    let pos = comm.processor_position();
+    let periodic = [domain.is_periodic.x, domain.is_periodic.y, domain.is_periodic.z];
+    let decomp_arr = [decomp.x, decomp.y, decomp.z];
+    let pos_arr = [pos.x, pos.y, pos.z];
+
+    for dim in 0..3 {
+        // Forward neighbor (+1 in this dimension)
+        if pos_arr[dim] + 1 < decomp_arr[dim] {
+            let mut neighbor_pos = pos;
+            neighbor_pos[dim] += 1;
+            topo.swap_directions[1][dim] = pos_to_rank(neighbor_pos, decomp);
+        } else if periodic[dim] {
+            let mut neighbor_pos = pos;
+            neighbor_pos[dim] = 0;
+            topo.swap_directions[1][dim] = pos_to_rank(neighbor_pos, decomp);
+            topo.periodic_swap[1][dim] = -1.0;
+        }
+
+        // Backward neighbor (-1 in this dimension)
+        if pos_arr[dim] - 1 >= 0 {
+            let mut neighbor_pos = pos;
+            neighbor_pos[dim] -= 1;
+            topo.swap_directions[0][dim] = pos_to_rank(neighbor_pos, decomp);
+        } else if periodic[dim] {
+            let mut neighbor_pos = pos;
+            neighbor_pos[dim] = decomp_arr[dim] - 1;
+            topo.swap_directions[0][dim] = pos_to_rank(neighbor_pos, decomp);
+            topo.periodic_swap[0][dim] = 1.0;
+        }
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -455,8 +448,9 @@ fn pack_border_atoms(
     send_buff: &mut Vec<f64>,
     scan_end: usize,
     ghost_cutoff: f64,
-) -> i32 {
+) -> (i32, Vec<usize>) {
     let mut count = 0i32;
+    let mut packed_indices = Vec::new();
     // Use ghost_cutoff if set (> 0), otherwise fall back to per-atom skin * 4.0 (DEM default)
     for i in 0..scan_end {
         let pos_dim = atoms.pos_component(i, dim);
@@ -471,10 +465,11 @@ fn pack_border_atoms(
             change_pos[dim] = periodic_offset * domain.size[dim];
             atoms.pack_border(i, change_pos, send_buff);
             registry.pack_all(i, send_buff);
+            packed_indices.push(i);
             count += 1;
         }
     }
-    count
+    (count, packed_indices)
 }
 
 fn unpack_ghost_atoms(atoms: &mut Atom, registry: &AtomDataRegistry, buf: &[f64], count: usize) {
@@ -488,59 +483,325 @@ fn unpack_ghost_atoms(atoms: &mut Atom, registry: &AtomDataRegistry, buf: &[f64]
     }
 }
 
-// ── MPI-only systems ─────────────────────────────────────────────────────────
+// ── Forward comm (lightweight ghost position update) ─────────────────────────
 
-#[cfg(feature = "mpi_backend")]
-fn pos_to_rank(pos: Vector3<i32>, decomp: Vector3<i32>) -> i32 {
-    pos.x * decomp.y * decomp.z + pos.y * decomp.z + pos.z
+/// Per-atom stride in forward_comm: pos(3) + vel(3) + omega(3) = 9 f64s.
+const FORWARD_PACK_SIZE: usize = 9;
+
+fn unpack_forward(msg: &[f64], atoms: &mut Atom, recv_start: usize, recv_count: usize) {
+    for k in 0..recv_count {
+        let base = k * FORWARD_PACK_SIZE;
+        atoms.pos[recv_start + k] = [msg[base], msg[base + 1], msg[base + 2]];
+        atoms.vel[recv_start + k] = [msg[base + 3], msg[base + 4], msg[base + 5]];
+        atoms.omega[recv_start + k] = [msg[base + 6], msg[base + 7], msg[base + 8]];
+    }
 }
 
-#[cfg(feature = "mpi_backend")]
-pub fn comm_setup(comm: Res<CommResource>, mut mpi: ResMut<MpiCommInternal>, domain: Res<Domain>) {
-    let decomp = comm.processor_decomposition();
-    let pos = comm.processor_position();
-    let periodic = [domain.is_periodic.x, domain.is_periodic.y, domain.is_periodic.z];
-    let decomp_arr = [decomp.x, decomp.y, decomp.z];
-    let pos_arr = [pos.x, pos.y, pos.z];
-
-    for dim in 0..3 {
-        // Forward neighbor (+1 in this dimension)
-        if pos_arr[dim] + 1 < decomp_arr[dim] {
-            let mut neighbor_pos = pos;
-            neighbor_pos[dim] += 1;
-            mpi.swap_directions[1][dim] = pos_to_rank(neighbor_pos, decomp);
-        } else if periodic[dim] {
-            let mut neighbor_pos = pos;
-            neighbor_pos[dim] = 0;
-            mpi.swap_directions[1][dim] = pos_to_rank(neighbor_pos, decomp);
-            mpi.periodic_swap[1][dim] = -1.0;
+fn forward_comm(
+    atoms: &mut Atom,
+    topo: &CommTopology,
+    comm: &dyn CommBackend,
+    buf: &mut Vec<f64>,
+) {
+    let rank = comm.rank();
+    for swap in &topo.swap_data {
+        buf.clear();
+        // Pack positions, velocities, and omega (9 f64s per atom) with periodic offset
+        for &idx in &swap.send_indices {
+            buf.push(atoms.pos[idx][0] + swap.periodic_offset[0]);
+            buf.push(atoms.pos[idx][1] + swap.periodic_offset[1]);
+            buf.push(atoms.pos[idx][2] + swap.periodic_offset[2]);
+            buf.push(atoms.vel[idx][0]);
+            buf.push(atoms.vel[idx][1]);
+            buf.push(atoms.vel[idx][2]);
+            buf.push(atoms.omega[idx][0]);
+            buf.push(atoms.omega[idx][1]);
+            buf.push(atoms.omega[idx][2]);
         }
 
-        // Backward neighbor (-1 in this dimension)
-        if pos_arr[dim] - 1 >= 0 {
-            let mut neighbor_pos = pos;
-            neighbor_pos[dim] -= 1;
-            mpi.swap_directions[0][dim] = pos_to_rank(neighbor_pos, decomp);
-        } else if periodic[dim] {
-            let mut neighbor_pos = pos;
-            neighbor_pos[dim] = decomp_arr[dim] - 1;
-            mpi.swap_directions[0][dim] = pos_to_rank(neighbor_pos, decomp);
-            mpi.periodic_swap[0][dim] = 1.0;
+        if swap.to_proc == rank {
+            // Self-send: copy directly into ghost data
+            unpack_forward(buf, atoms, swap.recv_start, swap.recv_count);
+        } else if swap.to_proc == swap.from_proc {
+            // Symmetric neighbor (2-proc dim): higher rank sends first
+            if swap.to_proc > rank {
+                comm.send_f64(swap.to_proc, buf);
+                let msg = comm.recv_f64(swap.from_proc);
+                unpack_forward(&msg, atoms, swap.recv_start, swap.recv_count);
+            } else {
+                let msg = comm.recv_f64(swap.from_proc);
+                unpack_forward(&msg, atoms, swap.recv_start, swap.recv_count);
+                comm.send_f64(swap.to_proc, buf);
+            }
+        } else {
+            if swap.to_proc != -1 {
+                comm.send_f64(swap.to_proc, buf);
+            }
+            if swap.from_proc != -1 && swap.from_proc != rank {
+                let msg = comm.recv_f64(swap.from_proc);
+                unpack_forward(&msg, atoms, swap.recv_start, swap.recv_count);
+            }
         }
     }
 }
 
-// ── Exchange ──────────────────────────────────────────────────────────────────
+// ── Unified borders ──────────────────────────────────────────────────────────
 
-#[cfg(feature = "mpi_backend")]
-pub fn exchange(
+pub fn borders(
     comm: Res<CommResource>,
-    mpi: Res<MpiCommInternal>,
+    mut topo: ResMut<CommTopology>,
     mut atoms: ResMut<Atom>,
     domain: Res<Domain>,
     registry: Res<AtomDataRegistry>,
     mut buffers: ResMut<CommBuffers>,
 ) {
+    let mut send_buff = std::mem::take(&mut buffers.border_send_buff);
+
+    // Fast path: forward_comm when communicate_only (ghost layout unchanged)
+    if atoms.communicate_only {
+        forward_comm(&mut atoms, &topo, &**comm, &mut send_buff);
+        buffers.border_send_buff = send_buff;
+        return;
+    }
+
+    // Full ghost rebuild: remove old ghosts first
+    if atoms.nghost > 0 {
+        atoms.truncate_to_nlocal();
+        registry.truncate_all(atoms.nlocal as usize);
+        atoms.nghost = 0;
+    }
+
+    let local_count = atoms.len() as f64;
+    let global_count = comm.all_reduce_sum_f64(local_count);
+    atoms.natoms = global_count as u64;
+    atoms.nlocal = atoms.len() as u32;
+    atoms.nghost = 0;
+    comm.barrier();
+
+    // Clear sendlists for fresh recording
+    topo.swap_data.clear();
+
+    let rank = comm.rank();
+    let mut scan_end = atoms.nlocal as usize;
+
+    for dim in 0..3 {
+        let dim_scan_end = scan_end;
+        for swap in 0..2 {
+            let to_proc = topo.swap_directions[swap][dim];
+            let from_proc = topo.swap_directions[(swap + 1) % 2][dim];
+            let periodic_offset = topo.periodic_swap[swap][dim];
+            topo.send_amount[swap][dim] = 0;
+            topo.receive_amount[swap][dim] = 0;
+            send_buff.clear();
+
+            // Precompute periodic position shift for sendlist
+            let mut pbc_shift = [0.0; 3];
+            pbc_shift[dim] = periodic_offset * domain.size[dim];
+
+            if to_proc == from_proc && to_proc != rank {
+                if to_proc > rank {
+                    if to_proc != -1 {
+                        let (count, packed_indices) = pack_border_atoms(
+                            &mut atoms,
+                            &registry,
+                            dim,
+                            swap,
+                            periodic_offset,
+                            &domain,
+                            &mut send_buff,
+                            dim_scan_end,
+                            domain.ghost_cutoff,
+                        );
+                        topo.send_amount[swap][dim] = count;
+                        send_buff.push(count as f64);
+                        comm.send_f64(to_proc, &send_buff);
+                        let msg = comm.recv_f64(from_proc);
+                        let recv_count = msg[msg.len() - 1] as usize;
+                        topo.receive_amount[swap][dim] = recv_count as i32;
+                        let recv_start = atoms.len();
+                        unpack_ghost_atoms(&mut atoms, &registry, &msg, recv_count);
+                        topo.swap_data.push(SwapData {
+                            send_indices: packed_indices,
+                            recv_start,
+                            recv_count,
+                            to_proc,
+                            from_proc,
+                            periodic_offset: pbc_shift,
+                        });
+                    }
+                } else {
+                    let (count, packed_indices) = pack_border_atoms(
+                        &mut atoms,
+                        &registry,
+                        dim,
+                        swap,
+                        periodic_offset,
+                        &domain,
+                        &mut send_buff,
+                        dim_scan_end,
+                        domain.ghost_cutoff,
+                    );
+                    topo.send_amount[swap][dim] = count;
+                    if from_proc != -1 {
+                        let msg = comm.recv_f64(to_proc);
+                        let recv_count = msg[msg.len() - 1] as usize;
+                        topo.receive_amount[swap][dim] = recv_count as i32;
+                        let recv_start = atoms.len();
+                        unpack_ghost_atoms(&mut atoms, &registry, &msg, recv_count);
+                        send_buff.push(count as f64);
+                        comm.send_f64(to_proc, &send_buff);
+                        topo.swap_data.push(SwapData {
+                            send_indices: packed_indices,
+                            recv_start,
+                            recv_count,
+                            to_proc,
+                            from_proc,
+                            periodic_offset: pbc_shift,
+                        });
+                    }
+                }
+            } else {
+                let mut swap_send_indices = Vec::new();
+                let mut swap_recv_start = 0usize;
+                let mut swap_recv_count = 0usize;
+
+                if to_proc != -1 {
+                    let (count, packed_indices) = pack_border_atoms(
+                        &mut atoms,
+                        &registry,
+                        dim,
+                        swap,
+                        periodic_offset,
+                        &domain,
+                        &mut send_buff,
+                        dim_scan_end,
+                        domain.ghost_cutoff,
+                    );
+                    topo.send_amount[swap][dim] = count;
+                    swap_send_indices = packed_indices;
+                    if to_proc != rank {
+                        send_buff.push(count as f64);
+                        comm.send_f64(to_proc, &send_buff);
+                    } else {
+                        topo.receive_amount[swap][dim] = count;
+                        send_buff.push(count as f64);
+                        swap_recv_start = atoms.len();
+                        swap_recv_count = count as usize;
+                        unpack_ghost_atoms(&mut atoms, &registry, &send_buff, count as usize);
+                    }
+                }
+                if from_proc != -1 && from_proc != rank {
+                    let msg = comm.recv_f64(from_proc);
+                    let recv_count = msg[msg.len() - 1] as usize;
+                    topo.receive_amount[swap][dim] = recv_count as i32;
+                    swap_recv_start = atoms.len();
+                    swap_recv_count = recv_count;
+                    unpack_ghost_atoms(&mut atoms, &registry, &msg, recv_count);
+                }
+                // Record swap data if anything was sent or received
+                if to_proc != -1 || (from_proc != -1 && from_proc != rank) {
+                    topo.swap_data.push(SwapData {
+                        send_indices: swap_send_indices,
+                        recv_start: swap_recv_start,
+                        recv_count: swap_recv_count,
+                        to_proc,
+                        from_proc,
+                        periodic_offset: pbc_shift,
+                    });
+                }
+            }
+            comm.barrier();
+        }
+        scan_end = atoms.nlocal as usize + atoms.nghost as usize;
+    }
+    buffers.border_send_buff = send_buff;
+
+    comm.barrier();
+}
+
+// ── Unified reverse send force ────────────────────────────────────────────────
+
+pub fn reverse_send_force(
+    comm: Res<CommResource>,
+    topo: Res<CommTopology>,
+    mut atoms: ResMut<Atom>,
+) {
+    let rank = comm.rank();
+    let mut send_buff: Vec<ForceMPI> = Vec::new();
+    let mut receive_position = atoms.len() as i32;
+
+    for dim in (0..3).rev() {
+        for swap in (0..2).rev() {
+            let to_proc = topo.swap_directions[swap][dim];
+            let from_proc = topo.swap_directions[(swap + 1) % 2][dim];
+            send_buff.clear();
+
+            if to_proc == from_proc && to_proc != rank {
+                if from_proc < rank {
+                    if from_proc != -1 {
+                        for i in
+                            (receive_position - topo.receive_amount[swap][dim])..receive_position
+                        {
+                            send_buff.push(atoms.get_force_data(i as usize));
+                        }
+                        comm.send_force(from_proc, &send_buff);
+                        let msg = comm.recv_force(to_proc);
+                        for atom in msg {
+                            atoms.apply_force_data(atom);
+                        }
+                    }
+                } else {
+                    for i in (receive_position - topo.receive_amount[swap][dim])..receive_position {
+                        send_buff.push(atoms.get_force_data(i as usize));
+                    }
+                    if from_proc != -1 {
+                        let msg = comm.recv_force(to_proc);
+                        for atom in msg {
+                            atoms.apply_force_data(atom);
+                        }
+                        comm.send_force(from_proc, &send_buff);
+                    }
+                }
+            } else {
+                if from_proc != -1 {
+                    for i in (receive_position - topo.receive_amount[swap][dim])..receive_position {
+                        send_buff.push(atoms.get_force_data(i as usize));
+                    }
+                    if from_proc != rank {
+                        comm.send_force(from_proc, &send_buff);
+                    } else {
+                        for &force in &send_buff {
+                            atoms.apply_force_data(force);
+                        }
+                    }
+                }
+                if to_proc != -1 && to_proc != rank {
+                    let msg = comm.recv_force(to_proc);
+                    for atom in msg {
+                        atoms.apply_force_data(atom);
+                    }
+                }
+            }
+            receive_position -= topo.receive_amount[swap][dim];
+            comm.barrier();
+        }
+    }
+    comm.barrier();
+}
+
+// ── Exchange (MPI only) ──────────────────────────────────────────────────────
+
+#[cfg(feature = "mpi_backend")]
+pub fn exchange(
+    comm: Res<CommResource>,
+    mut atoms: ResMut<Atom>,
+    domain: Res<Domain>,
+    registry: Res<AtomDataRegistry>,
+    mut buffers: ResMut<CommBuffers>,
+) {
+    if atoms.communicate_only {
+        return;
+    }
     let size = comm.size();
     let rank = comm.rank();
     let proc_decomp = comm.processor_decomposition();
@@ -574,7 +835,7 @@ pub fn exchange(
     for p in 0..size {
         if p == rank {
             for _rec in 0..size - 1 {
-                let (msg, _status) = mpi.world.any_process().receive_vec::<f64>();
+                let msg = comm.recv_f64_any();
                 let msg_count = msg[msg.len() - 1] as usize;
                 let data = &msg[..msg.len() - 1];
                 let mut pos = 0;
@@ -584,212 +845,11 @@ pub fn exchange(
                 }
             }
         } else {
-            mpi.world.process_at_rank(p).send(&atoms_buff[p as usize]);
+            comm.send_f64(p, &atoms_buff[p as usize]);
         }
     }
-    mpi.world.barrier();
+    comm.barrier();
     buffers.exchange_buffs = atoms_buff;
-}
-
-// ── Borders ───────────────────────────────────────────────────────────────────
-
-#[cfg(feature = "mpi_backend")]
-pub fn borders(
-    comm: Res<CommResource>,
-    mut mpi: ResMut<MpiCommInternal>,
-    mut atoms: ResMut<Atom>,
-    domain: Res<Domain>,
-    registry: Res<AtomDataRegistry>,
-    mut buffers: ResMut<CommBuffers>,
-) {
-    // MPI always does full ghost rebuild; communicate_only stays false to force
-    // neighbor rebuild every step (ghost ordering is non-deterministic in MPI).
-
-    // Full ghost rebuild: remove old ghosts first
-    if atoms.nghost > 0 {
-        atoms.truncate_to_nlocal();
-        registry.truncate_all(atoms.nlocal as usize);
-        atoms.nghost = 0;
-    }
-
-    let local_count = atoms.len() as f64;
-    let global_count = comm.all_reduce_sum_f64(local_count);
-    atoms.natoms = global_count as u64;
-    atoms.nlocal = atoms.len() as u32;
-    atoms.nghost = 0;
-    mpi.world.barrier();
-
-    let rank = comm.rank();
-    let mut send_buff = std::mem::take(&mut buffers.border_send_buff);
-    let mut scan_end = atoms.nlocal as usize;
-
-    for dim in 0..3 {
-        let dim_scan_end = scan_end;
-        for swap in 0..2 {
-            let to_proc = mpi.swap_directions[swap][dim];
-            let from_proc = mpi.swap_directions[(swap + 1) % 2][dim];
-            let periodic_offset = mpi.periodic_swap[swap][dim];
-            mpi.send_amount[swap][dim] = 0;
-            mpi.receive_amount[swap][dim] = 0;
-            send_buff.clear();
-
-            if to_proc == from_proc && to_proc != rank {
-                if to_proc > rank {
-                    if to_proc != -1 {
-                        let count = pack_border_atoms(
-                            &mut atoms,
-                            &registry,
-                            dim,
-                            swap,
-                            periodic_offset,
-                            &domain,
-                            &mut send_buff,
-                            dim_scan_end,
-                            domain.ghost_cutoff,
-                        );
-                        mpi.send_amount[swap][dim] = count;
-                        send_buff.push(count as f64);
-                        mpi.world.process_at_rank(to_proc).send(&send_buff);
-                        let (msg, _status) =
-                            mpi.world.process_at_rank(from_proc).receive_vec::<f64>();
-                        let recv_count = msg[msg.len() - 1] as usize;
-                        mpi.receive_amount[swap][dim] = recv_count as i32;
-                        unpack_ghost_atoms(&mut atoms, &registry, &msg, recv_count);
-                    }
-                } else {
-                    let count = pack_border_atoms(
-                        &mut atoms,
-                        &registry,
-                        dim,
-                        swap,
-                        periodic_offset,
-                        &domain,
-                        &mut send_buff,
-                        dim_scan_end,
-                        domain.ghost_cutoff,
-                    );
-                    mpi.send_amount[swap][dim] = count;
-                    if from_proc != -1 {
-                        let (msg, _status) =
-                            mpi.world.process_at_rank(to_proc).receive_vec::<f64>();
-                        let recv_count = msg[msg.len() - 1] as usize;
-                        mpi.receive_amount[swap][dim] = recv_count as i32;
-                        unpack_ghost_atoms(&mut atoms, &registry, &msg, recv_count);
-                        send_buff.push(count as f64);
-                        mpi.world.process_at_rank(to_proc).send(&send_buff);
-                    }
-                }
-            } else {
-                if to_proc != -1 {
-                    let count = pack_border_atoms(
-                        &mut atoms,
-                        &registry,
-                        dim,
-                        swap,
-                        periodic_offset,
-                        &domain,
-                        &mut send_buff,
-                        dim_scan_end,
-                        domain.ghost_cutoff,
-                    );
-                    mpi.send_amount[swap][dim] = count;
-                    if to_proc != rank {
-                        send_buff.push(count as f64);
-                        mpi.world.process_at_rank(to_proc).send(&send_buff);
-                    } else {
-                        mpi.receive_amount[swap][dim] = count;
-                        send_buff.push(count as f64);
-                        unpack_ghost_atoms(&mut atoms, &registry, &send_buff, count as usize);
-                    }
-                }
-                if from_proc != -1 && from_proc != rank {
-                    let (msg, _status) = mpi.world.process_at_rank(from_proc).receive_vec::<f64>();
-                    let recv_count = msg[msg.len() - 1] as usize;
-                    mpi.receive_amount[swap][dim] = recv_count as i32;
-                    unpack_ghost_atoms(&mut atoms, &registry, &msg, recv_count);
-                }
-            }
-            mpi.world.barrier();
-        }
-        scan_end = atoms.nlocal as usize + atoms.nghost as usize;
-    }
-    buffers.border_send_buff = send_buff;
-
-    mpi.world.barrier();
-}
-
-// ── Reverse send force ────────────────────────────────────────────────────────
-
-#[cfg(feature = "mpi_backend")]
-pub fn reverse_send_force(
-    comm: Res<CommResource>,
-    mpi: Res<MpiCommInternal>,
-    mut atoms: ResMut<Atom>,
-) {
-    let rank = comm.rank();
-    let mut send_buff: Vec<ForceMPI> = Vec::new();
-    let mut receive_position = atoms.len() as i32;
-
-    for dim in (0..3).rev() {
-        for swap in (0..2).rev() {
-            let to_proc = mpi.swap_directions[swap][dim];
-            let from_proc = mpi.swap_directions[(swap + 1) % 2][dim];
-            send_buff.clear();
-
-            if to_proc == from_proc && to_proc != rank {
-                if from_proc < rank {
-                    if from_proc != -1 {
-                        for i in
-                            (receive_position - mpi.receive_amount[swap][dim])..receive_position
-                        {
-                            send_buff.push(atoms.get_force_data(i as usize));
-                        }
-                        mpi.world.process_at_rank(from_proc).send(&send_buff);
-                        let (msg, _status) =
-                            mpi.world.process_at_rank(to_proc).receive_vec::<ForceMPI>();
-                        for atom in msg {
-                            atoms.apply_force_data(atom);
-                        }
-                    }
-                } else {
-                    for i in (receive_position - mpi.receive_amount[swap][dim])..receive_position {
-                        send_buff.push(atoms.get_force_data(i as usize));
-                    }
-                    if from_proc != -1 {
-                        let (msg, _status) =
-                            mpi.world.process_at_rank(to_proc).receive_vec::<ForceMPI>();
-                        for atom in msg {
-                            atoms.apply_force_data(atom);
-                        }
-                        mpi.world.process_at_rank(from_proc).send(&send_buff);
-                    }
-                }
-            } else {
-                if from_proc != -1 {
-                    for i in (receive_position - mpi.receive_amount[swap][dim])..receive_position {
-                        send_buff.push(atoms.get_force_data(i as usize));
-                    }
-                    if from_proc != rank {
-                        mpi.world.process_at_rank(from_proc).send(&send_buff);
-                    } else {
-                        for &force in &send_buff {
-                            atoms.apply_force_data(force);
-                        }
-                    }
-                }
-                if to_proc != -1 && to_proc != rank {
-                    let (msg, _status) =
-                        mpi.world.process_at_rank(to_proc).receive_vec::<ForceMPI>();
-                    for atom in msg {
-                        atoms.apply_force_data(atom);
-                    }
-                }
-            }
-            receive_position -= mpi.receive_amount[swap][dim];
-            mpi.world.barrier();
-        }
-    }
-    mpi.world.barrier();
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

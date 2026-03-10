@@ -520,7 +520,7 @@ impl Plugin for AtomPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(Atom::new())
             .add_resource(AtomDataRegistry::new())
-            .add_update_system(remove_ghost_atoms, ScheduleSet::PostInitialIntegration)
+            .add_update_system(remove_ghost_atoms.label("remove_ghost_atoms"), ScheduleSet::PostInitialIntegration)
             .add_update_system(zero_all_forces, ScheduleSet::PostInitialIntegration);
     }
 }

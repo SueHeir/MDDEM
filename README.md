@@ -220,13 +220,25 @@ Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). 
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
 |--------:|---------------:|----------------:|------:|
-|     108 |         10,665 |          30,580 |  2.9x |
-|   1,000 |          1,473 |           2,931 |  2.0x |
-|  10,000 |          171.6 |             295 |  1.7x |
-|  32,000 |           56.5 |              92 |  1.6x |
-| 100,920 |           17.8 |            28.2 |  1.6x |
+|     108 |         13,847 |          30,580 |  2.2x |
+|   1,000 |          1,716 |           2,931 |  1.7x |
+|  10,000 |          186.8 |             295 |  1.6x |
+|  32,000 |           60.0 |              92 |  1.5x |
+| 100,920 |           18.9 |            28.2 |  1.5x |
 
-LAMMPS is ~1.6x faster at scale, with consistent O(N) scaling in both codes. The gap is primarily in the force loop (64% of MDDEM runtime), where LAMMPS benefits from decades of hand-tuned SIMD and cache optimization. The neighbor list build (21% of runtime) uses CSR bins with a forward stencil, sorted position caches, sorted neighbor indices for sequential cache access, and unsafe bounds-check elimination.
+LAMMPS is ~1.5x faster at scale, with consistent O(N) scaling in both codes. The gap is primarily in the force loop (64% of MDDEM runtime), where LAMMPS benefits from decades of hand-tuned SIMD and cache optimization. The neighbor list build (21% of runtime) uses CSR bins with a forward stencil, sorted position caches, sorted neighbor indices for sequential cache access, and unsafe bounds-check elimination.
+
+MPI benchmark (4 processes, 2x2x1 decomposition) on the same hardware:
+
+| Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
+|--------:|---------------:|----------------:|------:|
+|     108 |         12,207 |          29,807 |  2.4x |
+|   1,000 |          3,205 |           8,563 |  2.7x |
+|  10,000 |          516.8 |           1,068 |  2.1x |
+|  32,000 |          186.4 |           302.0 |  1.6x |
+| 100,920 |           62.4 |           105.5 |  1.7x |
+
+At scale (32k+ atoms), MDDEM achieves ~3.1x speedup on 4 cores vs single-core, while LAMMPS achieves ~3.3x — comparable parallel efficiency. At small atom counts, MPI overhead dominates and both codes show diminishing returns. The wider gap at 1k atoms reflects MDDEM's higher per-process communication overhead relative to the small workload.
 
 ## Roadmap
 

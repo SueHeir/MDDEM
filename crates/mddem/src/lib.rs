@@ -24,8 +24,8 @@ use mddem_app::prelude::*;
 /// Includes, in registration order:
 /// - [`InputPlugin`](mddem_core::InputPlugin) — CLI parsing, banner printing, TOML config loading
 ///   (skipped if `Config` is already present)
-/// - [`CommunicationPlugin`](mddem_core::CommunicationPlugin) / [`SingleProcessCommPlugin`](mddem_core::SingleProcessCommPlugin) —
-///   MPI or single-process communication backend (selected by `mpi_backend` feature)
+/// - [`CommunicationPlugin`](mddem_core::CommunicationPlugin) —
+///   Unified MPI or single-process communication backend (selected by `mpi_backend` feature)
 /// - [`DomainPlugin`](mddem_core::DomainPlugin) — Cartesian domain decomposition
 /// - [`NeighborPlugin`](mddem_neighbor::NeighborPlugin) — sweep-and-prune neighbor lists
 /// - [`RunPlugin`](mddem_core::RunPlugin) — run/cycle management
@@ -49,12 +49,8 @@ impl PluginGroup for CorePlugins {
     fn build(self) -> PluginGroupBuilder {
         let builder = PluginGroupBuilder::start::<Self>().add(mddem_core::InputPlugin);
 
-        #[cfg(feature = "mpi_backend")]
-        let builder = builder.add(mddem_core::CommunicationPlugin);
-        #[cfg(not(feature = "mpi_backend"))]
-        let builder = builder.add(mddem_core::SingleProcessCommPlugin);
-
         builder
+            .add(mddem_core::CommunicationPlugin)
             .add(mddem_core::DomainPlugin::default())
             .add(mddem_neighbor::NeighborPlugin {
                 style: mddem_neighbor::NeighborStyle::Bin,

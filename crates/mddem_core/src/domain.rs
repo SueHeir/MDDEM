@@ -239,15 +239,15 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
     let periodic = domain.is_periodic;
 
     if periodic.x && periodic.y && periodic.z {
-        // Fast path: fully periodic, no removals possible
-        for i in 0..atoms.len() {
+        // Fast path: fully periodic, no removals possible (local atoms only, ghosts live outside box)
+        for i in 0..atoms.nlocal as usize {
             atoms.pos[i][0] = wrap_periodic(atoms.pos[i][0], low.x, size.x);
             atoms.pos[i][1] = wrap_periodic(atoms.pos[i][1], low.y, size.y);
             atoms.pos[i][2] = wrap_periodic(atoms.pos[i][2], low.z, size.z);
         }
     } else {
-        // Slow path: non-periodic axes may require removal
-        'outer: for i in (0..atoms.len()).rev() {
+        // Slow path: non-periodic axes may require removal (local atoms only)
+        'outer: for i in (0..atoms.nlocal as usize).rev() {
             macro_rules! handle_dim {
                 ($pos:expr, $is_periodic:expr, $lo:expr, $hi:expr, $sz:expr) => {
                     if $is_periodic {

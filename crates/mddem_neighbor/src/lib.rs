@@ -227,7 +227,11 @@ sort_every = 1000"#,
 
         app.add_resource(Neighbor::new())
             .add_setup_system(neighbor_read_input, ScheduleSetupSet::Setup)
-            .add_setup_system(neighbor_setup, ScheduleSetupSet::PostSetup);
+            .add_setup_system(neighbor_setup, ScheduleSetupSet::PostSetup)
+            .add_update_system(
+                decide_rebuild.label("decide_rebuild").before("remove_ghost_atoms"),
+                ScheduleSet::PostInitialIntegration,
+            );
         match self.style {
             NeighborStyle::BruteForce => {
                 app.add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
@@ -239,7 +243,6 @@ sort_every = 1000"#,
                 app.add_update_system(
                     sort_atoms_by_bin
                         .label("sort_atoms")
-                        .before("single_process_borders")
                         .before("borders"),
                     ScheduleSet::PreNeighbor,
                 );
@@ -463,8 +466,8 @@ fn needs_rebuild(atoms: &Atom, neighbor: &Neighbor) -> bool {
     if neighbor.last_build_pos.len() != nlocal || nlocal == 0 {
         return true;
     }
-    // In MPI mode, ghost ordering is non-deterministic after each borders call,
-    // so force rebuild every step. communicate_only is only set true for single-process.
+    // If communicate_only is false, a full rebuild was requested (first step,
+    // or decide_rebuild detected displacement exceeded threshold).
     if !atoms.communicate_only {
         return true;
     }
@@ -481,6 +484,25 @@ fn needs_rebuild(atoms: &Atom, neighbor: &Neighbor) -> bool {
     }
 }
 
+/// Runs at PostInitialIntegration before remove_ghost_atoms.
+/// When communicate_only is true (neighbor list still valid), checks displacement
+/// to decide if a full rebuild is needed this step. If so, sets communicate_only = false
+/// so that remove_ghost_atoms / exchange / full borders all run.
+///
+/// Uses all_reduce to ensure ALL ranks agree — if any rank needs a rebuild,
+/// all ranks do the full rebuild (required for MPI send/recv pattern matching).
+pub fn decide_rebuild(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>, comm: Res<CommResource>) {
+    if !atoms.communicate_only {
+        return; // already going to do full rebuild
+    }
+    let local_needs = if needs_rebuild(&atoms, &neighbor) { 1.0 } else { 0.0 };
+    // Any rank needing rebuild forces all ranks to rebuild
+    let global_needs = comm.all_reduce_sum_f64(local_needs);
+    if global_needs > 0.0 {
+        atoms.communicate_only = false;
+    }
+}
+
 pub fn sweep_and_prune_neighbor_list(
     mut atoms: ResMut<Atom>,
     mut neighbor: ResMut<Neighbor>,
@@ -489,10 +511,10 @@ pub fn sweep_and_prune_neighbor_list(
 ) {
     if !needs_rebuild(&atoms, &neighbor) {
         neighbor.steps_since_build += 1;
-        if _comm.size() == 1 { atoms.communicate_only = true; }
+        atoms.communicate_only = true;
         return;
     }
-    if _comm.size() == 1 { atoms.communicate_only = true; }
+    atoms.communicate_only = true;
 
     save_build_positions(&atoms, &mut neighbor);
     neighbor.sweep_and_prune.clear();
@@ -641,6 +663,7 @@ pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>
         // CSR indices are stale but bin_neighbor_list wouldn't otherwise rebuild.
         if periodic_sort && !rebuild_needed {
             neighbor.last_build_pos.clear();
+            atoms.communicate_only = false; // force full borders rebuild after sort
         }
     }
 }
@@ -656,10 +679,10 @@ pub fn bin_neighbor_list(
 
     if !needs_rebuild(&atoms, &neighbor) {
         neighbor.steps_since_build += 1;
-        if _comm.size() == 1 { atoms.communicate_only = true; }
+        // TEMP DISABLED for debugging: atoms.communicate_only = true;
         return;
     }
-    if _comm.size() == 1 { atoms.communicate_only = true; }
+    // TEMP DISABLED for debugging: atoms.communicate_only = true;
 
     save_build_positions(&atoms, &mut neighbor);
 
