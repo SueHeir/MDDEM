@@ -280,10 +280,20 @@ pub fn neighbor_setup(mut neighbor: ResMut<Neighbor>, mut domain: ResMut<Domain>
     let local_max_skin = atoms.skin.iter().cloned().fold(0.0f64, f64::max);
     let max_skin = -comm.all_reduce_min_f64(-local_max_skin); // global max via negated min
     let max_cutoff = 2.0 * max_skin * neighbor.skin_fraction;
-    neighbor.ghost_cutoff = max_cutoff;
-    domain.ghost_cutoff = max_cutoff;
+    // Add displacement buffer to ghost_cutoff so atoms don't drift in/out of the
+    // ghost zone between neighbor rebuilds. Without this padding, ghost count
+    // fluctuates every step, forcing unnecessary neighbor rebuilds.
+    // Max per-atom displacement before rebuild = (skin_fraction - 1) * min_skin.
+    // Two atoms can each move this far, so buffer = 2 * displacement.
+    let local_min_skin = atoms.skin.iter().cloned().fold(f64::MAX, f64::min);
+    let min_skin = comm.all_reduce_min_f64(local_min_skin);
+    let displacement_buffer = (neighbor.skin_fraction - 1.0) * min_skin;
+    let ghost_cut = max_cutoff + 2.0 * displacement_buffer;
+    neighbor.ghost_cutoff = ghost_cut;
+    domain.ghost_cutoff = ghost_cut;
     if comm.rank() == 0 {
-        println!("Neighbor: ghost_cutoff={:.4}", max_cutoff);
+        println!("Neighbor: ghost_cutoff={:.4} (pair_cutoff={:.4} + buffer={:.4})",
+            ghost_cut, max_cutoff, 2.0 * displacement_buffer);
     }
     // Single-process: bin_size >= cutoff gives stencil range=1, keeping bin_start
     // small enough (< 64KB) for L1 cache and only 13 forward stencil cells.
@@ -408,11 +418,18 @@ fn save_build_positions(atoms: &Atom, neighbor: &mut Neighbor) {
 /// Helper: check displacement threshold
 fn displacement_exceeded(atoms: &Atom, neighbor: &Neighbor) -> bool {
     let min_r = neighbor.cached_min_skin;
-    // Per-atom displacement budget: for a pair (i,j), the skin margin is
-    // (si + sj) * (skin_fraction - 1). Each atom's share is s * (skin_fraction - 1).
-    // If no atom exceeds this, no pair can have closed the full skin margin.
+    // Per-atom displacement budget: the pair skin margin is
+    //   (skin_fraction - 1) * (r_i + r_j).
+    // Each atom's share is half:
+    //   (skin_fraction - 1) * (r_i + r_j) / 2.
+    // Using min_r as worst case for each radius:
+    //   threshold = (skin_fraction - 1) * min_r
     let per_atom_skin = (neighbor.skin_fraction - 1.0) * min_r;
     let threshold_sq = per_atom_skin * per_atom_skin;
+    // Minimum-image convention for periodic axes: when an atom wraps across a
+    // periodic boundary, the raw displacement is ~box_size, but the physical
+    // displacement is small. Ghost ordering is deterministic in single-process
+    // mode, so the neighbor list stays valid after wrapping.
     let [bx, by, bz] = neighbor.pbc_box;
     let [px, py, pz] = neighbor.pbc_flags;
     let hbx = bx * 0.5;
@@ -422,7 +439,6 @@ fn displacement_exceeded(atoms: &Atom, neighbor: &Neighbor) -> bool {
         let mut dx = atoms.pos[idx][0] - neighbor.last_build_pos[idx][0];
         let mut dy = atoms.pos[idx][1] - neighbor.last_build_pos[idx][1];
         let mut dz = atoms.pos[idx][2] - neighbor.last_build_pos[idx][2];
-        // Minimum-image convention for periodic axes
         if px {
             if dx > hbx { dx -= bx; } else if dx < -hbx { dx += bx; }
         }
@@ -439,12 +455,17 @@ fn displacement_exceeded(atoms: &Atom, neighbor: &Neighbor) -> bool {
     false
 }
 
-///// Helper: check if a rebuild is needed based on atom count change,
+/// Helper: check if a rebuild is needed based on atom count change,
 /// step count, and displacement since last build.
 fn needs_rebuild(atoms: &Atom, neighbor: &Neighbor) -> bool {
     let nlocal = atoms.nlocal as usize;
     // Always rebuild on first call or local atom count change
     if neighbor.last_build_pos.len() != nlocal || nlocal == 0 {
+        return true;
+    }
+    // In MPI mode, ghost ordering is non-deterministic after each borders call,
+    // so force rebuild every step. communicate_only is only set true for single-process.
+    if !atoms.communicate_only {
         return true;
     }
 
@@ -461,15 +482,17 @@ fn needs_rebuild(atoms: &Atom, neighbor: &Neighbor) -> bool {
 }
 
 pub fn sweep_and_prune_neighbor_list(
-    atoms: Res<Atom>,
+    mut atoms: ResMut<Atom>,
     mut neighbor: ResMut<Neighbor>,
     _domain: Res<Domain>,
     _comm: Res<CommResource>,
 ) {
     if !needs_rebuild(&atoms, &neighbor) {
         neighbor.steps_since_build += 1;
+        if _comm.size() == 1 { atoms.communicate_only = true; }
         return;
     }
+    if _comm.size() == 1 { atoms.communicate_only = true; }
 
     save_build_positions(&atoms, &mut neighbor);
     neighbor.sweep_and_prune.clear();
@@ -546,7 +569,8 @@ pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>
     // Sort when neighbor rebuild is needed, or periodically based on sort_every
     neighbor.sort_counter += 1;
     let periodic_sort = neighbor.sort_every > 0 && neighbor.sort_counter >= neighbor.sort_every;
-    if !periodic_sort && !needs_rebuild(&atoms, &neighbor) {
+    let rebuild_needed = needs_rebuild(&atoms, &neighbor);
+    if !periodic_sort && !rebuild_needed {
         return;
     }
     if periodic_sort {
@@ -593,10 +617,36 @@ pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>
             neighbor.last_build_pos[new_i] = old[old_i];
         }
     }
+
+    // Update ghost origin_index: after sort, local atom at old_i is now at new_i.
+    // Build inverse permutation: inv_perm[old_i] = new_i.
+    // Only remap origin_indices pointing to local atoms (< nlocal).
+    // Ghost-of-ghost origin_indices point to other ghosts which aren't sorted.
+    let nghost = atoms.nghost as usize;
+    if nghost > 0 {
+        let mut inv_perm = vec![0u32; nlocal];
+        for (new_i, &old_i) in perm.iter().enumerate() {
+            inv_perm[old_i] = new_i as u32;
+        }
+        for gi in nlocal..(nlocal + nghost) {
+            let old_origin = atoms.origin_index[gi] as usize;
+            if old_origin < nlocal {
+                atoms.origin_index[gi] = inv_perm[old_origin] as i32;
+            }
+        }
+        // When sort was triggered by needs_rebuild, bin_neighbor_list will also rebuild
+        // (same conditions still hold after permutation), so the stale CSR indices
+        // will be replaced before any force computation uses them.
+        // For periodic sort (needs_rebuild was false), we must force a rebuild since
+        // CSR indices are stale but bin_neighbor_list wouldn't otherwise rebuild.
+        if periodic_sort && !rebuild_needed {
+            neighbor.last_build_pos.clear();
+        }
+    }
 }
 
 pub fn bin_neighbor_list(
-    atoms: Res<Atom>,
+    mut atoms: ResMut<Atom>,
     mut neighbor: ResMut<Neighbor>,
     _domain: Res<Domain>,
     _comm: Res<CommResource>,
@@ -606,8 +656,10 @@ pub fn bin_neighbor_list(
 
     if !needs_rebuild(&atoms, &neighbor) {
         neighbor.steps_since_build += 1;
+        if _comm.size() == 1 { atoms.communicate_only = true; }
         return;
     }
+    if _comm.size() == 1 { atoms.communicate_only = true; }
 
     save_build_positions(&atoms, &mut neighbor);
 

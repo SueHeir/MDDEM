@@ -268,6 +268,11 @@ pub struct Atom {
 
     pub dt: f64,
 
+    /// When true, ghost ordering is stable (single-process deterministic iteration),
+    /// so the neighbor list remains valid across ghost rebuilds. In MPI mode this
+    /// stays false, forcing neighbor rebuild every step.
+    pub communicate_only: bool,
+
     pub tag: Vec<u32>,
     pub atom_type: Vec<u32>,
     pub origin_index: Vec<i32>,
@@ -303,6 +308,7 @@ macro_rules! impl_atom_new {
                 nlocal: 0,
                 nghost: 0,
                 dt: 1.0,
+                communicate_only: false,
                 $( $field: Vec::new(), )*
             }
         }
@@ -520,6 +526,9 @@ impl Plugin for AtomPlugin {
 }
 
 fn remove_ghost_atoms(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) {
+    if atoms.communicate_only {
+        return;
+    }
     atoms.truncate_to_nlocal();
     registry.truncate_all(atoms.nlocal as usize);
     atoms.nghost = 0;

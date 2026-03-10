@@ -184,6 +184,13 @@ fn single_process_borders(
     registry: Res<AtomDataRegistry>,
     mut buffers: ResMut<CommBuffers>,
 ) {
+    // Full ghost rebuild: remove old ghosts first
+    if atoms.nghost > 0 {
+        atoms.truncate_to_nlocal();
+        registry.truncate_all(atoms.nlocal as usize);
+        atoms.nghost = 0;
+    }
+
     let local_count = atoms.len() as f64;
     let global_count = comm.all_reduce_sum_f64(local_count);
     atoms.natoms = global_count as u64;
@@ -595,6 +602,16 @@ pub fn borders(
     registry: Res<AtomDataRegistry>,
     mut buffers: ResMut<CommBuffers>,
 ) {
+    // MPI always does full ghost rebuild; communicate_only stays false to force
+    // neighbor rebuild every step (ghost ordering is non-deterministic in MPI).
+
+    // Full ghost rebuild: remove old ghosts first
+    if atoms.nghost > 0 {
+        atoms.truncate_to_nlocal();
+        registry.truncate_all(atoms.nlocal as usize);
+        atoms.nghost = 0;
+    }
+
     let local_count = atoms.len() as f64;
     let global_count = comm.all_reduce_sum_f64(local_count);
     atoms.natoms = global_count as u64;
@@ -697,6 +714,7 @@ pub fn borders(
         scan_end = atoms.nlocal as usize + atoms.nghost as usize;
     }
     buffers.border_send_buff = send_buff;
+
     mpi.world.barrier();
 }
 
