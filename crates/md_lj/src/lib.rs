@@ -173,15 +173,18 @@ pub fn lj_force(
     // Virial is always accumulated (1 fma per pair, negligible cost vs branching every pair).
     // SAFETY: i < nlocal <= atoms.len(), neighbor_offsets has nlocal+1 entries,
     // neighbor_indices[k] < atoms.len() (from CSR construction), j < atoms.len().
+    let pos_ptr = atoms.pos.as_ptr();
+    let force_ptr = atoms.force.as_mut_ptr();
+
     for i in 0..nlocal {
-        let pi = unsafe { *atoms.pos.get_unchecked(i) };
-        let mut fi = unsafe { *atoms.force.get_unchecked(i) };
+        let pi = unsafe { *pos_ptr.add(i) };
+        let mut fi = unsafe { *force_ptr.add(i) };
         let start = unsafe { *neighbor.neighbor_offsets.get_unchecked(i) } as usize;
         let end = unsafe { *neighbor.neighbor_offsets.get_unchecked(i + 1) } as usize;
 
         for k in start..end {
             let j = unsafe { *neighbor.neighbor_indices.get_unchecked(k) } as usize;
-            let pj = unsafe { *atoms.pos.get_unchecked(j) };
+            let pj = unsafe { *pos_ptr.add(j) };
             let dx = pj[0] - pi[0];
             let dy = pj[1] - pi[1];
             let dz = pj[2] - pi[2];
@@ -204,12 +207,12 @@ pub fn lj_force(
             fi[0] -= fx;
             fi[1] -= fy;
             fi[2] -= fz;
-            let fj = unsafe { atoms.force.get_unchecked_mut(j) };
+            let fj = unsafe { force_ptr.add(j).as_mut().unwrap_unchecked() };
             fj[0] += fx;
             fj[1] += fy;
             fj[2] += fz;
         }
-        unsafe { *atoms.force.get_unchecked_mut(i) = fi };
+        unsafe { *force_ptr.add(i) = fi };
     }
 
     virial.virial_sum = virial_sum;

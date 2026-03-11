@@ -4,19 +4,27 @@
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE)
 
-> **Note:** The initial working example of MDDEM was hand-written, but all code has since been touched and expanded by [Claude Code](https://claude.ai/claude-code). This project explores alternative coding patterns to LAMMPS, prioritizing ergonomics — composable plugins, typed configs, and a Rust-native API — over raw feature count or performance. On a personal note, I am not a MD person, my background is in DEM. When you see "Identical physics: LJ 12-6 with cutoff 2.5" I do not know what 12-6 is, I did not check. If you are an MD person don't be shocked that the MD side doesn't make sense.
+> **Note:** The initial working example of MDDEM was hand-written, but all code has since been touched and expanded by [Claude Code](https://claude.ai/claude-code). This project explores alternative coding patterns to LAMMPS, prioritizing ergonomics — composable plugins, dependency injections, typed configs, and a Rust-native API. 
 
 ## What is MDDEM?
 
-MDDEM (pronounced like "Madem" without the 'a') is a particle simulation engine written in Rust. It supports both Discrete Element Method (DEM) for granular materials and Molecular Dynamics (MD) for continuous-potential systems like Lennard-Jones fluids. MPI parallelization is optional and feature-gated — MDDEM builds and runs on a single process without it.
+MDDEM (pronounced like "Madem" without the 'a') is a particle simulation engine written in Rust. It supports both Discrete Element Method (DEM) for granular materials and Molecular Dynamics (MD) for continuous-potential systems like Lennard-Jones fluids. 
 
 The design is built around **composability**. A dependency-injection scheduler (inspired by [Bevy](https://github.com/bevyengine/bevy)) and plugin system let you assemble simulations from independent, reusable pieces. Physics models, integrators, neighbor lists, and output formats are all plugins. Systems declare what resources they need as function arguments; the scheduler injects them automatically and handles execution order.
 
 Configuration follows a two-tier approach. **Tier 1** is declarative TOML config for standard simulations — named fields, typed values, validated at startup. **Tier 2** is the Rust API for complex simulations — `main.rs` composes plugins, and custom systems are real functions with full type safety and IDE autocomplete. Both tiers can be mixed: the [hopper](examples/hopper/) example uses TOML config with custom Rust systems for runtime wall control.
 
+## Why is MDDEM?
+
+At first, I wanted to learn about LAMMPS communication more through rewriting it into Rust.  I also have had many pain points with editing LAMMPS code, and working with LAMMPS scripts, and wanted to see if a scheduler with dependency injection would work for something like this (big fan of bevy).
+
+Now that Claude code is good enough to debug MPI communication neighbor list problems (it still struggles a lot with these, don't we all), I have expanded the scope to hopefully be a nice starting place for anyone wanting to try and vibe code a MD or DEM simulation in rust. **I would not trust this code for anything you want to publish.** I also would not contribute to this code in a serious manual fashion. View it as a playground to test out AI agents for whatever work you're doing. That being said, it's producing reasonable physics results, at about 90% the performance of LAMMPS. 
+
+If you're unsure about why this is even a repo (I kinda agree with you), I would look at the [hopper](examples/hopper/) example first. It's very simple, but shows how easy it is to add your own code into the mix. 
+
 ## Installation
 
-MDDEM is not on crates.io. Add it as a git dependency:
+MDDEM is not on crates.io yet. Add it as a git dependency:
 
 ```toml
 [dependencies]
@@ -149,36 +157,6 @@ mpiexec -n 4 ./target/release/my_simulation config.toml
 cargo run --release -- config.toml --schedule
 ```
 
-## Configuration
-
-Each plugin owns its TOML section. The full set of config sections:
-
-| Section | Purpose |
-|---|---|
-| `[comm]` | MPI processor grid (`processors_x/y/z`) |
-| `[domain]` | Box bounds, periodic boundaries |
-| `[neighbor]` | Skin fraction, bin size |
-| `[[dem.materials]]` | Named material types (Young's modulus, Poisson ratio, restitution, friction) |
-| `[[particles.insert]]` | Random particle insertion (material, count, radius, density, velocity) |
-| `[gravity]` | Body force components (`gx`, `gy`, `gz`) |
-| `[[wall]]` | Plane wall contacts (point, normal, optional bounds, material) |
-| `[lj]` | LJ 12-6 parameters (epsilon, sigma, cutoff) |
-| `[thermostat]` | Nose-Hoover NVT (temperature, coupling) |
-| `[lattice]` | FCC initialization (density, temperature, mass) |
-| `[measure]` | RDF, MSD, pressure measurement intervals |
-| `[langevin]` | Langevin thermostat (temperature, damping, group) |
-| `[[group]]` | Named atom groups (type and region filters) |
-| `[[addforce]]` | Constant external force on a group |
-| `[[setforce]]` | Override force on a group |
-| `[[freeze]]` | Zero velocity and force on a group |
-| `[[move_linear]]` | Constant velocity on a group |
-| `[run]` or `[[run]]` | Timesteps, thermo interval, per-stage overrides |
-| `[dump]` | Atom data output (interval, format: text/binary) |
-| `[restart]` | Restart files (interval, format: bincode/json) |
-| `[vtp]` | VTP visualization output |
-
-Multiple materials and insert blocks are supported — mixed-material contacts use geometric-mean mixing (LAMMPS convention). Multi-stage runs use `[[run]]` arrays where each stage can override dump/restart/VTP intervals. See the [examples](examples/) for full configs.
-
 ## What's Included
 
 ### DEM (Granular)
@@ -238,7 +216,7 @@ Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). 
 |  32,000 |           81.2 |            91.9 |  1.1x |
 | 100,920 |           26.1 |            29.0 |  1.1x |
 
-LAMMPS is ~1.1x faster at scale, with consistent O(N) scaling in both codes. The force loop (52% of MDDEM runtime) uses LAMMPS-style precomputed constants with a single reciprocal per pair. The neighbor list build (17% of runtime) uses CSR bins with a forward stencil, sorted position caches, sorted neighbor indices for sequential cache access, and unsafe bounds-check elimination. The DI scheduler caches downcast pointers at system entry so `Res<T>`/`ResMut<T>` access is a direct dereference with no dynamic dispatch in hot loops.
+LAMMPS is ~1.1x faster at scale, with consistent O(N) scaling in both codes. The force loop (~63% of MDDEM runtime) uses LAMMPS-style precomputed constants with a single reciprocal per pair. The neighbor list build (~29% of runtime) uses CSR bins with a forward stencil, sorted position caches, sorted neighbor indices for sequential cache access, and unsafe bounds-check elimination. The DI scheduler caches downcast pointers at system entry so `Res<T>`/`ResMut<T>` access is a direct dereference with no dynamic dispatch in hot loops.
 
 MPI benchmark (4 processes, 2x2x1 decomposition) on the same hardware:
 
@@ -250,7 +228,7 @@ MPI benchmark (4 processes, 2x2x1 decomposition) on the same hardware:
 |  32,000 |            283 |             323 |         3.48x |  1.1x |
 | 100,920 |           91.7 |             105 |         3.51x |  1.1x |
 
-\* The 108-atom MPI case is excluded — with 2x2x1 decomposition, subdomains are smaller than the ghost cutoff, producing invalid physics (NaN energies, zero neighbors). Multi-hop ghost communication handles the geometry correctly, but 27 atoms per rank is below the practical minimum for domain decomposition.
+\* The 108-atom MPI case is excluded — with 2x2x1 decomposition, subdomains are smaller than the ghost cutoff, producing invalid physics (NaN energies, zero neighbors). Probably a bug.
 
 MDDEM MPI achieves 2.4-3.5x speedup over single-core at scale, with the ratio to LAMMPS narrowing to 1.1x at 32k+ atoms. Spatial sorting of atoms by bin is enabled in both single-core and MPI modes, improving cache locality for force and neighbor list computations. Communication uses per-dimension exchange with non-blocking sends, multi-hop ghost forwarding when needed, and lightweight ghost position updates between neighbor rebuilds.
 
