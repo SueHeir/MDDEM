@@ -166,6 +166,12 @@ Each plugin owns its TOML section. The full set of config sections:
 | `[thermostat]` | Nose-Hoover NVT (temperature, coupling) |
 | `[lattice]` | FCC initialization (density, temperature, mass) |
 | `[measure]` | RDF, MSD, pressure measurement intervals |
+| `[langevin]` | Langevin thermostat (temperature, damping, group) |
+| `[[group]]` | Named atom groups (type and region filters) |
+| `[[addforce]]` | Constant external force on a group |
+| `[[setforce]]` | Override force on a group |
+| `[[freeze]]` | Zero velocity and force on a group |
+| `[[move_linear]]` | Constant velocity on a group |
 | `[run]` or `[[run]]` | Timesteps, thermo interval, per-stage overrides |
 | `[dump]` | Atom data output (interval, format: text/binary) |
 | `[restart]` | Restart files (interval, format: bincode/json) |
@@ -188,6 +194,7 @@ Multiple materials and insert blocks are supported — mixed-material contacts u
 ### MD (Molecular)
 - Lennard-Jones 12-6 with cutoff, virial accumulator, and tail corrections
 - Nose-Hoover NVT thermostat (symmetric Liouville splitting)
+- Langevin thermostat (stochastic friction + random force, group-aware)
 - FCC lattice initialization with Maxwell-Boltzmann velocities
 - Radial distribution function, mean square displacement, virial pressure
 
@@ -196,6 +203,8 @@ Multiple materials and insert blocks are supported — mixed-material contacts u
 - Single-process mode with ghost atoms for periodic boundaries
 - Bin-based neighbor lists with CSR storage and forward-only stencil
 - Brute force and sweep-and-prune neighbor lists also available
+- Named atom groups (`[[group]]`) with type and region filters
+- Fixes: AddForce, SetForce, Freeze, MoveLinear (group-based)
 - TOML config with `serde` validation and `deny_unknown_fields` on all config structs
 - Dump files (CSV/binary), restart files (bincode/JSON), VTP visualization
 - Generic restart serialization — any registered `AtomData` extension is automatically saved/restored
@@ -210,6 +219,9 @@ Multiple materials and insert blocks are supported — mixed-material contacts u
 | [granular_gas_benchmark](examples/granular_gas_benchmark/) | Haff's cooling law validation with LAMMPS comparison | `cargo run --example granular_gas_benchmark -- examples/granular_gas_benchmark/config.toml` |
 | [hopper](examples/hopper/) | 2D slot hopper with angled walls, gravity, and simulation states | `cargo run --example hopper -- examples/hopper/config.toml` |
 | [lj_argon](examples/lj_argon/) | LJ fluid validated against liquid Argon (RDF, MSD, pressure) | `cargo run --release --example lj_argon -- examples/lj_argon/config.toml` |
+| [lj_langevin](examples/lj_langevin/) | LJ fluid with Langevin thermostat | `cargo run --release --example lj_langevin -- examples/lj_langevin/config.toml` |
+| [group_freeze](examples/group_freeze/) | Group-based freeze fix demonstration | `cargo run --release --example group_freeze -- examples/group_freeze/config.toml` |
+| [poiseuille_flow](examples/poiseuille_flow/) | Poiseuille flow with body force and frozen walls | `cargo run --release --example poiseuille_flow -- examples/poiseuille_flow/config.toml` |
 | [toml_single](examples/toml_single/) | Programmatic config — no TOML file needed | `cargo run --example toml_single` |
 
 DEM examples include `validate.py` scripts for physics checks (Haff's law cooling, hopper settling). The `lj_argon` example validates against known liquid Argon properties (RDF, MSD, pressure) and generates diagnostic plots. Run `./validate.sh` to execute all tests and validations.
@@ -220,40 +232,38 @@ Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). 
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
 |--------:|---------------:|----------------:|------:|
-|     108 |         13,920 |          30,616 |  2.2x |
-|   1,000 |          1,688 |           2,857 |  1.7x |
-|  10,000 |          182.3 |             290 |  1.6x |
-|  32,000 |           57.6 |            90.4 |  1.6x |
-| 100,920 |           18.3 |            28.4 |  1.6x |
+|     108 |         13,757 |          30,588 |  2.2x |
+|   1,000 |          1,720 |           2,892 |  1.7x |
+|  10,000 |          183.8 |           291.9 |  1.6x |
+|  32,000 |           58.7 |            91.3 |  1.6x |
+| 100,920 |           18.9 |            28.6 |  1.5x |
 
-LAMMPS is ~1.6x faster at scale, with consistent O(N) scaling in both codes. The gap is primarily in the force loop (60% of MDDEM runtime), where LAMMPS benefits from decades of hand-tuned SIMD and cache optimization. The neighbor list build (22% of runtime) uses CSR bins with a forward stencil, sorted position caches, sorted neighbor indices for sequential cache access, and unsafe bounds-check elimination.
+LAMMPS is ~1.5-1.7x faster at scale, with consistent O(N) scaling in both codes. The gap is primarily in the force loop (60% of MDDEM runtime), where LAMMPS benefits from decades of hand-tuned SIMD and cache optimization. The neighbor list build (22% of runtime) uses CSR bins with a forward stencil, sorted position caches, sorted neighbor indices for sequential cache access, and unsafe bounds-check elimination.
 
 MPI benchmark (4 processes, 2x2x1 decomposition) on the same hardware:
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
 |--------:|---------------:|----------------:|------:|
-|     108 |         11,166 |          40,418 |  3.6x |
-|   1,000 |          3,179 |           8,836 |  2.8x |
-|  10,000 |          497.9 |           1,041 |  2.1x |
-|  32,000 |          183.5 |           313.6 |  1.7x |
-| 100,920 |           61.3 |           103.0 |  1.7x |
+|     108 |          6,984 |          27,756 |  4.0x |
+|   1,000 |          1,579 |           8,355 |  5.3x |
+|  10,000 |          111.4 |           417.6 |  3.7x |
+|  32,000 |           47.2 |           159.1 |  3.4x |
+| 100,920 |           25.9 |            55.1 |  2.1x |
 
-At scale (32k+ atoms), MDDEM achieves ~3.2x speedup on 4 cores vs single-core, while LAMMPS achieves ~3.5x — comparable parallel efficiency. At small atom counts, MPI overhead dominates and both codes show diminishing returns.
+MDDEM MPI currently has significant overhead — at 32k atoms, 4-process MPI is slower than single-core (47 vs 59 step/s), while LAMMPS achieves ~1.7x speedup. At 100k atoms the gap narrows to 2.1x. MPI communication optimization (non-blocking sends, buffer reuse, per-dimension exchange) is a priority for future work.
 
 ## Roadmap
 
 Planned features, organized by implementation wave:
 
-### Wave 1: Foundation
-1. **Groups** — Named atom subsets (`[[group]]`) for selective operations (thermostat a region, freeze a surface)
-2. **Custom thermo computes** — `ThermoCompute` trait + configurable thermo columns
-
-### Wave 2: Small, High-Value
-3. **Langevin thermostat** — Stochastic friction + random force
-4. **AddForce / SetForce** — Constant external forces on groups
-5. **Shrink-wrap boundaries** — Auto-expanding domain per axis
+### Completed
+1. ~~**Groups**~~ — Named atom subsets (`[[group]]`) for selective operations
+2. ~~**Custom thermo computes**~~ — `ThermoCompute` trait + configurable thermo columns
+3. ~~**Langevin thermostat**~~ — Stochastic friction + random force
+4. ~~**AddForce / SetForce / Freeze / MoveLinear**~~ — Group-based atom manipulation fixes
 
 ### Wave 3: Medium Complexity
+5. **Shrink-wrap boundaries** — Auto-expanding domain per axis
 6. **Energy minimization** — CG + FIRE, runs as a `[[run]]` stage
 7. **Fix ave/time** — Running time averages to file
 
@@ -302,8 +312,11 @@ These are specialized features that won't be in core. Users can write plugins fo
 | [`dem_wall`](crates/dem_wall/) | Plane wall contact forces |
 | [`md_lj`](crates/md_lj/) | LJ 12-6 pair force with virial and tail corrections |
 | [`md_thermostat`](crates/md_thermostat/) | Nose-Hoover NVT thermostat |
+| [`md_langevin`](crates/md_langevin/) | Langevin thermostat (stochastic friction + random force) |
 | [`md_lattice`](crates/md_lattice/) | FCC lattice initialization |
 | [`md_measure`](crates/md_measure/) | RDF, MSD, virial pressure |
+| [`mddem_fixes`](crates/mddem_fixes/) | AddForce, SetForce, Freeze, MoveLinear fixes |
+| [`mddem_test_utils`](crates/mddem_test_utils/) | Shared test helpers |
 
 A simulation is composed by adding plugin groups to an `App`:
 

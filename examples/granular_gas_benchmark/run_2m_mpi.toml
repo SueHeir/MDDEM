@@ -1,0 +1,41 @@
+[comm]
+processors_x = 2
+processors_y = 2
+processors_z = 1
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.005
+rebuild_on_pbc_wrap = true
+
+[domain]
+x_low = 0.0
+x_high = 0.025
+y_low = 0.0
+y_high = 0.025
+z_low = 0.0
+z_high = 0.025
+periodic_x = true
+periodic_y = true
+periodic_z = true
+
+[[dem.materials]]
+name = "glass"
+youngs_mod = 8.7e9
+poisson_ratio = 0.3
+restitution = 0.95
+friction = 0.4
+
+[[particles.insert]]
+material = "glass"
+count = 500
+radius = 0.001
+density = 2500.0
+velocity = 0.5
+
+[output]
+dir = "examples/granular_gas_benchmark/output_mpi"
+
+[run]
+thermo = 500
+steps = 2000000

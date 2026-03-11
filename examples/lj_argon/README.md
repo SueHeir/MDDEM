@@ -11,10 +11,10 @@ Lennard-Jones fluid simulation in reduced units, validated against known liquid 
 - 100,000 steps
 
 ## Validated Results
-- **g(r) first peak**: r = 1.07 sigma, height = 2.89 (expected ~1.0 sigma, ~2.7-3.0)
-- **Diffusion coefficient**: D* = 0.038 (expected 0.035-0.042)
-- **Virial pressure**: P* ~ 1.7 (with tail corrections)
-- **g(r) -> 1** at large r: confirmed (mean = 1.01)
+- **g(r) first peak**: r = 1.09 sigma, height = 2.94 (expected ~1.0 sigma, ~2.4-3.5)
+- **Diffusion coefficient**: D* = 0.041 (expected 0.035-0.042)
+- **Virial pressure**: P* ~ 0.96 (with tail corrections)
+- **g(r) -> 1** at large r: confirmed (mean = 1.015)
 
 ## Usage
 
