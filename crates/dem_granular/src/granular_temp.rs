@@ -56,6 +56,19 @@ pub fn print_granular_temperature(
     }
     let vel_diff_sum = comm.all_reduce_sum_f64(vel_diff);
     let granular_temperature = vel_diff_sum / (3.0 * global_mass);
+
+    // KE computation — all ranks must participate in allreduce
+    let mut local_ke = 0.0;
+    for i in 0..nlocal {
+        local_ke += 0.5
+            * atoms.mass[i]
+            * (atoms.vel[i][0].powi(2) + atoms.vel[i][1].powi(2) + atoms.vel[i][2].powi(2));
+    }
+    let global_ke = comm.all_reduce_sum_f64(local_ke);
+
+    // Total momentum magnitude (should be ~conserved)
+    let mom_mag = (global_mv_x * global_mv_x + global_mv_y * global_mv_y + global_mv_z * global_mv_z).sqrt();
+
     if comm.rank() != 0 {
         return;
     }
@@ -83,17 +96,6 @@ pub fn print_granular_temperature(
             .open(&data_path)
             .unwrap()
     };
-    // Also compute total KE for energy tracking
-    let mut local_ke = 0.0;
-    for i in 0..nlocal {
-        local_ke += 0.5
-            * atoms.mass[i]
-            * (atoms.vel[i][0].powi(2) + atoms.vel[i][1].powi(2) + atoms.vel[i][2].powi(2));
-    }
-    let global_ke = comm.all_reduce_sum_f64(local_ke);
-
-    // Total momentum magnitude (should be ~conserved)
-    let mom_mag = (global_mv_x * global_mv_x + global_mv_y * global_mv_y + global_mv_z * global_mv_z).sqrt();
 
     writeln!(
         &mut file,
