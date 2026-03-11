@@ -15,39 +15,39 @@ impl Plugin for RotationalDynamicsPlugin {
     }
 }
 
-pub fn initial_rotation(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) {
-    let dem = registry.expect::<DemAtom>("initial_rotation");
+pub fn initial_rotation(atoms: Res<Atom>, registry: Res<AtomDataRegistry>) {
+    let mut dem = registry.expect_mut::<DemAtom>("initial_rotation");
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
 
     for i in 0..nlocal {
         let inv_inertia = dem.inv_inertia[i];
 
-        atoms.omega[i][0] += 0.5 * dt * atoms.torque[i][0] * inv_inertia;
-        atoms.omega[i][1] += 0.5 * dt * atoms.torque[i][1] * inv_inertia;
-        atoms.omega[i][2] += 0.5 * dt * atoms.torque[i][2] * inv_inertia;
+        dem.omega[i][0] += 0.5 * dt * dem.torque[i][0] * inv_inertia;
+        dem.omega[i][1] += 0.5 * dt * dem.torque[i][1] * inv_inertia;
+        dem.omega[i][2] += 0.5 * dt * dem.torque[i][2] * inv_inertia;
 
-        let omega = Vector3::new(atoms.omega[i][0], atoms.omega[i][1], atoms.omega[i][2]);
+        let omega = Vector3::new(dem.omega[i][0], dem.omega[i][1], dem.omega[i][2]);
         let angle = omega.norm() * dt;
         if angle > 1e-14 {
             let axis = UnitVector3::new_normalize(omega);
             let dq = nalgebra::UnitQuaternion::from_axis_angle(&axis, angle);
-            atoms.quaternion[i] = dq * atoms.quaternion[i];
+            dem.quaternion[i] = dq * dem.quaternion[i];
         }
     }
 }
 
-pub fn final_rotation(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) {
-    let dem = registry.expect::<DemAtom>("final_rotation");
+pub fn final_rotation(atoms: Res<Atom>, registry: Res<AtomDataRegistry>) {
+    let mut dem = registry.expect_mut::<DemAtom>("final_rotation");
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
 
     for i in 0..nlocal {
         let inv_inertia = dem.inv_inertia[i];
 
-        atoms.omega[i][0] += 0.5 * dt * atoms.torque[i][0] * inv_inertia;
-        atoms.omega[i][1] += 0.5 * dt * atoms.torque[i][1] * inv_inertia;
-        atoms.omega[i][2] += 0.5 * dt * atoms.torque[i][2] * inv_inertia;
+        dem.omega[i][0] += 0.5 * dt * dem.torque[i][0] * inv_inertia;
+        dem.omega[i][1] += 0.5 * dt * dem.torque[i][1] * inv_inertia;
+        dem.omega[i][2] += 0.5 * dt * dem.torque[i][2] * inv_inertia;
     }
 }
 
@@ -66,6 +66,10 @@ mod tests {
         dem.radius.push(radius);
         dem.density.push(density);
         dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
+        dem.quaternion.push(UnitQuaternion::identity());
+        dem.omega.push([0.0; 3]);
+        dem.ang_mom.push([0.0; 3]);
+        dem.torque.push([0.0; 3]);
     }
 
     #[test]
@@ -82,7 +86,7 @@ mod tests {
         let inertia = 0.4 * mass * radius * radius;
 
         // Apply torque around z-axis
-        atom.torque[0][2] = 1.0;
+        dem.torque[0][2] = 1.0;
         atom.nlocal = 1;
         atom.natoms = 1;
 
@@ -95,13 +99,14 @@ mod tests {
         app.organize_systems();
         app.run();
 
-        let atom = app.get_resource_ref::<Atom>().unwrap();
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let dem = registry.expect::<DemAtom>("test");
         let expected_omega_z = 0.5 * dt * 1.0 / inertia;
         assert!(
-            (atom.omega[0][2] - expected_omega_z).abs() < 1e-20,
+            (dem.omega[0][2] - expected_omega_z).abs() < 1e-20,
             "omega_z should be {}, got {}",
             expected_omega_z,
-            atom.omega[0][2]
+            dem.omega[0][2]
         );
     }
 
@@ -114,7 +119,7 @@ mod tests {
         atom.dt = 1e-5;
 
         push_test_atom(&mut atom, &mut dem, 0, radius);
-        atom.omega[0][2] = 100.0;
+        dem.omega[0][2] = 100.0;
         atom.nlocal = 1;
         atom.natoms = 1;
 
@@ -127,8 +132,9 @@ mod tests {
         app.organize_systems();
         app.run();
 
-        let atom = app.get_resource_ref::<Atom>().unwrap();
-        let q = atom.quaternion[0];
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let dem = registry.expect::<DemAtom>("test");
+        let q = dem.quaternion[0];
         let identity = UnitQuaternion::identity();
         let angle = q.angle_to(&identity);
         assert!(

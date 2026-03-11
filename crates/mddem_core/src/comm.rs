@@ -5,7 +5,7 @@ use mddem_scheduler::prelude::*;
 use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
 
-use crate::{Atom, AtomDataRegistry, Config, Domain, ForceMPI};
+use crate::{Atom, AtomDataRegistry, Config, Domain};
 
 #[cfg(feature = "mpi_backend")]
 use std::sync::Mutex;
@@ -63,12 +63,8 @@ pub trait CommBackend: Send + Sync + 'static {
     fn send_f64(&self, dest: i32, buf: &[f64]);
     fn recv_f64(&self, source: i32) -> Vec<f64>;
     fn recv_f64_any(&self) -> Vec<f64>;
-    fn send_force(&self, dest: i32, buf: &[ForceMPI]);
-    fn recv_force(&self, source: i32) -> Vec<ForceMPI>;
-
     // Deadlock-free sendrecv: send to dest while receiving from source
     fn sendrecv_f64(&self, dest: i32, send_buf: &[f64], source: i32) -> Vec<f64>;
-    fn sendrecv_force(&self, dest: i32, send_buf: &[ForceMPI], source: i32) -> Vec<ForceMPI>;
 }
 
 /// Wraps a [`CommBackend`] implementation, used as `Res<CommResource>` in systems.
@@ -148,17 +144,8 @@ impl CommBackend for SingleProcessComm {
     fn recv_f64_any(&self) -> Vec<f64> {
         unreachable!("SingleProcessComm::recv_f64_any should never be called");
     }
-    fn send_force(&self, _dest: i32, _buf: &[ForceMPI]) {
-        unreachable!("SingleProcessComm::send_force should never be called");
-    }
-    fn recv_force(&self, _source: i32) -> Vec<ForceMPI> {
-        unreachable!("SingleProcessComm::recv_force should never be called");
-    }
     fn sendrecv_f64(&self, _dest: i32, _send_buf: &[f64], _source: i32) -> Vec<f64> {
         unreachable!("SingleProcessComm::sendrecv_f64 should never be called");
-    }
-    fn sendrecv_force(&self, _dest: i32, _send_buf: &[ForceMPI], _source: i32) -> Vec<ForceMPI> {
-        unreachable!("SingleProcessComm::sendrecv_force should never be called");
     }
 }
 
@@ -296,15 +283,6 @@ impl CommBackend for MpiCommBackend {
         msg
     }
 
-    fn send_force(&self, dest: i32, buf: &[ForceMPI]) {
-        self.world.process_at_rank(dest).send(buf);
-    }
-
-    fn recv_force(&self, source: i32) -> Vec<ForceMPI> {
-        let (msg, _status) = self.world.process_at_rank(source).receive_vec::<ForceMPI>();
-        msg
-    }
-
     fn sendrecv_f64(&self, dest: i32, send_buf: &[f64], source: i32) -> Vec<f64> {
         // Non-blocking send + blocking recv: deadlock-free for any dest/source combination
         let world = &self.world;
@@ -317,16 +295,6 @@ impl CommBackend for MpiCommBackend {
         })
     }
 
-    fn sendrecv_force(&self, dest: i32, send_buf: &[ForceMPI], source: i32) -> Vec<ForceMPI> {
-        let world = &self.world;
-        mpi::request::scope(|scope| {
-            let sreq = world.process_at_rank(dest)
-                .immediate_send(scope, send_buf);
-            let (msg, _status) = world.process_at_rank(source).receive_vec::<ForceMPI>();
-            sreq.wait();
-            msg
-        })
-    }
 }
 
 // ── Unified CommunicationPlugin ──────────────────────────────────────────────
@@ -516,8 +484,8 @@ fn unpack_ghost_atoms(atoms: &mut Atom, registry: &AtomDataRegistry, buf: &[f64]
 
 // ── Forward comm (lightweight ghost position update) ─────────────────────────
 
-/// Per-atom stride in forward_comm: pos(3) + vel(3) + omega(3) = 9 f64s.
-const FORWARD_PACK_SIZE: usize = 9;
+/// Per-atom stride in forward_comm: pos(3) + vel(3) = 6 f64s (base fields only).
+const FORWARD_PACK_SIZE: usize = 6;
 
 /// For self-sends (single-process periodic), recompute the periodic offset for
 /// an atom based on its current position. After PBC wrapping, an atom originally
@@ -545,23 +513,28 @@ fn compute_per_atom_offset(
     offset
 }
 
-fn unpack_forward(msg: &[f64], atoms: &mut Atom, recv_start: usize, recv_count: usize) {
+fn unpack_forward(msg: &[f64], atoms: &mut Atom, registry: &AtomDataRegistry, recv_start: usize, recv_count: usize, extra_per_atom: usize) {
+    let stride = FORWARD_PACK_SIZE + extra_per_atom;
     for k in 0..recv_count {
-        let base = k * FORWARD_PACK_SIZE;
+        let base = k * stride;
         atoms.pos[recv_start + k] = [msg[base], msg[base + 1], msg[base + 2]];
         atoms.vel[recv_start + k] = [msg[base + 3], msg[base + 4], msg[base + 5]];
-        atoms.omega[recv_start + k] = [msg[base + 6], msg[base + 7], msg[base + 8]];
+        if extra_per_atom > 0 {
+            registry.unpack_forward_all(recv_start + k, &msg[base + FORWARD_PACK_SIZE..]);
+        }
     }
 }
 
 fn forward_comm(
     atoms: &mut Atom,
+    registry: &AtomDataRegistry,
     topo: &CommTopology,
     comm: &dyn CommBackend,
     domain: &Domain,
     buf: &mut Vec<f64>,
 ) {
     let rank = comm.rank();
+    let extra = registry.forward_comm_size();
     for swap in &topo.swap_data {
         buf.clear();
 
@@ -571,7 +544,7 @@ fn forward_comm(
         // Recomputing ensures the ghost ends up at the correct periodic image.
         let is_self_send = swap.to_proc == rank;
 
-        // Pack positions, velocities, and omega (9 f64s per atom) with periodic offset
+        // Pack positions and velocities (6 f64s per atom) + registry forward fields
         for &idx in &swap.send_indices {
             let offset = if is_self_send {
                 compute_per_atom_offset(
@@ -590,24 +563,22 @@ fn forward_comm(
             buf.push(atoms.vel[idx][0]);
             buf.push(atoms.vel[idx][1]);
             buf.push(atoms.vel[idx][2]);
-            buf.push(atoms.omega[idx][0]);
-            buf.push(atoms.omega[idx][1]);
-            buf.push(atoms.omega[idx][2]);
+            registry.pack_forward_all(idx, buf);
         }
 
         if swap.to_proc == rank {
             // Self-send: copy directly into ghost data
-            unpack_forward(buf, atoms, swap.recv_start, swap.recv_count);
+            unpack_forward(buf, atoms, registry, swap.recv_start, swap.recv_count, extra);
         } else {
             // MPI: sendrecv is deadlock-free regardless of symmetric/asymmetric
             if swap.to_proc != -1 && swap.from_proc != -1 {
                 let msg = comm.sendrecv_f64(swap.to_proc, buf, swap.from_proc);
-                unpack_forward(&msg, atoms, swap.recv_start, swap.recv_count);
+                unpack_forward(&msg, atoms, registry, swap.recv_start, swap.recv_count, extra);
             } else if swap.to_proc != -1 {
                 comm.send_f64(swap.to_proc, buf);
             } else if swap.from_proc != -1 {
                 let msg = comm.recv_f64(swap.from_proc);
-                unpack_forward(&msg, atoms, swap.recv_start, swap.recv_count);
+                unpack_forward(&msg, atoms, registry, swap.recv_start, swap.recv_count, extra);
             }
         }
     }
@@ -629,7 +600,7 @@ pub fn borders(
     // forward_comm recomputes per-atom periodic offsets for self-sends, so ghost
     // positions stay correct even when atoms cross PBC boundaries between rebuilds.
     if atoms.communicate_only {
-        forward_comm(&mut atoms, &topo, &**comm, &domain, &mut send_buff);
+        forward_comm(&mut atoms, &registry, &topo, &**comm, &domain, &mut send_buff);
         buffers.border_send_buff = send_buff;
         return;
     }
@@ -754,36 +725,76 @@ pub fn reverse_send_force(
     comm: Res<CommResource>,
     topo: Res<CommTopology>,
     mut atoms: ResMut<Atom>,
+    registry: Res<AtomDataRegistry>,
 ) {
     let rank = comm.rank();
-    let mut send_buff: Vec<ForceMPI> = Vec::new();
+    let mut send_buff: Vec<f64> = Vec::new();
+
+    // Compute per-atom stride once: 5 base (tag + origin_index + force×3) + registry reverse fields
+    let per_atom = 5 + registry.reverse_comm_size();
 
     // Iterate swaps in reverse order (mirrors borders() forward order)
     for swap in topo.swap_data.iter().rev() {
         send_buff.clear();
 
-        // Pack forces from ghost atoms received in this swap
+        // Pack force + origin_index + tag (+ registry reverse fields) per ghost atom
         for i in swap.recv_start..(swap.recv_start + swap.recv_count) {
-            send_buff.push(atoms.get_force_data(i));
+            debug_assert!(atoms.is_ghost[i], "reverse_send_force: atom {} is not ghost", i);
+            send_buff.push(atoms.tag[i] as f64);
+            send_buff.push(atoms.origin_index[i] as f64);
+            send_buff.push(atoms.force[i][0]);
+            send_buff.push(atoms.force[i][1]);
+            send_buff.push(atoms.force[i][2]);
+            registry.pack_reverse_all(i, &mut send_buff);
         }
 
         if swap.from_proc == rank {
             // Self-send: apply forces locally
-            for &force in &send_buff {
-                atoms.apply_force_data(force);
+            for k in 0..swap.recv_count {
+                let base = k * per_atom;
+                let origin = send_buff[base + 1] as usize;
+                debug_assert_eq!(
+                    send_buff[base] as u32, atoms.tag[origin],
+                    "reverse_send_force: tag mismatch"
+                );
+                atoms.force[origin][0] += send_buff[base + 2];
+                atoms.force[origin][1] += send_buff[base + 3];
+                atoms.force[origin][2] += send_buff[base + 4];
+                if per_atom > 5 {
+                    registry.unpack_reverse_all(origin, &send_buff[base + 5..]);
+                }
             }
         } else if swap.from_proc != -1 && swap.to_proc != -1 {
-            // MPI: reverse direction — send back to from_proc, recv from to_proc
-            let msg = comm.sendrecv_force(swap.from_proc, &send_buff, swap.to_proc);
-            for atom in msg {
-                atoms.apply_force_data(atom);
+            let msg = comm.sendrecv_f64(swap.from_proc, &send_buff, swap.to_proc);
+            let recv_count = msg.len() / per_atom;
+            for k in 0..recv_count {
+                let base = k * per_atom;
+                let origin = msg[base + 1] as usize;
+                debug_assert_eq!(
+                    msg[base] as u32, atoms.tag[origin],
+                    "reverse_send_force: tag mismatch"
+                );
+                atoms.force[origin][0] += msg[base + 2];
+                atoms.force[origin][1] += msg[base + 3];
+                atoms.force[origin][2] += msg[base + 4];
+                if per_atom > 5 {
+                    registry.unpack_reverse_all(origin, &msg[base + 5..]);
+                }
             }
         } else if swap.from_proc != -1 {
-            comm.send_force(swap.from_proc, &send_buff);
+            comm.send_f64(swap.from_proc, &send_buff);
         } else if swap.to_proc != -1 {
-            let msg = comm.recv_force(swap.to_proc);
-            for atom in msg {
-                atoms.apply_force_data(atom);
+            let msg = comm.recv_f64(swap.to_proc);
+            let recv_count = msg.len() / per_atom;
+            for k in 0..recv_count {
+                let base = k * per_atom;
+                let origin = msg[base + 1] as usize;
+                atoms.force[origin][0] += msg[base + 2];
+                atoms.force[origin][1] += msg[base + 3];
+                atoms.force[origin][2] += msg[base + 4];
+                if per_atom > 5 {
+                    registry.unpack_reverse_all(origin, &msg[base + 5..]);
+                }
             }
         }
     }

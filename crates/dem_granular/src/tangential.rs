@@ -115,7 +115,7 @@ pub fn mindlin_tangential_force(
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
 ) {
-    let dem = registry.expect::<DemAtom>("mindlin_tangential_force");
+    let mut dem = registry.expect_mut::<DemAtom>("mindlin_tangential_force");
     let mut history = registry.expect_mut::<ContactHistoryStore>("mindlin_tangential_force");
     let dt = atoms.dt;
 
@@ -170,8 +170,8 @@ pub fn mindlin_tangential_force(
 
             let vel_i = Vector3::new(atoms.vel[i][0], atoms.vel[i][1], atoms.vel[i][2]);
             let vel_j = Vector3::new(atoms.vel[j][0], atoms.vel[j][1], atoms.vel[j][2]);
-            let omega_i = Vector3::new(atoms.omega[i][0], atoms.omega[i][1], atoms.omega[i][2]);
-            let omega_j = Vector3::new(atoms.omega[j][0], atoms.omega[j][1], atoms.omega[j][2]);
+            let omega_i = Vector3::new(dem.omega[i][0], dem.omega[i][1], dem.omega[i][2]);
+            let omega_j = Vector3::new(dem.omega[j][0], dem.omega[j][1], dem.omega[j][2]);
 
             let v_contact_i = vel_i + omega_i.cross(&(r1 * n));
             let v_contact_j = vel_j + omega_j.cross(&(-r2 * n));
@@ -222,12 +222,12 @@ pub fn mindlin_tangential_force(
             atoms.force[j][0] -= f_t.x;
             atoms.force[j][1] -= f_t.y;
             atoms.force[j][2] -= f_t.z;
-            atoms.torque[i][0] += torque_i.x;
-            atoms.torque[i][1] += torque_i.y;
-            atoms.torque[i][2] += torque_i.z;
-            atoms.torque[j][0] += torque_j.x;
-            atoms.torque[j][1] += torque_j.y;
-            atoms.torque[j][2] += torque_j.z;
+            dem.torque[i][0] += torque_i.x;
+            dem.torque[i][1] += torque_i.y;
+            dem.torque[i][2] += torque_i.z;
+            dem.torque[j][0] += torque_j.x;
+            dem.torque[j][1] += torque_j.y;
+            dem.torque[j][2] += torque_j.z;
 
             // Store updated spring back (canonical form) and mark active
             let new_spring = sign * s;
@@ -276,6 +276,10 @@ mod tests {
         dem.radius.push(radius);
         dem.density.push(density);
         dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
+        dem.quaternion.push(nalgebra::UnitQuaternion::identity());
+        dem.omega.push([0.0; 3]);
+        dem.ang_mom.push([0.0; 3]);
+        dem.torque.push([0.0; 3]);
         history.contacts.push(Vec::new());
     }
 
@@ -330,8 +334,10 @@ mod tests {
             (atom.force[0][1] + atom.force[1][1]).abs() < 1e-10,
             "tangential forces should be equal and opposite"
         );
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let dem = registry.expect::<DemAtom>("test");
         let torque_mag_0 =
-            (atom.torque[0][0].powi(2) + atom.torque[0][1].powi(2) + atom.torque[0][2].powi(2)).sqrt();
+            (dem.torque[0][0].powi(2) + dem.torque[0][1].powi(2) + dem.torque[0][2].powi(2)).sqrt();
         assert!(torque_mag_0 > 0.0, "atom 0 should have nonzero torque");
     }
 
@@ -429,8 +435,10 @@ mod tests {
             (atom.force[1][0].powi(2) + atom.force[1][1].powi(2) + atom.force[1][2].powi(2)).sqrt();
         assert!(f_mag_0 < 1e-20, "no force for separated atoms");
         assert!(f_mag_1 < 1e-20, "no force for separated atoms");
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let dem = registry.expect::<DemAtom>("test");
         let t_mag_0 =
-            (atom.torque[0][0].powi(2) + atom.torque[0][1].powi(2) + atom.torque[0][2].powi(2)).sqrt();
+            (dem.torque[0][0].powi(2) + dem.torque[0][1].powi(2) + dem.torque[0][2].powi(2)).sqrt();
         assert!(t_mag_0 < 1e-20, "no torque for separated atoms");
     }
 }

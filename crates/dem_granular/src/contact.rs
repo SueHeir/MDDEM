@@ -44,7 +44,7 @@ pub fn hertz_mindlin_contact_force(
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
 ) {
-    let dem = registry.expect::<DemAtom>("hertz_mindlin_contact_force");
+    let mut dem = registry.expect_mut::<DemAtom>("hertz_mindlin_contact_force");
     let mut history =
         registry.expect_mut::<ContactHistoryStore>("hertz_mindlin_contact_force");
     let dt = atoms.dt;
@@ -136,12 +136,12 @@ pub fn hertz_mindlin_contact_force(
         let mu = material_table.friction_ij[mat_i][mat_j];
 
         // Full relative velocity (including angular contributions)
-        let omega_ix = atoms.omega[i][0];
-        let omega_iy = atoms.omega[i][1];
-        let omega_iz = atoms.omega[i][2];
-        let omega_jx = atoms.omega[j][0];
-        let omega_jy = atoms.omega[j][1];
-        let omega_jz = atoms.omega[j][2];
+        let omega_ix = dem.omega[i][0];
+        let omega_iy = dem.omega[i][1];
+        let omega_iz = dem.omega[i][2];
+        let omega_jx = dem.omega[j][0];
+        let omega_jy = dem.omega[j][1];
+        let omega_jz = dem.omega[j][2];
 
         // v_contact_i = vel_i + omega_i × (r1 * n)
         let r1n_x = r1 * nx;
@@ -241,12 +241,12 @@ pub fn hertz_mindlin_contact_force(
         atoms.force[j][0] -= ft_x;
         atoms.force[j][1] -= ft_y;
         atoms.force[j][2] -= ft_z;
-        atoms.torque[i][0] += ti_x;
-        atoms.torque[i][1] += ti_y;
-        atoms.torque[i][2] += ti_z;
-        atoms.torque[j][0] += tj_x;
-        atoms.torque[j][1] += tj_y;
-        atoms.torque[j][2] += tj_z;
+        dem.torque[i][0] += ti_x;
+        dem.torque[i][1] += ti_y;
+        dem.torque[i][2] += ti_z;
+        dem.torque[j][0] += tj_x;
+        dem.torque[j][1] += tj_y;
+        dem.torque[j][2] += tj_z;
 
         // Store updated spring back (canonical form) and mark active
         let new_spring = sign * s;
@@ -312,6 +312,10 @@ mod tests {
         dem.radius.push(radius);
         dem.density.push(density);
         dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
+        dem.quaternion.push(nalgebra::UnitQuaternion::identity());
+        dem.omega.push([0.0; 3]);
+        dem.ang_mom.push([0.0; 3]);
+        dem.torque.push([0.0; 3]);
         history.contacts.push(Vec::new());
     }
 
@@ -411,8 +415,10 @@ mod tests {
             (atom.force[0][1] + atom.force[1][1]).abs() < 1e-10,
             "tangential forces equal and opposite"
         );
-        // Torque present
-        let t_mag = (atom.torque[0][0].powi(2) + atom.torque[0][1].powi(2) + atom.torque[0][2].powi(2)).sqrt();
+        // Torque present (stored in DemAtom via registry)
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let dem = registry.expect::<DemAtom>("test");
+        let t_mag = (dem.torque[0][0].powi(2) + dem.torque[0][1].powi(2) + dem.torque[0][2].powi(2)).sqrt();
         assert!(t_mag > 0.0, "torque on atom 0");
     }
 

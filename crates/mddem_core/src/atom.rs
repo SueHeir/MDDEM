@@ -1,17 +1,14 @@
 use std::{
     any::{Any, TypeId},
     cell::{Ref, RefCell, RefMut},
-    ops::{Index, IndexMut},
 };
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
-#[cfg(feature = "mpi_backend")]
-use mpi::traits::Equivalence;
-use nalgebra::{Quaternion, UnitQuaternion, Vector3};
+use nalgebra::Vector3;
 
 /// Number of f64s packed/unpacked for one atom's base fields.
-pub const ATOM_PACK_SIZE: usize = 28;
+pub const ATOM_PACK_SIZE: usize = 15;
 
 // ── AtomData trait ───────────────────────────────────────────────────────────
 
@@ -24,6 +21,21 @@ pub trait AtomData: Any {
     fn pack(&self, i: usize, buf: &mut Vec<f64>);
     fn unpack(&mut self, buf: &[f64]) -> usize;
     fn apply_permutation(&mut self, perm: &[usize], n: usize);
+
+    /// Pack forward-comm fields (e.g. omega for DEM) into buf.
+    fn pack_forward(&self, _i: usize, _buf: &mut Vec<f64>) {}
+    /// Unpack forward-comm fields; returns number of f64s consumed.
+    fn unpack_forward(&mut self, _i: usize, _buf: &[f64]) -> usize { 0 }
+    /// Pack reverse-comm fields (e.g. torque for DEM) into buf.
+    fn pack_reverse(&self, _i: usize, _buf: &mut Vec<f64>) {}
+    /// Unpack reverse-comm fields; returns number of f64s consumed.
+    fn unpack_reverse(&mut self, _i: usize, _buf: &[f64]) -> usize { 0 }
+    /// Zero per-step accumulators (e.g. torque) for atoms 0..n.
+    fn zero(&mut self, _n: usize) {}
+    /// Number of f64s per atom in forward comm.
+    fn forward_comm_size(&self) -> usize { 0 }
+    /// Number of f64s per atom in reverse comm.
+    fn reverse_comm_size(&self) -> usize { 0 }
 }
 
 // ── AtomDataRegistry ─────────────────────────────────────────────────────────
@@ -128,6 +140,48 @@ impl AtomDataRegistry {
         }
     }
 
+    pub fn pack_forward_all(&self, i: usize, buf: &mut Vec<f64>) {
+        for (_, cell) in &self.stores {
+            cell.borrow().pack_forward(i, buf);
+        }
+    }
+
+    pub fn unpack_forward_all(&self, i: usize, buf: &[f64]) -> usize {
+        let mut pos = 0;
+        for (_, cell) in &self.stores {
+            pos += cell.borrow_mut().unpack_forward(i, &buf[pos..]);
+        }
+        pos
+    }
+
+    pub fn pack_reverse_all(&self, i: usize, buf: &mut Vec<f64>) {
+        for (_, cell) in &self.stores {
+            cell.borrow().pack_reverse(i, buf);
+        }
+    }
+
+    pub fn unpack_reverse_all(&self, i: usize, buf: &[f64]) -> usize {
+        let mut pos = 0;
+        for (_, cell) in &self.stores {
+            pos += cell.borrow_mut().unpack_reverse(i, &buf[pos..]);
+        }
+        pos
+    }
+
+    pub fn zero_all(&self, n: usize) {
+        for (_, cell) in &self.stores {
+            cell.borrow_mut().zero(n);
+        }
+    }
+
+    pub fn forward_comm_size(&self) -> usize {
+        self.stores.iter().map(|(_, cell)| cell.borrow().forward_comm_size()).sum()
+    }
+
+    pub fn reverse_comm_size(&self) -> usize {
+        self.stores.iter().map(|(_, cell)| cell.borrow().reverse_comm_size()).sum()
+    }
+
     pub fn pack_all_for_restart(&self, nlocal: usize) -> Vec<Vec<f64>> {
         self.stores
             .iter()
@@ -153,83 +207,6 @@ impl AtomDataRegistry {
     }
 }
 
-// ── MPI helper types ──────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "mpi_backend", derive(Equivalence))]
-pub struct Vector3f64MPI {
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
-}
-
-impl Index<&'_ usize> for Vector3f64MPI {
-    type Output = f64;
-    fn index(&self, s: &usize) -> &f64 {
-        match s {
-            0 => &self.x,
-            1 => &self.y,
-            2 => &self.z,
-            _ => panic!("unknown field: {}", s),
-        }
-    }
-}
-
-impl IndexMut<&'_ usize> for Vector3f64MPI {
-    fn index_mut(&mut self, s: &usize) -> &mut f64 {
-        match s {
-            0 => &mut self.x,
-            1 => &mut self.y,
-            2 => &mut self.z,
-            _ => panic!("unknown field: {}", s),
-        }
-    }
-}
-
-impl Vector3f64MPI {
-    pub fn new_from_components(x: f64, y: f64, z: f64) -> Vector3f64MPI {
-        Vector3f64MPI { x, y, z }
-    }
-
-    pub fn to_vector3(self) -> Vector3<f64> {
-        Vector3::new(self.x, self.y, self.z)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "mpi_backend", derive(Equivalence))]
-pub struct Quaternionf64MPI {
-    pub i: f64,
-    pub j: f64,
-    pub k: f64,
-    pub w: f64,
-}
-
-impl Quaternionf64MPI {
-    pub fn new(vec: UnitQuaternion<f64>) -> Quaternionf64MPI {
-        Quaternionf64MPI {
-            i: vec.i,
-            j: vec.j,
-            k: vec.k,
-            w: vec.w,
-        }
-    }
-
-    pub fn to_quat(self) -> UnitQuaternion<f64> {
-        UnitQuaternion::from_quaternion(Quaternion::new(self.w, self.i, self.j, self.k))
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "mpi_backend", derive(Equivalence))]
-/// MPI-serializable force + torque payload for ghost → local atom reduction.
-pub struct ForceMPI {
-    pub tag: u32,
-    pub origin_index: u32,
-    pub torque: Vector3f64MPI,
-    pub force: Vector3f64MPI,
-}
-
 // ── Atom Vec field macro ─────────────────────────────────────────────────────
 
 /// Enumerates all per-atom Vec fields with their element types.
@@ -246,10 +223,6 @@ macro_rules! for_each_atom_vec {
             (is_collision, bool),
             (pos, [f64; 3]),
             (vel, [f64; 3]),
-            (quaternion, nalgebra::UnitQuaternion<f64>),
-            (omega, [f64; 3]),
-            (ang_mom, [f64; 3]),
-            (torque, [f64; 3]),
             (force, [f64; 3]),
             (skin, f64),
             (mass, f64),
@@ -286,11 +259,6 @@ pub struct Atom {
     // Interleaved arrays: field[i] = [x, y, z]
     pub pos: Vec<[f64; 3]>,
     pub vel: Vec<[f64; 3]>,
-    // Quaternion (kept as-is, not in hot loops)
-    pub quaternion: Vec<UnitQuaternion<f64>>,
-    pub omega: Vec<[f64; 3]>,
-    pub ang_mom: Vec<[f64; 3]>,
-    pub torque: Vec<[f64; 3]>,
     pub force: Vec<[f64; 3]>,
 
     pub skin: Vec<f64>,
@@ -384,41 +352,6 @@ impl Atom {
         self.tag.iter().cloned().max().unwrap_or(0)
     }
 
-    pub fn get_force_data(&mut self, i: usize) -> ForceMPI {
-        debug_assert!(self.is_ghost[i], "get_force_data called on non-ghost atom {}", i);
-        ForceMPI {
-            tag: self.tag[i],
-            origin_index: self.origin_index[i] as u32,
-            torque: Vector3f64MPI::new_from_components(
-                self.torque[i][0],
-                self.torque[i][1],
-                self.torque[i][2],
-            ),
-            force: Vector3f64MPI::new_from_components(
-                self.force[i][0],
-                self.force[i][1],
-                self.force[i][2],
-            ),
-        }
-    }
-
-    pub fn apply_force_data(&mut self, force_mpi: ForceMPI) {
-        let i = force_mpi.origin_index as usize;
-        debug_assert_eq!(
-            force_mpi.tag, self.tag[i],
-            "apply_force_data: force tag {} != atom tag {} at index {}",
-            force_mpi.tag, self.tag[i], i
-        );
-        let f = force_mpi.force;
-        self.force[i][0] += f.x;
-        self.force[i][1] += f.y;
-        self.force[i][2] += f.z;
-        let t = force_mpi.torque;
-        self.torque[i][0] += t.x;
-        self.torque[i][1] += t.y;
-        self.torque[i][2] += t.z;
-    }
-
     fn pack_atom_inner(&self, i: usize, origin_index_val: f64, pos_offset: Vector3<f64>, buf: &mut Vec<f64>) {
         buf.push(self.tag[i] as f64);
         buf.push(origin_index_val);
@@ -430,20 +363,6 @@ impl Atom {
         buf.push(self.vel[i][0]);
         buf.push(self.vel[i][1]);
         buf.push(self.vel[i][2]);
-        let q = self.quaternion[i];
-        buf.push(q.w);
-        buf.push(q.i);
-        buf.push(q.j);
-        buf.push(q.k);
-        buf.push(self.omega[i][0]);
-        buf.push(self.omega[i][1]);
-        buf.push(self.omega[i][2]);
-        buf.push(self.ang_mom[i][0]);
-        buf.push(self.ang_mom[i][1]);
-        buf.push(self.ang_mom[i][2]);
-        buf.push(self.torque[i][0]);
-        buf.push(self.torque[i][1]);
-        buf.push(self.torque[i][2]);
         buf.push(self.force[i][0]);
         buf.push(self.force[i][1]);
         buf.push(self.force[i][2]);
@@ -466,17 +385,10 @@ impl Atom {
         self.atom_type.push(buf[3] as u32);
         self.pos.push([buf[4], buf[5], buf[6]]);
         self.vel.push([buf[7], buf[8], buf[9]]);
-        self.quaternion
-            .push(UnitQuaternion::from_quaternion(Quaternion::new(
-                buf[10], buf[11], buf[12], buf[13],
-            )));
-        self.omega.push([buf[14], buf[15], buf[16]]);
-        self.ang_mom.push([buf[17], buf[18], buf[19]]);
-        self.torque.push([buf[20], buf[21], buf[22]]);
-        self.force.push([buf[23], buf[24], buf[25]]);
-        self.mass.push(buf[26]);
-        self.inv_mass.push(1.0 / buf[26]);
-        self.is_collision.push(buf[27] == 0.0);
+        self.force.push([buf[10], buf[11], buf[12]]);
+        self.mass.push(buf[13]);
+        self.inv_mass.push(1.0 / buf[13]);
+        self.is_collision.push(buf[14] == 0.0);
         self.is_ghost.push(is_ghost);
         ATOM_PACK_SIZE
     }
@@ -488,15 +400,11 @@ impl Atom {
         self.pos.push([pos.x, pos.y, pos.z]);
         self.vel.push([0.0; 3]);
         self.force.push([0.0; 3]);
-        self.torque.push([0.0; 3]);
         self.mass.push(mass);
         self.inv_mass.push(1.0 / mass);
         self.skin.push(radius);
         self.is_ghost.push(false);
         self.is_collision.push(false);
-        self.quaternion.push(UnitQuaternion::identity());
-        self.omega.push([0.0; 3]);
-        self.ang_mom.push([0.0; 3]);
     }
 }
 
@@ -539,9 +447,9 @@ fn remove_ghost_atoms(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) 
     atoms.nghost = 0;
 }
 
-fn zero_all_forces(mut atoms: ResMut<Atom>) {
+fn zero_all_forces(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) {
     let n = atoms.len();
     atoms.is_collision[..n].fill(false);
     atoms.force[..n].fill([0.0; 3]);
-    atoms.torque[..n].fill([0.0; 3]);
+    registry.zero_all(n);
 }

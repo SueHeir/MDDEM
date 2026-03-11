@@ -184,22 +184,33 @@ struct RestartData {
     vel_x: Vec<f64>,
     vel_y: Vec<f64>,
     vel_z: Vec<f64>,
-    omega_x: Vec<f64>,
-    omega_y: Vec<f64>,
-    omega_z: Vec<f64>,
     force_x: Vec<f64>,
     force_y: Vec<f64>,
     force_z: Vec<f64>,
-    torque_x: Vec<f64>,
-    torque_y: Vec<f64>,
-    torque_z: Vec<f64>,
-    ang_mom_x: Vec<f64>,
-    ang_mom_y: Vec<f64>,
-    ang_mom_z: Vec<f64>,
-    quaternion: Vec<[f64; 4]>,
     mass: Vec<f64>,
     skin: Vec<f64>,
     atom_data_buffers: Vec<Vec<f64>>,
+    // Legacy fields for backwards compatibility with old restart files
+    #[serde(default)]
+    omega_x: Vec<f64>,
+    #[serde(default)]
+    omega_y: Vec<f64>,
+    #[serde(default)]
+    omega_z: Vec<f64>,
+    #[serde(default)]
+    torque_x: Vec<f64>,
+    #[serde(default)]
+    torque_y: Vec<f64>,
+    #[serde(default)]
+    torque_z: Vec<f64>,
+    #[serde(default)]
+    ang_mom_x: Vec<f64>,
+    #[serde(default)]
+    ang_mom_y: Vec<f64>,
+    #[serde(default)]
+    ang_mom_z: Vec<f64>,
+    #[serde(default)]
+    quaternion: Vec<[f64; 4]>,
 }
 
 // ── VTP config ──────────────────────────────────────────────────────────────
@@ -628,27 +639,23 @@ pub fn write_restart(
         vel_x: atoms.vel[..nlocal].iter().map(|v| v[0]).collect(),
         vel_y: atoms.vel[..nlocal].iter().map(|v| v[1]).collect(),
         vel_z: atoms.vel[..nlocal].iter().map(|v| v[2]).collect(),
-        omega_x: atoms.omega[..nlocal].iter().map(|v| v[0]).collect(),
-        omega_y: atoms.omega[..nlocal].iter().map(|v| v[1]).collect(),
-        omega_z: atoms.omega[..nlocal].iter().map(|v| v[2]).collect(),
         force_x: atoms.force[..nlocal].iter().map(|v| v[0]).collect(),
         force_y: atoms.force[..nlocal].iter().map(|v| v[1]).collect(),
         force_z: atoms.force[..nlocal].iter().map(|v| v[2]).collect(),
-        torque_x: atoms.torque[..nlocal].iter().map(|v| v[0]).collect(),
-        torque_y: atoms.torque[..nlocal].iter().map(|v| v[1]).collect(),
-        torque_z: atoms.torque[..nlocal].iter().map(|v| v[2]).collect(),
-        ang_mom_x: atoms.ang_mom[..nlocal].iter().map(|v| v[0]).collect(),
-        ang_mom_y: atoms.ang_mom[..nlocal].iter().map(|v| v[1]).collect(),
-        ang_mom_z: atoms.ang_mom[..nlocal].iter().map(|v| v[2]).collect(),
-        quaternion: (0..nlocal)
-            .map(|i| {
-                let q = atoms.quaternion[i];
-                [q.w, q.i, q.j, q.k]
-            })
-            .collect(),
         mass: atoms.mass[..nlocal].to_vec(),
         skin: atoms.skin[..nlocal].to_vec(),
         atom_data_buffers: registry.pack_all_for_restart(nlocal),
+        // Legacy fields left empty — rotational data now in atom_data_buffers via DemAtom
+        omega_x: Vec::new(),
+        omega_y: Vec::new(),
+        omega_z: Vec::new(),
+        torque_x: Vec::new(),
+        torque_y: Vec::new(),
+        torque_z: Vec::new(),
+        ang_mom_x: Vec::new(),
+        ang_mom_y: Vec::new(),
+        ang_mom_z: Vec::new(),
+        quaternion: Vec::new(),
     };
 
     if let Err(e) = write_restart_inner(&data, &base_dir, step, rank, &restart_config) {
@@ -768,23 +775,8 @@ pub fn read_restart(
         .map(|((&x, &y), &z)| [x, y, z]).collect();
     atoms.vel = data.vel_x.iter().zip(data.vel_y.iter()).zip(data.vel_z.iter())
         .map(|((&x, &y), &z)| [x, y, z]).collect();
-    atoms.omega = data.omega_x.iter().zip(data.omega_y.iter()).zip(data.omega_z.iter())
-        .map(|((&x, &y), &z)| [x, y, z]).collect();
     atoms.force = data.force_x.iter().zip(data.force_y.iter()).zip(data.force_z.iter())
         .map(|((&x, &y), &z)| [x, y, z]).collect();
-    atoms.torque = data.torque_x.iter().zip(data.torque_y.iter()).zip(data.torque_z.iter())
-        .map(|((&x, &y), &z)| [x, y, z]).collect();
-    atoms.ang_mom = data.ang_mom_x.iter().zip(data.ang_mom_y.iter()).zip(data.ang_mom_z.iter())
-        .map(|((&x, &y), &z)| [x, y, z]).collect();
-    atoms.quaternion = data
-        .quaternion
-        .iter()
-        .map(|q| {
-            nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                q[0], q[1], q[2], q[3],
-            ))
-        })
-        .collect();
     atoms.mass = data.mass;
     atoms.inv_mass = atoms.mass.iter().map(|&m| 1.0 / m).collect();
     atoms.skin = data.skin;

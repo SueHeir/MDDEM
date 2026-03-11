@@ -14,8 +14,8 @@ default = ["mpi_backend"]
 mpi_backend = ["dep:mpi", "dep:libffi-sys"]
 
 [dependencies]
-mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.1" }
-mddem_app = { path = "../mddem_app", version = "0.1.1" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.2" }
+mddem_app = { path = "../mddem_app", version = "0.1.2" }
 mpi = { version = "0.8.0", features = ["user-operations", "derive"], optional = true }
 libffi-sys = { version = "2.3.0", features = ["system"], optional = true }
 nalgebra = "0.33.2"

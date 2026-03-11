@@ -611,21 +611,32 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
     build_csr_from_pairs(&mut neighbor, nlocal);
 }
 
-pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>, _comm: Res<CommResource>, registry: Res<AtomDataRegistry>) {
+pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>, comm: Res<CommResource>, registry: Res<AtomDataRegistry>) {
+    // Increment sort_counter first so it stays synchronized across all MPI ranks,
+    // even if some ranks skip sorting due to nlocal == 0 or other conditions.
+    neighbor.sort_counter += 1;
+    let periodic_sort = neighbor.sort_every > 0 && neighbor.sort_counter >= neighbor.sort_every;
+    if periodic_sort {
+        neighbor.sort_counter = 0;
+    }
+
     let nlocal = atoms.nlocal as usize;
     if nlocal == 0 || neighbor.bin_total_cells == 0 || nlocal > atoms.pos.len() {
+        // Even with nothing to sort locally, must participate in the all_reduce
+        // when periodic_sort triggers so all MPI ranks stay synchronized.
+        if periodic_sort {
+            let global_did_sort = comm.all_reduce_sum_f64(0.0);
+            if global_did_sort > 0.0 {
+                neighbor.last_build_pos.clear();
+                atoms.communicate_only = false;
+            }
+        }
         return;
     }
 
-    // Sort when neighbor rebuild is needed, or periodically based on sort_every
-    neighbor.sort_counter += 1;
-    let periodic_sort = neighbor.sort_every > 0 && neighbor.sort_counter >= neighbor.sort_every;
     let rebuild_needed = needs_rebuild(&atoms, &neighbor);
     if !periodic_sort && !rebuild_needed {
         return;
-    }
-    if periodic_sort {
-        neighbor.sort_counter = 0;
     }
 
     let inv_bsx = 1.0 / neighbor.bin_size.x;
@@ -653,46 +664,52 @@ pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>
 
     // Skip permutation if atoms are already in order
     let already_sorted = perm.iter().enumerate().all(|(i, &p)| p == i);
-    if already_sorted {
-        return;
-    }
 
-    atoms.apply_permutation(&perm, nlocal);
-    registry.apply_permutation_all(&perm, nlocal);
+    if !already_sorted {
+        atoms.apply_permutation(&perm, nlocal);
+        registry.apply_permutation_all(&perm, nlocal);
 
-    // Apply the same permutation to last_build_pos so displacement checks
-    // compare the correct atom's current position against its saved position.
-    if neighbor.last_build_pos.len() >= nlocal {
-        let old = neighbor.last_build_pos.clone();
-        for (new_i, &old_i) in perm.iter().enumerate() {
-            neighbor.last_build_pos[new_i] = old[old_i];
-        }
-    }
-
-    // Update ghost origin_index: after sort, local atom at old_i is now at new_i.
-    // Build inverse permutation: inv_perm[old_i] = new_i.
-    // Only remap origin_indices pointing to local atoms (< nlocal).
-    // Ghost-of-ghost origin_indices point to other ghosts which aren't sorted.
-    let nghost = atoms.nghost as usize;
-    if nghost > 0 {
-        let mut inv_perm = vec![0u32; nlocal];
-        for (new_i, &old_i) in perm.iter().enumerate() {
-            inv_perm[old_i] = new_i as u32;
-        }
-        for gi in nlocal..(nlocal + nghost) {
-            let old_origin = atoms.origin_index[gi] as usize;
-            if old_origin < nlocal {
-                atoms.origin_index[gi] = inv_perm[old_origin] as i32;
+        // Apply the same permutation to last_build_pos so displacement checks
+        // compare the correct atom's current position against its saved position.
+        if neighbor.last_build_pos.len() >= nlocal {
+            let old = neighbor.last_build_pos.clone();
+            for (new_i, &old_i) in perm.iter().enumerate() {
+                neighbor.last_build_pos[new_i] = old[old_i];
             }
         }
-        // When sort was triggered by needs_rebuild, bin_neighbor_list will also rebuild
-        // (same conditions still hold after permutation), so the stale CSR indices
-        // will be replaced before any force computation uses them.
-        // For periodic sort (needs_rebuild was false), we must force a rebuild since
-        // CSR indices are stale but bin_neighbor_list wouldn't otherwise rebuild.
-        if periodic_sort && !rebuild_needed {
+
+        // Update ghost origin_index: after sort, local atom at old_i is now at new_i.
+        // Build inverse permutation: inv_perm[old_i] = new_i.
+        // Only remap origin_indices pointing to local atoms (< nlocal).
+        // Ghost-of-ghost origin_indices point to other ghosts which aren't sorted.
+        let nghost = atoms.nghost as usize;
+        if nghost > 0 {
+            let mut inv_perm = vec![0u32; nlocal];
+            for (new_i, &old_i) in perm.iter().enumerate() {
+                inv_perm[old_i] = new_i as u32;
+            }
+            for gi in nlocal..(nlocal + nghost) {
+                let old_origin = atoms.origin_index[gi] as usize;
+                if old_origin < nlocal {
+                    atoms.origin_index[gi] = inv_perm[old_origin] as i32;
+                }
+            }
+        }
+    }
+
+    // After permutation, swap_data.send_indices are stale (they reference pre-sort
+    // local indices). Force a full borders rebuild so new swap_data is generated.
+    // When periodic_sort triggered, all ranks entered this function (they share the
+    // same sort_counter). Use all_reduce to synchronize: if ANY rank permuted, ALL
+    // ranks must do a full borders rebuild (borders uses collective MPI communication
+    // that requires all ranks to follow the same code path).
+    // The all_reduce MUST happen after all early returns so every rank participates.
+    if periodic_sort {
+        let local_did_sort = if already_sorted { 0.0 } else { 1.0 };
+        let global_did_sort = comm.all_reduce_sum_f64(local_did_sort);
+        if global_did_sort > 0.0 {
             neighbor.last_build_pos.clear();
-            atoms.communicate_only = false; // force full borders rebuild after sort
+            atoms.communicate_only = false;
         }
     }
 }

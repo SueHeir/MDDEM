@@ -1,10 +1,10 @@
 //! DEM atom properties: named material types, per-pair mixing tables, and per-atom radius/density.
 
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::f64::consts::PI;
 
 use mddem_app::prelude::*;
-use mddem_derive::AtomData;
+use nalgebra::{Quaternion, UnitQuaternion};
 use serde::Deserialize;
 
 use mddem_core::{AtomData, AtomDataRegistry, AtomPlugin, Config};
@@ -131,12 +131,15 @@ impl MaterialTable {
 
 // ── DemAtom per-atom data ────────────────────────────────────────────────────
 
-/// Per-atom DEM extension data: particle radius, density, and precomputed inverse inertia.
-#[derive(AtomData)]
+/// Per-atom DEM extension data: particle radius, density, inverse inertia, and rotational fields.
 pub struct DemAtom {
     pub radius: Vec<f64>,
     pub density: Vec<f64>,
     pub inv_inertia: Vec<f64>,
+    pub quaternion: Vec<UnitQuaternion<f64>>,
+    pub omega: Vec<[f64; 3]>,
+    pub ang_mom: Vec<[f64; 3]>,
+    pub torque: Vec<[f64; 3]>,
 }
 
 impl Default for DemAtom {
@@ -151,8 +154,136 @@ impl DemAtom {
             radius: Vec::new(),
             density: Vec::new(),
             inv_inertia: Vec::new(),
+            quaternion: Vec::new(),
+            omega: Vec::new(),
+            ang_mom: Vec::new(),
+            torque: Vec::new(),
         }
     }
+}
+
+impl AtomData for DemAtom {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn truncate(&mut self, n: usize) {
+        self.radius.truncate(n);
+        self.density.truncate(n);
+        self.inv_inertia.truncate(n);
+        self.quaternion.truncate(n);
+        self.omega.truncate(n);
+        self.ang_mom.truncate(n);
+        self.torque.truncate(n);
+    }
+
+    fn swap_remove(&mut self, i: usize) {
+        self.radius.swap_remove(i);
+        self.density.swap_remove(i);
+        self.inv_inertia.swap_remove(i);
+        self.quaternion.swap_remove(i);
+        self.omega.swap_remove(i);
+        self.ang_mom.swap_remove(i);
+        self.torque.swap_remove(i);
+    }
+
+    fn pack(&self, i: usize, buf: &mut Vec<f64>) {
+        buf.push(self.radius[i]);
+        buf.push(self.density[i]);
+        buf.push(self.inv_inertia[i]);
+        let q = self.quaternion[i];
+        buf.push(q.w);
+        buf.push(q.i);
+        buf.push(q.j);
+        buf.push(q.k);
+        buf.push(self.omega[i][0]);
+        buf.push(self.omega[i][1]);
+        buf.push(self.omega[i][2]);
+        buf.push(self.ang_mom[i][0]);
+        buf.push(self.ang_mom[i][1]);
+        buf.push(self.ang_mom[i][2]);
+        buf.push(self.torque[i][0]);
+        buf.push(self.torque[i][1]);
+        buf.push(self.torque[i][2]);
+    }
+
+    fn unpack(&mut self, buf: &[f64]) -> usize {
+        self.radius.push(buf[0]);
+        self.density.push(buf[1]);
+        self.inv_inertia.push(buf[2]);
+        self.quaternion.push(UnitQuaternion::from_quaternion(
+            Quaternion::new(buf[3], buf[4], buf[5], buf[6]),
+        ));
+        self.omega.push([buf[7], buf[8], buf[9]]);
+        self.ang_mom.push([buf[10], buf[11], buf[12]]);
+        self.torque.push([buf[13], buf[14], buf[15]]);
+        16
+    }
+
+    fn apply_permutation(&mut self, perm: &[usize], n: usize) {
+        {
+            let scratch: Vec<f64> = perm.iter().map(|&p| self.radius[p]).collect();
+            self.radius[..n].copy_from_slice(&scratch);
+        }
+        {
+            let scratch: Vec<f64> = perm.iter().map(|&p| self.density[p]).collect();
+            self.density[..n].copy_from_slice(&scratch);
+        }
+        {
+            let scratch: Vec<f64> = perm.iter().map(|&p| self.inv_inertia[p]).collect();
+            self.inv_inertia[..n].copy_from_slice(&scratch);
+        }
+        {
+            let scratch: Vec<UnitQuaternion<f64>> = perm.iter().map(|&p| self.quaternion[p]).collect();
+            self.quaternion[..n].copy_from_slice(&scratch);
+        }
+        {
+            let scratch: Vec<[f64; 3]> = perm.iter().map(|&p| self.omega[p]).collect();
+            self.omega[..n].copy_from_slice(&scratch);
+        }
+        {
+            let scratch: Vec<[f64; 3]> = perm.iter().map(|&p| self.ang_mom[p]).collect();
+            self.ang_mom[..n].copy_from_slice(&scratch);
+        }
+        {
+            let scratch: Vec<[f64; 3]> = perm.iter().map(|&p| self.torque[p]).collect();
+            self.torque[..n].copy_from_slice(&scratch);
+        }
+    }
+
+    fn pack_forward(&self, i: usize, buf: &mut Vec<f64>) {
+        buf.push(self.omega[i][0]);
+        buf.push(self.omega[i][1]);
+        buf.push(self.omega[i][2]);
+    }
+
+    fn unpack_forward(&mut self, i: usize, buf: &[f64]) -> usize {
+        self.omega[i] = [buf[0], buf[1], buf[2]];
+        3
+    }
+
+    fn pack_reverse(&self, i: usize, buf: &mut Vec<f64>) {
+        buf.push(self.torque[i][0]);
+        buf.push(self.torque[i][1]);
+        buf.push(self.torque[i][2]);
+    }
+
+    fn unpack_reverse(&mut self, i: usize, buf: &[f64]) -> usize {
+        self.torque[i][0] += buf[0];
+        self.torque[i][1] += buf[1];
+        self.torque[i][2] += buf[2];
+        3
+    }
+
+    fn zero(&mut self, n: usize) {
+        self.torque[..n].fill([0.0; 3]);
+    }
+
+    fn forward_comm_size(&self) -> usize { 3 } // omega
+    fn reverse_comm_size(&self) -> usize { 3 } // torque
 }
 
 #[cfg(test)]

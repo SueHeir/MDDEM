@@ -2,7 +2,6 @@
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
-use nalgebra::UnitQuaternion;
 #[cfg(test)]
 use nalgebra::Vector3;
 use rand_distr::{Distribution, Normal};
@@ -168,15 +167,11 @@ pub fn fcc_insert(
                     atom.pos.push([x, y, z]);
                     atom.vel.push([0.0; 3]);
                     atom.force.push([0.0; 3]);
-                    atom.torque.push([0.0; 3]);
-                    atom.omega.push([0.0; 3]);
-                    atom.ang_mom.push([0.0; 3]);
                     atom.mass.push(mass);
                     atom.inv_mass.push(1.0 / mass);
                     atom.skin.push(lattice.skin);
                     atom.is_ghost.push(false);
-                                        atom.is_collision.push(false);
-                    atom.quaternion.push(UnitQuaternion::identity());
+                    atom.is_collision.push(false);
                     max_tag += 1;
                     atom.nlocal += 1;
                     atom.natoms += 1;

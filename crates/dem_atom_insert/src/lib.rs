@@ -156,10 +156,6 @@ pub fn dem_insert_atoms(
                                                 max_tag += 1;
                         atom.pos.push([x, y, z]);
                         atom.vel.push([0.0; 3]);
-                        atom.quaternion.push(UnitQuaternion::identity());
-                        atom.omega.push([0.0; 3]);
-                        atom.ang_mom.push([0.0; 3]);
-                        atom.torque.push([0.0; 3]);
                         atom.force.push([0.0; 3]);
                         let mass = density * 4.0 / 3.0 * PI * radius.powi(3);
                         atom.mass.push(mass);
@@ -169,6 +165,10 @@ pub fn dem_insert_atoms(
                         dem_data.radius.push(radius);
                         dem_data.density.push(density);
                         dem_data.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
+                        dem_data.quaternion.push(UnitQuaternion::identity());
+                        dem_data.omega.push([0.0; 3]);
+                        dem_data.ang_mom.push([0.0; 3]);
+                        dem_data.torque.push([0.0; 3]);
                     }
                 }
 

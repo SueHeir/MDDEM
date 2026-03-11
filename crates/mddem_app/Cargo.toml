@@ -10,5 +10,5 @@ keywords = ["plugin", "app", "simulation", "ecs"]
 categories = ["simulation"]
 
 [dependencies]
-mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.1" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.2" }
 downcast-rs = "1.2.0"

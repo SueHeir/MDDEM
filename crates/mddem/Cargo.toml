@@ -14,19 +14,19 @@ default = ["mpi_backend"]
 mpi_backend = ["mddem_core/mpi_backend"]
 
 [dependencies]
-mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.1" }
-mddem_app = { path = "../mddem_app", version = "0.1.1" }
-mddem_core = { path = "../mddem_core", version = "0.1.1", default-features = false }
-mddem_neighbor = { path = "../mddem_neighbor", version = "0.1.1" }
-mddem_verlet = { path = "../mddem_verlet", version = "0.1.1" }
-mddem_print = { path = "../mddem_print", version = "0.1.1" }
-dem_atom = { path = "../dem_atom", version = "0.1.1" }
-dem_atom_insert = { path = "../dem_atom_insert", version = "0.1.1" }
-dem_granular = { path = "../dem_granular", version = "0.1.1" }
-dem_gravity = { path = "../dem_gravity", version = "0.1.1" }
-dem_wall = { path = "../dem_wall", version = "0.1.1" }
-md_lj = { path = "../md_lj", version = "0.1.1" }
-md_thermostat = { path = "../md_thermostat", version = "0.1.1" }
-md_lattice = { path = "../md_lattice", version = "0.1.1" }
-md_measure = { path = "../md_measure", version = "0.1.1" }
-mddem_fixes = { path = "../mddem_fixes", version = "0.1.1" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.2" }
+mddem_app = { path = "../mddem_app", version = "0.1.2" }
+mddem_core = { path = "../mddem_core", version = "0.1.2", default-features = false }
+mddem_neighbor = { path = "../mddem_neighbor", version = "0.1.2" }
+mddem_verlet = { path = "../mddem_verlet", version = "0.1.2" }
+mddem_print = { path = "../mddem_print", version = "0.1.2" }
+dem_atom = { path = "../dem_atom", version = "0.1.2" }
+dem_atom_insert = { path = "../dem_atom_insert", version = "0.1.2" }
+dem_granular = { path = "../dem_granular", version = "0.1.2" }
+dem_gravity = { path = "../dem_gravity", version = "0.1.2" }
+dem_wall = { path = "../dem_wall", version = "0.1.2" }
+md_lj = { path = "../md_lj", version = "0.1.2" }
+md_thermostat = { path = "../md_thermostat", version = "0.1.2" }
+md_lattice = { path = "../md_lattice", version = "0.1.2" }
+md_measure = { path = "../md_measure", version = "0.1.2" }
+mddem_fixes = { path = "../mddem_fixes", version = "0.1.2" }
