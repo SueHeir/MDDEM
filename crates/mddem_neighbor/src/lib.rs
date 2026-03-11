@@ -313,9 +313,14 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
     }
 
     let whole_number_of_bins = domain.sub_length / neighbor.bin_min_size;
-    let xi = whole_number_of_bins.x.floor() as i32;
-    let yi = whole_number_of_bins.y.floor() as i32;
-    let zi = whole_number_of_bins.z.floor() as i32;
+    let xi = whole_number_of_bins.x.floor().max(1.0) as i32;
+    let yi = whole_number_of_bins.y.floor().max(1.0) as i32;
+    let zi = whole_number_of_bins.z.floor().max(1.0) as i32;
+    if whole_number_of_bins.x < 1.0 || whole_number_of_bins.y < 1.0 || whole_number_of_bins.z < 1.0 {
+        if comm.rank() == 0 {
+            println!("WARNING: subdomain smaller than bin_size in at least one dimension, clamping to 1 bin");
+        }
+    }
 
     let actual_bin_size = Vector3::new(
         domain.sub_length.x / xi as f64,
@@ -537,17 +542,12 @@ pub fn sweep_and_prune_neighbor_list(
     _domain: Res<Domain>,
     _comm: Res<CommResource>,
 ) {
-    let can_skip_rebuild = _comm.size() == 1;
     if !needs_rebuild(&atoms, &neighbor) {
         neighbor.steps_since_build += 1;
-        if can_skip_rebuild {
-            atoms.communicate_only = true;
-        }
+        atoms.communicate_only = true;
         return;
     }
-    if can_skip_rebuild {
-        atoms.communicate_only = true;
-    }
+    atoms.communicate_only = true;
 
     save_build_positions(&atoms, &mut neighbor);
     neighbor.sweep_and_prune.clear();
@@ -611,9 +611,9 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
     build_csr_from_pairs(&mut neighbor, nlocal);
 }
 
-pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>, comm: Res<CommResource>, registry: Res<AtomDataRegistry>) {
-    // Skip sort in MPI mode — atom reordering interacts with ghost exchange
-    if comm.size() > 1 {
+pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>, _comm: Res<CommResource>, registry: Res<AtomDataRegistry>) {
+    // Skip sort in MPI mode for now — needs exchange coordination
+    if _comm.size() > 1 {
         return;
     }
     let nlocal = atoms.nlocal as usize;
@@ -709,21 +709,12 @@ pub fn bin_neighbor_list(
 ) {
     let nlocal = atoms.nlocal as usize;
     let total = atoms.len();
-    // communicate_only (forward_comm fast path) only works in single-process mode.
-    // MPI mode must do full ghost rebuild every step because forward_comm's
-    // compute_per_atom_offset midpoint heuristic doesn't handle sub-domains.
-    let can_skip_rebuild = _comm.size() == 1;
-
     if !needs_rebuild(&atoms, &neighbor) {
         neighbor.steps_since_build += 1;
-        if can_skip_rebuild {
-            atoms.communicate_only = true;
-        }
+        atoms.communicate_only = true;
         return;
     }
-    if can_skip_rebuild {
-        atoms.communicate_only = true;
-    }
+    atoms.communicate_only = true;
 
     save_build_positions(&atoms, &mut neighbor);
 

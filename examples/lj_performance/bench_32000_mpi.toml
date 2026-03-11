@@ -1,0 +1,54 @@
+# LJ performance benchmark: 32,000 atoms, 200 steps, MPI 2x2x1
+# Domain: 20x20x20 FCC unit cells (4 atoms/cell = 32,000 atoms)
+
+[comm]
+processors_x = 2
+processors_y = 2
+processors_z = 1
+
+[domain]
+x_low = 0.0
+x_high = 33.591924
+y_low = 0.0
+y_high = 33.591924
+z_low = 0.0
+z_high = 33.591924
+periodic_x = true
+periodic_y = true
+periodic_z = true
+
+[neighbor]
+skin_fraction = 1.12
+bin_size = 1.4
+every = 20
+check = true
+
+[lattice]
+style = "fcc"
+density = 0.8442
+temperature = 1.44
+mass = 1.0
+skin = 1.25
+
+[lj]
+epsilon = 1.0
+sigma = 1.0
+cutoff = 2.5
+
+[thermostat]
+temperature = 1.44
+coupling = 1.0
+
+[run]
+steps = 200
+thermo = 200
+
+[measure]
+rdf_bins = 200
+rdf_cutoff = 3.0
+rdf_interval = 0
+msd_interval = 0
+output_interval = 0
+
+[dump]
+interval = 0

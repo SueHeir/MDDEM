@@ -65,6 +65,10 @@ pub trait CommBackend: Send + Sync + 'static {
     fn recv_f64_any(&self) -> Vec<f64>;
     fn send_force(&self, dest: i32, buf: &[ForceMPI]);
     fn recv_force(&self, source: i32) -> Vec<ForceMPI>;
+
+    // Deadlock-free sendrecv: send to dest while receiving from source
+    fn sendrecv_f64(&self, dest: i32, send_buf: &[f64], source: i32) -> Vec<f64>;
+    fn sendrecv_force(&self, dest: i32, send_buf: &[ForceMPI], source: i32) -> Vec<ForceMPI>;
 }
 
 /// Wraps a [`CommBackend`] implementation, used as `Res<CommResource>` in systems.
@@ -150,6 +154,12 @@ impl CommBackend for SingleProcessComm {
     fn recv_force(&self, _source: i32) -> Vec<ForceMPI> {
         unreachable!("SingleProcessComm::recv_force should never be called");
     }
+    fn sendrecv_f64(&self, _dest: i32, _send_buf: &[f64], _source: i32) -> Vec<f64> {
+        unreachable!("SingleProcessComm::sendrecv_f64 should never be called");
+    }
+    fn sendrecv_force(&self, _dest: i32, _send_buf: &[ForceMPI], _source: i32) -> Vec<ForceMPI> {
+        unreachable!("SingleProcessComm::sendrecv_force should never be called");
+    }
 }
 
 // ── CommBuffers ──────────────────────────────────────────────────────────────
@@ -190,9 +200,8 @@ pub struct SwapData {
 pub struct CommTopology {
     pub swap_directions: [Vector3<i32>; 2],
     pub periodic_swap: [Vector3<f64>; 2],
-    pub send_amount: [Vector3<i32>; 2],
-    pub receive_amount: [Vector3<i32>; 2],
     pub swap_data: Vec<SwapData>,   // sendlists for forward_comm
+    pub maxneed: [i32; 3],          // number of swap layers per dimension (0 = not yet computed)
 }
 
 // ── MPI backend ──────────────────────────────────────────────────────────────
@@ -295,6 +304,29 @@ impl CommBackend for MpiCommBackend {
         let (msg, _status) = self.world.process_at_rank(source).receive_vec::<ForceMPI>();
         msg
     }
+
+    fn sendrecv_f64(&self, dest: i32, send_buf: &[f64], source: i32) -> Vec<f64> {
+        // Non-blocking send + blocking recv: deadlock-free for any dest/source combination
+        let world = &self.world;
+        mpi::request::scope(|scope| {
+            let sreq = world.process_at_rank(dest)
+                .immediate_send(scope, send_buf);
+            let (msg, _status) = world.process_at_rank(source).receive_vec::<f64>();
+            sreq.wait();
+            msg
+        })
+    }
+
+    fn sendrecv_force(&self, dest: i32, send_buf: &[ForceMPI], source: i32) -> Vec<ForceMPI> {
+        let world = &self.world;
+        mpi::request::scope(|scope| {
+            let sreq = world.process_at_rank(dest)
+                .immediate_send(scope, send_buf);
+            let (msg, _status) = world.process_at_rank(source).receive_vec::<ForceMPI>();
+            sreq.wait();
+            msg
+        })
+    }
 }
 
 // ── Unified CommunicationPlugin ──────────────────────────────────────────────
@@ -338,9 +370,8 @@ processors_z = 1"#,
         app.add_resource(CommTopology {
             swap_directions: [Vector3::new(-1, -1, -1), Vector3::new(-1, -1, -1)],
             periodic_swap: [Vector3::zeros(), Vector3::zeros()],
-            send_amount: [Vector3::new(0, 0, 0), Vector3::new(0, 0, 0)],
-            receive_amount: [Vector3::new(0, 0, 0), Vector3::new(0, 0, 0)],
             swap_data: Vec::new(),
+            maxneed: [0, 0, 0],
         });
 
         app.add_setup_system(comm_read_input, ScheduleSetupSet::PreSetup)
@@ -567,22 +598,14 @@ fn forward_comm(
         if swap.to_proc == rank {
             // Self-send: copy directly into ghost data
             unpack_forward(buf, atoms, swap.recv_start, swap.recv_count);
-        } else if swap.to_proc == swap.from_proc {
-            // Symmetric neighbor (2-proc dim): higher rank sends first
-            if swap.to_proc > rank {
-                comm.send_f64(swap.to_proc, buf);
-                let msg = comm.recv_f64(swap.from_proc);
-                unpack_forward(&msg, atoms, swap.recv_start, swap.recv_count);
-            } else {
-                let msg = comm.recv_f64(swap.from_proc);
-                unpack_forward(&msg, atoms, swap.recv_start, swap.recv_count);
-                comm.send_f64(swap.to_proc, buf);
-            }
         } else {
-            if swap.to_proc != -1 {
+            // MPI: sendrecv is deadlock-free regardless of symmetric/asymmetric
+            if swap.to_proc != -1 && swap.from_proc != -1 {
+                let msg = comm.sendrecv_f64(swap.to_proc, buf, swap.from_proc);
+                unpack_forward(&msg, atoms, swap.recv_start, swap.recv_count);
+            } else if swap.to_proc != -1 {
                 comm.send_f64(swap.to_proc, buf);
-            }
-            if swap.from_proc != -1 && swap.from_proc != rank {
+            } else if swap.from_proc != -1 {
                 let msg = comm.recv_f64(swap.from_proc);
                 unpack_forward(&msg, atoms, swap.recv_start, swap.recv_count);
             }
@@ -623,7 +646,27 @@ pub fn borders(
     atoms.natoms = global_count as u64;
     atoms.nlocal = atoms.len() as u32;
     atoms.nghost = 0;
-    comm.barrier();
+
+    // Compute maxneed on first full rebuild (ghost_cutoff is set by neighbor_setup)
+    if topo.maxneed == [0, 0, 0] {
+        let decomp = comm.processor_decomposition();
+        let decomp_arr = [decomp.x, decomp.y, decomp.z];
+        for dim in 0..3 {
+            if decomp_arr[dim] == 1 {
+                topo.maxneed[dim] = 1;
+            } else {
+                topo.maxneed[dim] = (domain.ghost_cutoff / domain.sub_length[dim]).ceil().max(1.0) as i32;
+            }
+        }
+        if comm.rank() == 0 {
+            for dim in 0..3 {
+                if topo.maxneed[dim] > 1 {
+                    let dim_name = ["x", "y", "z"][dim];
+                    println!("Comm: multi-hop ghost communication in dim {}: need={}", dim_name, topo.maxneed[dim]);
+                }
+            }
+        }
+    }
 
     // Clear sendlists for fresh recording
     topo.swap_data.clear();
@@ -632,138 +675,77 @@ pub fn borders(
     let mut scan_end = atoms.nlocal as usize;
 
     for dim in 0..3 {
-        let dim_scan_end = scan_end;
-        for swap in 0..2 {
-            let to_proc = topo.swap_directions[swap][dim];
-            let from_proc = topo.swap_directions[(swap + 1) % 2][dim];
-            let periodic_offset = topo.periodic_swap[swap][dim];
-            topo.send_amount[swap][dim] = 0;
-            topo.receive_amount[swap][dim] = 0;
-            send_buff.clear();
+        for _need in 0..topo.maxneed[dim] {
+            let dim_scan_end = scan_end;
+            for swap in 0..2 {
+                let to_proc = topo.swap_directions[swap][dim];
+                let from_proc = topo.swap_directions[(swap + 1) % 2][dim];
+                let periodic_offset = topo.periodic_swap[swap][dim];
+                send_buff.clear();
 
-            // Precompute periodic position shift for sendlist
-            let mut pbc_shift = [0.0; 3];
-            pbc_shift[dim] = periodic_offset * domain.size[dim];
+                // Precompute periodic position shift for sendlist
+                let mut pbc_shift = [0.0; 3];
+                pbc_shift[dim] = periodic_offset * domain.size[dim];
 
-            if to_proc == from_proc && to_proc != rank {
-                if to_proc > rank {
-                    if to_proc != -1 {
-                        let (count, packed_indices) = pack_border_atoms(
-                            &mut atoms,
-                            &registry,
-                            dim,
-                            swap,
-                            periodic_offset,
-                            &domain,
-                            &mut send_buff,
-                            dim_scan_end,
-                            domain.ghost_cutoff,
-                        );
-                        topo.send_amount[swap][dim] = count;
-                        send_buff.push(count as f64);
-                        comm.send_f64(to_proc, &send_buff);
-                        let msg = comm.recv_f64(from_proc);
-                        let recv_count = msg[msg.len() - 1] as usize;
-                        topo.receive_amount[swap][dim] = recv_count as i32;
-                        let recv_start = atoms.len();
-                        unpack_ghost_atoms(&mut atoms, &registry, &msg, recv_count);
-                        topo.swap_data.push(SwapData {
-                            send_indices: packed_indices,
-                            recv_start,
-                            recv_count,
-                            to_proc,
-                            from_proc,
-                            periodic_offset: pbc_shift,
-                        });
-                    }
-                } else {
-                    let (count, packed_indices) = pack_border_atoms(
-                        &mut atoms,
-                        &registry,
-                        dim,
-                        swap,
-                        periodic_offset,
-                        &domain,
-                        &mut send_buff,
-                        dim_scan_end,
-                        domain.ghost_cutoff,
-                    );
-                    topo.send_amount[swap][dim] = count;
-                    if from_proc != -1 {
-                        let msg = comm.recv_f64(to_proc);
-                        let recv_count = msg[msg.len() - 1] as usize;
-                        topo.receive_amount[swap][dim] = recv_count as i32;
-                        let recv_start = atoms.len();
-                        unpack_ghost_atoms(&mut atoms, &registry, &msg, recv_count);
-                        send_buff.push(count as f64);
-                        comm.send_f64(to_proc, &send_buff);
-                        topo.swap_data.push(SwapData {
-                            send_indices: packed_indices,
-                            recv_start,
-                            recv_count,
-                            to_proc,
-                            from_proc,
-                            periodic_offset: pbc_shift,
-                        });
-                    }
-                }
-            } else {
-                let mut swap_send_indices = Vec::new();
-                let mut swap_recv_start = 0usize;
-                let mut swap_recv_count = 0usize;
+                let (count, packed_indices) = pack_border_atoms(
+                    &mut atoms,
+                    &registry,
+                    dim,
+                    swap,
+                    periodic_offset,
+                    &domain,
+                    &mut send_buff,
+                    dim_scan_end,
+                    domain.ghost_cutoff,
+                );
+                let swap_recv_start;
+                let swap_recv_count;
 
-                if to_proc != -1 {
-                    let (count, packed_indices) = pack_border_atoms(
-                        &mut atoms,
-                        &registry,
-                        dim,
-                        swap,
-                        periodic_offset,
-                        &domain,
-                        &mut send_buff,
-                        dim_scan_end,
-                        domain.ghost_cutoff,
-                    );
-                    topo.send_amount[swap][dim] = count;
-                    swap_send_indices = packed_indices;
-                    if to_proc != rank {
-                        send_buff.push(count as f64);
-                        comm.send_f64(to_proc, &send_buff);
-                    } else {
-                        topo.receive_amount[swap][dim] = count;
-                        send_buff.push(count as f64);
-                        swap_recv_start = atoms.len();
-                        swap_recv_count = count as usize;
-                        unpack_ghost_atoms(&mut atoms, &registry, &send_buff, count as usize);
-                    }
-                }
-                if from_proc != -1 && from_proc != rank {
-                    let msg = comm.recv_f64(from_proc);
+                if to_proc == rank {
+                    // Self-send (single-process periodic): unpack locally
+                    send_buff.push(count as f64);
+                    swap_recv_start = atoms.len();
+                    swap_recv_count = count as usize;
+                    unpack_ghost_atoms(&mut atoms, &registry, &send_buff, count as usize);
+                } else if to_proc != -1 && from_proc != -1 {
+                    // MPI: sendrecv is deadlock-free
+                    send_buff.push(count as f64);
+                    let msg = comm.sendrecv_f64(to_proc, &send_buff, from_proc);
                     let recv_count = msg[msg.len() - 1] as usize;
-                    topo.receive_amount[swap][dim] = recv_count as i32;
                     swap_recv_start = atoms.len();
                     swap_recv_count = recv_count;
                     unpack_ghost_atoms(&mut atoms, &registry, &msg, recv_count);
+                } else if to_proc != -1 {
+                    // Send only (non-periodic boundary, no neighbor to receive from)
+                    send_buff.push(count as f64);
+                    comm.send_f64(to_proc, &send_buff);
+                    swap_recv_start = atoms.len();
+                    swap_recv_count = 0;
+                } else if from_proc != -1 {
+                    // Receive only
+                    let msg = comm.recv_f64(from_proc);
+                    let recv_count = msg[msg.len() - 1] as usize;
+                    swap_recv_start = atoms.len();
+                    swap_recv_count = recv_count;
+                    unpack_ghost_atoms(&mut atoms, &registry, &msg, recv_count);
+                } else {
+                    swap_recv_start = atoms.len();
+                    swap_recv_count = 0;
                 }
-                // Record swap data if anything was sent or received
-                if to_proc != -1 || (from_proc != -1 && from_proc != rank) {
-                    topo.swap_data.push(SwapData {
-                        send_indices: swap_send_indices,
-                        recv_start: swap_recv_start,
-                        recv_count: swap_recv_count,
-                        to_proc,
-                        from_proc,
-                        periodic_offset: pbc_shift,
-                    });
-                }
+
+                topo.swap_data.push(SwapData {
+                    send_indices: packed_indices,
+                    recv_start: swap_recv_start,
+                    recv_count: swap_recv_count,
+                    to_proc,
+                    from_proc,
+                    periodic_offset: pbc_shift,
+                });
             }
-            comm.barrier();
+            scan_end = atoms.nlocal as usize + atoms.nghost as usize;
         }
-        scan_end = atoms.nlocal as usize + atoms.nghost as usize;
     }
     buffers.border_send_buff = send_buff;
-
-    comm.barrier();
 }
 
 // ── Unified reverse send force ────────────────────────────────────────────────
@@ -775,65 +757,36 @@ pub fn reverse_send_force(
 ) {
     let rank = comm.rank();
     let mut send_buff: Vec<ForceMPI> = Vec::new();
-    let mut receive_position = atoms.len() as i32;
 
-    for dim in (0..3).rev() {
-        for swap in (0..2).rev() {
-            let to_proc = topo.swap_directions[swap][dim];
-            let from_proc = topo.swap_directions[(swap + 1) % 2][dim];
-            send_buff.clear();
+    // Iterate swaps in reverse order (mirrors borders() forward order)
+    for swap in topo.swap_data.iter().rev() {
+        send_buff.clear();
 
-            if to_proc == from_proc && to_proc != rank {
-                if from_proc < rank {
-                    if from_proc != -1 {
-                        for i in
-                            (receive_position - topo.receive_amount[swap][dim])..receive_position
-                        {
-                            send_buff.push(atoms.get_force_data(i as usize));
-                        }
-                        comm.send_force(from_proc, &send_buff);
-                        let msg = comm.recv_force(to_proc);
-                        for atom in msg {
-                            atoms.apply_force_data(atom);
-                        }
-                    }
-                } else {
-                    for i in (receive_position - topo.receive_amount[swap][dim])..receive_position {
-                        send_buff.push(atoms.get_force_data(i as usize));
-                    }
-                    if from_proc != -1 {
-                        let msg = comm.recv_force(to_proc);
-                        for atom in msg {
-                            atoms.apply_force_data(atom);
-                        }
-                        comm.send_force(from_proc, &send_buff);
-                    }
-                }
-            } else {
-                if from_proc != -1 {
-                    for i in (receive_position - topo.receive_amount[swap][dim])..receive_position {
-                        send_buff.push(atoms.get_force_data(i as usize));
-                    }
-                    if from_proc != rank {
-                        comm.send_force(from_proc, &send_buff);
-                    } else {
-                        for &force in &send_buff {
-                            atoms.apply_force_data(force);
-                        }
-                    }
-                }
-                if to_proc != -1 && to_proc != rank {
-                    let msg = comm.recv_force(to_proc);
-                    for atom in msg {
-                        atoms.apply_force_data(atom);
-                    }
-                }
+        // Pack forces from ghost atoms received in this swap
+        for i in swap.recv_start..(swap.recv_start + swap.recv_count) {
+            send_buff.push(atoms.get_force_data(i));
+        }
+
+        if swap.from_proc == rank {
+            // Self-send: apply forces locally
+            for &force in &send_buff {
+                atoms.apply_force_data(force);
             }
-            receive_position -= topo.receive_amount[swap][dim];
-            comm.barrier();
+        } else if swap.from_proc != -1 && swap.to_proc != -1 {
+            // MPI: reverse direction — send back to from_proc, recv from to_proc
+            let msg = comm.sendrecv_force(swap.from_proc, &send_buff, swap.to_proc);
+            for atom in msg {
+                atoms.apply_force_data(atom);
+            }
+        } else if swap.from_proc != -1 {
+            comm.send_force(swap.from_proc, &send_buff);
+        } else if swap.to_proc != -1 {
+            let msg = comm.recv_force(swap.to_proc);
+            for atom in msg {
+                atoms.apply_force_data(atom);
+            }
         }
     }
-    comm.barrier();
 }
 
 // ── Exchange (MPI only) ──────────────────────────────────────────────────────
@@ -841,6 +794,7 @@ pub fn reverse_send_force(
 #[cfg(feature = "mpi_backend")]
 pub fn exchange(
     comm: Res<CommResource>,
+    topo: Res<CommTopology>,
     mut atoms: ResMut<Atom>,
     domain: Res<Domain>,
     registry: Res<AtomDataRegistry>,
@@ -849,53 +803,95 @@ pub fn exchange(
     if atoms.communicate_only {
         return;
     }
-    let size = comm.size();
-    let rank = comm.rank();
     let proc_decomp = comm.processor_decomposition();
+    let decomp_arr = [proc_decomp.x, proc_decomp.y, proc_decomp.z];
 
-    // Reuse persistent exchange buffers
+    // Reuse persistent exchange buffers (only need 2: lo and hi per dimension)
     let mut atoms_buff = std::mem::take(&mut buffers.exchange_buffs);
-    atoms_buff.resize_with(size as usize, Vec::new);
-    for buf in atoms_buff.iter_mut() {
-        buf.clear();
-    }
-    let mut counts = vec![0.0f64; size as usize];
+    atoms_buff.resize_with(2, Vec::new);
 
-    for i in (0..atoms.len()).rev() {
-        let xi = (atoms.pos[i][0] / domain.sub_length.x).floor() as i32;
-        let yi = (atoms.pos[i][1] / domain.sub_length.y).floor() as i32;
-        let zi = (atoms.pos[i][2] / domain.sub_length.z).floor() as i32;
-        let to_processor = xi * proc_decomp.z * proc_decomp.y + yi * proc_decomp.z + zi;
-        if to_processor != rank {
-            counts[to_processor as usize] += 1.0;
-            atoms.pack_exchange(i, &mut atoms_buff[to_processor as usize]);
-            registry.pack_all(i, &mut atoms_buff[to_processor as usize]);
-            atoms.swap_remove(i);
-            registry.swap_remove_all(i);
+    // Per-dimension exchange: atoms migrating in dim 0 are sent first,
+    // received atoms may continue migrating in dims 1, 2.
+    for dim in 0..3usize {
+        if decomp_arr[dim] == 1 {
+            continue; // No exchange needed in this dimension (PBC handled elsewhere)
         }
-    }
 
-    for (buf, count) in atoms_buff.iter_mut().zip(counts) {
-        buf.push(count);
-    }
+        let lo_proc = topo.swap_directions[0][dim]; // neighbor in -dim direction
+        let hi_proc = topo.swap_directions[1][dim]; // neighbor in +dim direction
 
-    for p in 0..size {
-        if p == rank {
-            for _rec in 0..size - 1 {
-                let msg = comm.recv_f64_any();
-                let msg_count = msg[msg.len() - 1] as usize;
-                let data = &msg[..msg.len() - 1];
-                let mut pos = 0;
-                for _ in 0..msg_count {
-                    pos += atoms.unpack_atom(&data[pos..], false);
-                    pos += registry.unpack_all(&data[pos..]);
-                }
+        atoms_buff[0].clear(); // lo send buffer
+        atoms_buff[1].clear(); // hi send buffer
+        let mut lo_count = 0.0f64;
+        let mut hi_count = 0.0f64;
+
+        // Scan local atoms: pack those outside subdomain in this dimension
+        for i in (0..atoms.len()).rev() {
+            if atoms.pos[i][dim] < domain.sub_domain_low[dim] {
+                lo_count += 1.0;
+                atoms.pack_exchange(i, &mut atoms_buff[0]);
+                registry.pack_all(i, &mut atoms_buff[0]);
+                atoms.swap_remove(i);
+                registry.swap_remove_all(i);
+            } else if atoms.pos[i][dim] >= domain.sub_domain_high[dim] {
+                hi_count += 1.0;
+                atoms.pack_exchange(i, &mut atoms_buff[1]);
+                registry.pack_all(i, &mut atoms_buff[1]);
+                atoms.swap_remove(i);
+                registry.swap_remove_all(i);
             }
-        } else {
-            comm.send_f64(p, &atoms_buff[p as usize]);
+        }
+
+        atoms_buff[0].push(lo_count);
+        atoms_buff[1].push(hi_count);
+
+        // Send lo, receive from hi
+        if lo_proc != -1 && hi_proc != -1 {
+            let msg = comm.sendrecv_f64(lo_proc, &atoms_buff[0], hi_proc);
+            let msg_count = msg[msg.len() - 1] as usize;
+            let data = &msg[..msg.len() - 1];
+            let mut pos = 0;
+            for _ in 0..msg_count {
+                pos += atoms.unpack_atom(&data[pos..], false);
+                pos += registry.unpack_all(&data[pos..]);
+            }
+        } else if lo_proc != -1 {
+            comm.send_f64(lo_proc, &atoms_buff[0]);
+        } else if hi_proc != -1 {
+            let msg = comm.recv_f64(hi_proc);
+            let msg_count = msg[msg.len() - 1] as usize;
+            let data = &msg[..msg.len() - 1];
+            let mut pos = 0;
+            for _ in 0..msg_count {
+                pos += atoms.unpack_atom(&data[pos..], false);
+                pos += registry.unpack_all(&data[pos..]);
+            }
+        }
+
+        // Send hi, receive from lo
+        if hi_proc != -1 && lo_proc != -1 {
+            let msg = comm.sendrecv_f64(hi_proc, &atoms_buff[1], lo_proc);
+            let msg_count = msg[msg.len() - 1] as usize;
+            let data = &msg[..msg.len() - 1];
+            let mut pos = 0;
+            for _ in 0..msg_count {
+                pos += atoms.unpack_atom(&data[pos..], false);
+                pos += registry.unpack_all(&data[pos..]);
+            }
+        } else if hi_proc != -1 {
+            comm.send_f64(hi_proc, &atoms_buff[1]);
+        } else if lo_proc != -1 {
+            let msg = comm.recv_f64(lo_proc);
+            let msg_count = msg[msg.len() - 1] as usize;
+            let data = &msg[..msg.len() - 1];
+            let mut pos = 0;
+            for _ in 0..msg_count {
+                pos += atoms.unpack_atom(&data[pos..], false);
+                pos += registry.unpack_all(&data[pos..]);
+            }
         }
     }
-    comm.barrier();
+
     buffers.exchange_buffs = atoms_buff;
 }
 
@@ -927,5 +923,69 @@ mod tests {
         comm.set_processor_grid(decomp, pos);
         assert_eq!(comm.processor_decomposition(), decomp);
         assert_eq!(comm.processor_position(), pos);
+    }
+
+    #[test]
+    fn pos_to_rank_basic() {
+        let decomp = Vector3::new(2, 2, 1);
+        assert_eq!(pos_to_rank(Vector3::new(0, 0, 0), decomp), 0);
+        assert_eq!(pos_to_rank(Vector3::new(0, 1, 0), decomp), 1);
+        assert_eq!(pos_to_rank(Vector3::new(1, 0, 0), decomp), 2);
+        assert_eq!(pos_to_rank(Vector3::new(1, 1, 0), decomp), 3);
+    }
+
+    #[test]
+    fn pos_to_rank_3d() {
+        let decomp = Vector3::new(2, 2, 2);
+        assert_eq!(pos_to_rank(Vector3::new(0, 0, 0), decomp), 0);
+        assert_eq!(pos_to_rank(Vector3::new(0, 0, 1), decomp), 1);
+        assert_eq!(pos_to_rank(Vector3::new(0, 1, 0), decomp), 2);
+        assert_eq!(pos_to_rank(Vector3::new(1, 0, 0), decomp), 4);
+        assert_eq!(pos_to_rank(Vector3::new(1, 1, 1), decomp), 7);
+    }
+
+    #[test]
+    fn compute_per_atom_offset_lower_half() {
+        let boundaries_low = Vector3::new(0.0, 0.0, 0.0);
+        let boundaries_high = Vector3::new(10.0, 10.0, 10.0);
+        let size = Vector3::new(10.0, 10.0, 10.0);
+        let stored = [1.0, 0.0, -1.0]; // periodic in x and z
+        let pos = [2.0, 5.0, 3.0]; // x below mid, z below mid
+
+        let offset = compute_per_atom_offset(&pos, &stored, &boundaries_low, &boundaries_high, &size);
+        assert_eq!(offset[0], 10.0);  // below mid → +size
+        assert_eq!(offset[1], 0.0);   // no periodic
+        assert_eq!(offset[2], 10.0);  // below mid → +size
+    }
+
+    #[test]
+    fn compute_per_atom_offset_upper_half() {
+        let boundaries_low = Vector3::new(0.0, 0.0, 0.0);
+        let boundaries_high = Vector3::new(10.0, 10.0, 10.0);
+        let size = Vector3::new(10.0, 10.0, 10.0);
+        let stored = [1.0, 0.0, -1.0];
+        let pos = [8.0, 5.0, 8.0]; // x above mid, z above mid
+
+        let offset = compute_per_atom_offset(&pos, &stored, &boundaries_low, &boundaries_high, &size);
+        assert_eq!(offset[0], -10.0); // above mid → -size
+        assert_eq!(offset[1], 0.0);
+        assert_eq!(offset[2], -10.0); // above mid → -size
+    }
+
+    #[test]
+    fn swap_data_records_correct_info() {
+        let swap = SwapData {
+            send_indices: vec![0, 3, 7],
+            recv_start: 100,
+            recv_count: 5,
+            to_proc: 1,
+            from_proc: 2,
+            periodic_offset: [10.0, 0.0, 0.0],
+        };
+        assert_eq!(swap.send_indices.len(), 3);
+        assert_eq!(swap.recv_start, 100);
+        assert_eq!(swap.recv_count, 5);
+        assert_eq!(swap.to_proc, 1);
+        assert_eq!(swap.from_proc, 2);
     }
 }
