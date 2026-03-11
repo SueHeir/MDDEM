@@ -21,7 +21,49 @@ Cross-section (x-z plane, periodic in y):
 
 **Flowing phase:** Once the total kinetic energy drops below 1e-8 J (particles nearly stationary), the blocker wall is automatically removed and particles flow through the funnel exit to the floor.
 
-This example uses the Rust API (Tier 2) to add a custom update system that monitors KE every 100 steps and triggers the phase transition via `StatesPlugin` and `run_if(in_state(...))`.
+This example demonstrates MDDEM's Tier 2 (Rust API) by adding a custom system alongside the standard TOML-configured plugins.
+
+### How `main.rs` works
+
+```rust
+#[derive(Clone, PartialEq, Default)]
+enum Phase {
+    #[default]
+    Filling,
+    Flowing,
+}
+```
+
+A `Phase` enum defines two simulation states. The `#[default]` attribute sets the initial state to `Filling`.
+
+```rust
+app.add_plugins(StatesPlugin {
+    initial: Phase::Filling,
+});
+```
+
+`StatesPlugin` registers the state machine. The scheduler tracks the current `Phase` and makes it available as a resource for run conditions.
+
+```rust
+app.add_update_system(
+    check_settled.run_if(in_state(Phase::Filling)),
+    ScheduleSet::PostFinalIntegration,
+);
+```
+
+The `check_settled` system is registered with a **run condition**: it only executes while the simulation is in `Phase::Filling`. Once the state transitions to `Flowing`, the system is skipped entirely. `ScheduleSet::PostFinalIntegration` places it after the Velocity Verlet update each timestep.
+
+The `check_settled` function itself is a regular system that declares its dependencies as function arguments — the scheduler injects them automatically:
+
+- `Res<Atom>` — read-only access to particle data (velocities, masses)
+- `Res<RunState>` — current timestep
+- `Res<CommResource>` — MPI communicator for global reductions
+- `ResMut<Walls>` — mutable access to wall definitions
+- `ResMut<NextState<Phase>>` — mutable access to trigger state transitions
+
+Every 100 steps (after an initial 1000-step warmup), it computes the total kinetic energy across all MPI ranks via `comm.all_reduce_sum_f64()`. When KE drops below the threshold, it deactivates the named `"blocker"` wall and transitions to `Phase::Flowing` — all in 6 lines of physics logic.
+
+This pattern — TOML config for standard physics, custom Rust systems for runtime logic — is the core design of MDDEM.
 
 ## Run
 
@@ -43,9 +85,9 @@ mpiexec -n 4 ./target/release/examples/hopper examples/hopper/config.toml
 | Density | 2500 kg/m^3 |
 | Young's modulus | 8.7 GPa |
 | Poisson ratio | 0.3 |
-| Restitution | 0.8 |
-| Friction | 0.4 |
-| Gravity | -9.81 m/s^2 (z) |
+| Restitution | 0.3 |
+| Friction | 0.5 |
+| Gravity | -90.81 m/s^2 (z) |
 | Domain | 0.04 x 0.02 x 0.08 m |
 | Boundaries | Non-periodic x/z, periodic y |
 | Funnel angle | ~67 deg from horizontal |
