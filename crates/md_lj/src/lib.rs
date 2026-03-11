@@ -159,26 +159,35 @@ pub fn lj_force(
     _domain: Res<Domain>,
     mut virial: ResMut<VirialAccumulator>,
 ) {
-    let sigma2 = lj.sigma * lj.sigma;
     let cutoff2 = (lj.cutoff * lj.sigma).powi(2);
-    let eps24 = 24.0 * lj.epsilon;
+    // Precompute LAMMPS-style constants: lj1 = 48*eps*sigma^12, lj2 = 24*eps*sigma^6
+    // Inner loop then needs only one division (r2inv = 1/r2) and multiplies.
+    let sigma6 = (lj.sigma * lj.sigma).powi(3);
+    let lj1 = 48.0 * lj.epsilon * sigma6 * sigma6;
+    let lj2 = 24.0 * lj.epsilon * sigma6;
 
     let nlocal = atoms.nlocal as usize;
     let mut virial_sum = 0.0f64;
 
-    // Direct CSR loop with batch force accumulation — load/store force[i] once per atom.
-    // Virial is always accumulated (1 fma per pair, negligible cost vs branching every pair).
+    // Extract raw pointers ONCE to avoid repeated dyn Any downcast in the inner loop.
+    // ResMut<Atom> stores RefMut<Box<dyn Any>> — every deref does downcast_ref().unwrap(),
+    // which the compiler cannot hoist out of loops (mutable aliasing prevents LICM).
+    let pos_ptr = atoms.pos.as_ptr();
+    let force_ptr = atoms.force.as_mut_ptr();
+    let offsets_ptr = neighbor.neighbor_offsets.as_ptr();
+    let indices_ptr = neighbor.neighbor_indices.as_ptr();
+
     // SAFETY: i < nlocal <= atoms.len(), neighbor_offsets has nlocal+1 entries,
     // neighbor_indices[k] < atoms.len() (from CSR construction), j < atoms.len().
     for i in 0..nlocal {
-        let pi = unsafe { *atoms.pos.get_unchecked(i) };
-        let mut fi = unsafe { *atoms.force.get_unchecked(i) };
-        let start = unsafe { *neighbor.neighbor_offsets.get_unchecked(i) } as usize;
-        let end = unsafe { *neighbor.neighbor_offsets.get_unchecked(i + 1) } as usize;
+        let pi = unsafe { *pos_ptr.add(i) };
+        let mut fi = unsafe { *force_ptr.add(i) };
+        let start = unsafe { *offsets_ptr.add(i) } as usize;
+        let end = unsafe { *offsets_ptr.add(i + 1) } as usize;
 
         for k in start..end {
-            let j = unsafe { *neighbor.neighbor_indices.get_unchecked(k) } as usize;
-            let pj = unsafe { *atoms.pos.get_unchecked(j) };
+            let j = unsafe { *indices_ptr.add(k) } as usize;
+            let pj = unsafe { *pos_ptr.add(j) };
             let dx = pj[0] - pi[0];
             let dy = pj[1] - pi[1];
             let dz = pj[2] - pi[2];
@@ -188,25 +197,25 @@ pub fn lj_force(
                 continue;
             }
 
-            let sr2 = sigma2 / r2;
-            let sr6 = sr2 * sr2 * sr2;
-            let f_over_r = eps24 / r2 * (2.0 * sr6 * sr6 - sr6);
+            let r2inv = 1.0 / r2;
+            let r6inv = r2inv * r2inv * r2inv;
+            let fpair = r2inv * r6inv * (lj1 * r6inv - lj2);
 
-            virial_sum += f_over_r * r2;
+            virial_sum += fpair * r2;
 
-            let fx = f_over_r * dx;
-            let fy = f_over_r * dy;
-            let fz = f_over_r * dz;
+            let fx = fpair * dx;
+            let fy = fpair * dy;
+            let fz = fpair * dz;
 
             fi[0] -= fx;
             fi[1] -= fy;
             fi[2] -= fz;
-            let fj = unsafe { atoms.force.get_unchecked_mut(j) };
+            let fj = unsafe { &mut *force_ptr.add(j) };
             fj[0] += fx;
             fj[1] += fy;
             fj[2] += fz;
         }
-        unsafe { *atoms.force.get_unchecked_mut(i) = fi };
+        unsafe { *force_ptr.add(i) = fi };
     }
 
     virial.virial_sum = virial_sum;

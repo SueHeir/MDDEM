@@ -234,8 +234,14 @@ pub fn domain_read_input(
 
 /// Wrap a position into [low, low+size) with periodic boundaries.
 #[inline]
-fn wrap_periodic(pos: f64, low: f64, size: f64) -> f64 {
-    ((pos - low) % size + size) % size + low
+fn wrap_periodic(mut pos: f64, low: f64, size: f64) -> f64 {
+    let high = low + size;
+    if pos < low {
+        pos += size;
+    } else if pos >= high {
+        pos -= size;
+    }
+    pos
 }
 
 pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataRegistry>) {

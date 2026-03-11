@@ -725,6 +725,11 @@ pub fn bin_neighbor_list(
     let bin_oy = neighbor.bin_origin.y;
     let bin_oz = neighbor.bin_origin.z;
 
+    // Extract raw pointers ONCE to avoid repeated dyn Any downcast in hot loops.
+    // ResMut<Atom> stores RefMut<Box<dyn Any>> — every deref does downcast_ref().unwrap().
+    let pos_ptr = atoms.pos.as_ptr();
+    let skin_ptr = atoms.skin.as_ptr();
+
     // Step 1: Assign each atom to a bin cell (reuse persistent arrays)
     let mut atom_cell = std::mem::take(&mut neighbor.bin_atom_cell);
     atom_cell.clear();
@@ -735,7 +740,7 @@ pub fn bin_neighbor_list(
 
     // SAFETY: i < total = atoms.len(), cell is clamped to 0..total_cells by clamp on cx/cy/cz.
     for i in 0..total {
-        let pi = unsafe { atoms.pos.get_unchecked(i) };
+        let pi = unsafe { &*pos_ptr.add(i) };
         let cx = ((pi[0] - bin_ox) * inv_bsx).floor() as i32;
         let cy = ((pi[1] - bin_oy) * inv_bsy).floor() as i32;
         let cz = ((pi[2] - bin_oz) * inv_bsz).floor() as i32;
@@ -780,7 +785,7 @@ pub fn bin_neighbor_list(
     sorted_pos.resize(total, [0.0; 3]);
     for m in 0..total {
         // SAFETY: sorted_atoms[m] was populated from 0..total, so < atoms.pos.len().
-        sorted_pos[m] = unsafe { *atoms.pos.get_unchecked(*sorted_atoms.get_unchecked(m) as usize) };
+        sorted_pos[m] = unsafe { *pos_ptr.add(*sorted_atoms.get_unchecked(m) as usize) };
     }
 
     // Step 3: Build CSR neighbor lists using forward stencil.
@@ -833,7 +838,7 @@ pub fn bin_neighbor_list(
         for i in 0..nlocal {
             offsets.push(nidx as u32);
             let my_cell = unsafe { *atom_cell.get_unchecked(i) } as usize;
-            let pi = unsafe { *atoms.pos.get_unchecked(i) };
+            let pi = unsafe { *pos_ptr.add(i) };
 
             if has_self {
                 // Start after atom i's position in the sorted array — all subsequent atoms
@@ -875,8 +880,8 @@ pub fn bin_neighbor_list(
         for i in 0..nlocal {
             offsets.push(nidx as u32);
             let my_cell = unsafe { *atom_cell.get_unchecked(i) } as usize;
-            let pi = unsafe { *atoms.pos.get_unchecked(i) };
-            let si = unsafe { *atoms.skin.get_unchecked(i) };
+            let pi = unsafe { *pos_ptr.add(i) };
+            let si = unsafe { *skin_ptr.add(i) };
 
             if has_self {
                 let self_start = unsafe { *atom_sorted_idx.get_unchecked(i) } as usize + 1;
@@ -888,7 +893,7 @@ pub fn bin_neighbor_list(
                     let dy = pj[1] - pi[1];
                     let dz = pj[2] - pi[2];
                     let r2 = dx * dx + dy * dy + dz * dz;
-                    let cutoff = (si + unsafe { *atoms.skin.get_unchecked(j) }) * skin_fraction;
+                    let cutoff = (si + unsafe { *skin_ptr.add(j) }) * skin_fraction;
                     if r2 < cutoff * cutoff {
                         push_index!(j as u32);
                     }
@@ -906,7 +911,7 @@ pub fn bin_neighbor_list(
                     let dy = pj[1] - pi[1];
                     let dz = pj[2] - pi[2];
                     let r2 = dx * dx + dy * dy + dz * dz;
-                    let cutoff = (si + unsafe { *atoms.skin.get_unchecked(j) }) * skin_fraction;
+                    let cutoff = (si + unsafe { *skin_ptr.add(j) }) * skin_fraction;
                     if r2 < cutoff * cutoff {
                         push_index!(j as u32);
                     }
