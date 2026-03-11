@@ -206,7 +206,7 @@ pub fn mindlin_tangential_force(
                 s *= f_t_max / f_t_spring_mag;
             }
 
-            let gamma_t = -2.0 * SQRT_5_3 * beta * (k_t * m_r).sqrt();
+            let gamma_t = 2.0 * SQRT_5_3 * beta * (k_t * m_r).sqrt();
             let mut f_t = k_t * s - gamma_t * v_t;
             let f_t_mag = f_t.norm();
             if f_t_mag > f_t_max && f_t_mag > TANGENTIAL_EPSILON {

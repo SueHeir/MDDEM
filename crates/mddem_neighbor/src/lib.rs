@@ -41,6 +41,10 @@ pub struct NeighborConfig {
     /// Sort atoms by spatial bin every N steps for cache locality (0 = disabled).
     #[serde(default = "default_sort_every")]
     pub sort_every: usize,
+    /// When true, PBC boundary crossings force a full neighbor rebuild.
+    /// Required for DEM (contact forces are discontinuous; missed contacts cause energy spikes).
+    #[serde(default)]
+    pub rebuild_on_pbc_wrap: bool,
 }
 
 impl Default for NeighborConfig {
@@ -51,6 +55,7 @@ impl Default for NeighborConfig {
             every: 0,
             check: true,
             sort_every: 1000,
+            rebuild_on_pbc_wrap: false,
         }
     }
 }
@@ -277,7 +282,7 @@ pub fn neighbor_read_input(
     }
 }
 
-pub fn neighbor_setup(mut neighbor: ResMut<Neighbor>, mut domain: ResMut<Domain>, atoms: Res<Atom>, comm: Res<CommResource>) {
+pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor>, mut domain: ResMut<Domain>, mut atoms: ResMut<Atom>, comm: Res<CommResource>) {
     // Compute max neighbor cutoff = (skin_i + skin_j) * skin_fraction = 2 * max_skin * skin_fraction
     // Use global reduction: at PostSetup, atoms may only be on rank 0 (before exchange).
     let local_max_skin = atoms.skin.iter().cloned().fold(0.0f64, f64::max);
@@ -294,6 +299,7 @@ pub fn neighbor_setup(mut neighbor: ResMut<Neighbor>, mut domain: ResMut<Domain>
     let ghost_cut = max_cutoff + 2.0 * displacement_buffer;
     neighbor.ghost_cutoff = ghost_cut;
     domain.ghost_cutoff = ghost_cut;
+    atoms.rebuild_on_pbc_wrap = config.rebuild_on_pbc_wrap;
     if comm.rank() == 0 {
         println!("Neighbor: ghost_cutoff={:.4} (pair_cutoff={:.4} + buffer={:.4})",
             ghost_cut, max_cutoff, 2.0 * displacement_buffer);
@@ -431,8 +437,8 @@ fn displacement_exceeded(atoms: &Atom, neighbor: &Neighbor) -> bool {
     let threshold_sq = per_atom_skin * per_atom_skin;
     // Minimum-image convention for periodic axes: when an atom wraps across a
     // periodic boundary, the raw displacement is ~box_size, but the physical
-    // displacement is small. Ghost ordering is deterministic in single-process
-    // mode, so the neighbor list stays valid after wrapping.
+    // displacement is small. forward_comm recomputes per-atom periodic offsets
+    // so ghost positions stay correct after PBC wrapping.
     let [bx, by, bz] = neighbor.pbc_box;
     let [px, py, pz] = neighbor.pbc_flags;
     let hbx = bx * 0.5;
@@ -491,11 +497,33 @@ fn needs_rebuild(atoms: &Atom, neighbor: &Neighbor) -> bool {
 ///
 /// Uses all_reduce to ensure ALL ranks agree — if any rank needs a rebuild,
 /// all ranks do the full rebuild (required for MPI send/recv pattern matching).
-pub fn decide_rebuild(mut atoms: ResMut<Atom>, neighbor: Res<Neighbor>, comm: Res<CommResource>) {
+pub fn decide_rebuild(
+    mut atoms: ResMut<Atom>,
+    neighbor: Res<Neighbor>,
+    comm: Res<CommResource>,
+    domain: Res<Domain>,
+) {
     if !atoms.communicate_only {
         return; // already going to do full rebuild
     }
-    let local_needs = if needs_rebuild(&atoms, &neighbor) { 1.0 } else { 0.0 };
+    let mut local_needs = if needs_rebuild(&atoms, &neighbor) { 1.0 } else { 0.0 };
+    // When rebuild_on_pbc_wrap is set (DEM), detect any atom about to cross a
+    // periodic boundary. After initial_integration moved atoms but before pbc()
+    // wraps them, atoms outside the box are exactly the ones that will wrap.
+    // Stale ghost placement after PBC wrap causes missed contacts in DEM.
+    if local_needs == 0.0 && atoms.rebuild_on_pbc_wrap {
+        let low = domain.boundaries_low;
+        let high = domain.boundaries_high;
+        for i in 0..atoms.nlocal as usize {
+            if atoms.pos[i][0] < low.x || atoms.pos[i][0] >= high.x
+                || atoms.pos[i][1] < low.y || atoms.pos[i][1] >= high.y
+                || atoms.pos[i][2] < low.z || atoms.pos[i][2] >= high.z
+            {
+                local_needs = 1.0;
+                break;
+            }
+        }
+    }
     // Any rank needing rebuild forces all ranks to rebuild
     let global_needs = comm.all_reduce_sum_f64(local_needs);
     if global_needs > 0.0 {
@@ -509,12 +537,17 @@ pub fn sweep_and_prune_neighbor_list(
     _domain: Res<Domain>,
     _comm: Res<CommResource>,
 ) {
+    let can_skip_rebuild = _comm.size() == 1;
     if !needs_rebuild(&atoms, &neighbor) {
         neighbor.steps_since_build += 1;
-        atoms.communicate_only = true;
+        if can_skip_rebuild {
+            atoms.communicate_only = true;
+        }
         return;
     }
-    atoms.communicate_only = true;
+    if can_skip_rebuild {
+        atoms.communicate_only = true;
+    }
 
     save_build_positions(&atoms, &mut neighbor);
     neighbor.sweep_and_prune.clear();
@@ -676,13 +709,21 @@ pub fn bin_neighbor_list(
 ) {
     let nlocal = atoms.nlocal as usize;
     let total = atoms.len();
+    // communicate_only (forward_comm fast path) only works in single-process mode.
+    // MPI mode must do full ghost rebuild every step because forward_comm's
+    // compute_per_atom_offset midpoint heuristic doesn't handle sub-domains.
+    let can_skip_rebuild = _comm.size() == 1;
 
     if !needs_rebuild(&atoms, &neighbor) {
         neighbor.steps_since_build += 1;
-        // TEMP DISABLED for debugging: atoms.communicate_only = true;
+        if can_skip_rebuild {
+            atoms.communicate_only = true;
+        }
         return;
     }
-    // TEMP DISABLED for debugging: atoms.communicate_only = true;
+    if can_skip_rebuild {
+        atoms.communicate_only = true;
+    }
 
     save_build_positions(&atoms, &mut neighbor);
 
@@ -986,6 +1027,7 @@ mod tests {
         app.add_resource(atom);
         app.add_resource(neighbor);
         app.add_resource(domain);
+        app.add_resource(NeighborConfig::default());
         app.add_resource(mddem_core::CommResource(Box::new(
             mddem_core::SingleProcessComm::new(),
         )));

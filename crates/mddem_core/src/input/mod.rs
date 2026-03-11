@@ -43,10 +43,19 @@ impl Plugin for InputPlugin {
         print_banner();
         let table = load_toml(&input_file);
 
-        let output_dir = std::path::Path::new(&input_file)
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map(|p| p.to_string_lossy().into_owned());
+        // Output directory: prefer [output] dir from config, else use config file's parent
+        let output_dir = table
+            .get("output")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("dir"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                std::path::Path::new(&input_file)
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .map(|p| p.to_string_lossy().into_owned())
+            });
         app.add_resource(Input {
             filename: input_file,
             output_dir,

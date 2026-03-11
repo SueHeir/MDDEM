@@ -61,8 +61,8 @@ pub fn print_granular_temperature(
     }
     let physical_time = run_state.total_cycle as f64 * atoms.dt;
     let base_dir = match input.output_dir.as_deref() {
-        Some(dir) => format!("./{}/data", dir),
-        None => "./data".to_string(),
+        Some(dir) => format!("{}/data", dir),
+        None => "data".to_string(),
     };
     let result = fs::create_dir_all(&base_dir);
     if let Err(_error) = result {
@@ -83,10 +83,22 @@ pub fn print_granular_temperature(
             .open(&data_path)
             .unwrap()
     };
+    // Also compute total KE for energy tracking
+    let mut local_ke = 0.0;
+    for i in 0..nlocal {
+        local_ke += 0.5
+            * atoms.mass[i]
+            * (atoms.vel[i][0].powi(2) + atoms.vel[i][1].powi(2) + atoms.vel[i][2].powi(2));
+    }
+    let global_ke = comm.all_reduce_sum_f64(local_ke);
+
+    // Total momentum magnitude (should be ~conserved)
+    let mom_mag = (global_mv_x * global_mv_x + global_mv_y * global_mv_y + global_mv_z * global_mv_z).sqrt();
+
     writeln!(
         &mut file,
-        "{} {:.6e} {:.10e}",
-        run_state.total_cycle, physical_time, granular_temperature
+        "{} {:.6e} {:.10e} {:.10e} {:.10e}",
+        run_state.total_cycle, physical_time, granular_temperature, global_ke, mom_mag
     )
     .unwrap();
 }

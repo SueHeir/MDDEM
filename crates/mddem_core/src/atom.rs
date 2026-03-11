@@ -273,6 +273,10 @@ pub struct Atom {
     /// stays false, forcing neighbor rebuild every step.
     pub communicate_only: bool,
 
+    /// When true, PBC boundary crossings force a full ghost + neighbor rebuild.
+    /// Required for DEM where stale ghost placement causes missed contacts.
+    pub rebuild_on_pbc_wrap: bool,
+
     pub tag: Vec<u32>,
     pub atom_type: Vec<u32>,
     pub origin_index: Vec<i32>,
@@ -309,6 +313,7 @@ macro_rules! impl_atom_new {
                 nghost: 0,
                 dt: 1.0,
                 communicate_only: false,
+                rebuild_on_pbc_wrap: false,
                 $( $field: Vec::new(), )*
             }
         }

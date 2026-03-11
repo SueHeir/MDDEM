@@ -456,8 +456,8 @@ fn print_vtp_inner(
     input: &Input,
 ) -> std::io::Result<()> {
     let base_dir = match input.output_dir.as_deref() {
-        Some(dir) => format!("./{}/vtp", dir),
-        None => "./vtp".to_string(),
+        Some(dir) => format!("{}/vtp", dir),
+        None => "vtp".to_string(),
     };
     let filename = format!("{}/{}CYCLE_{}RANK.vtp", base_dir, count, rank);
     fs::create_dir_all(&base_dir)?;
@@ -530,8 +530,8 @@ fn dump_atoms_inner(
 ) -> std::io::Result<()> {
     let nlocal = atoms.nlocal as usize;
     let base_dir = match input.output_dir.as_deref() {
-        Some(dir) => format!("./{}/dump", dir),
-        None => "./dump".to_string(),
+        Some(dir) => format!("{}/dump", dir),
+        None => "dump".to_string(),
     };
     fs::create_dir_all(&base_dir)?;
 
@@ -611,8 +611,8 @@ pub fn write_restart(
     let rank = comm.rank();
     let nlocal = atoms.nlocal as usize;
     let base_dir = match input.output_dir.as_deref() {
-        Some(dir) => format!("./{}/restart", dir),
-        None => "./restart".to_string(),
+        Some(dir) => format!("{}/restart", dir),
+        None => "restart".to_string(),
     };
     fs::create_dir_all(&base_dir).ok();
 
@@ -694,8 +694,8 @@ pub fn read_restart(
 
     let rank = comm.rank();
     let base_dir = match input.output_dir.as_deref() {
-        Some(dir) => format!("./{}/restart", dir),
-        None => "./restart".to_string(),
+        Some(dir) => format!("{}/restart", dir),
+        None => "restart".to_string(),
     };
 
     // Find the latest restart file for this rank

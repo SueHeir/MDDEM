@@ -65,6 +65,10 @@ pub struct Domain {
     pub is_periodic: Vector3<bool>,
     /// Ghost atom communication cutoff. 0 = use per-atom skin * 4.0 (DEM default).
     pub ghost_cutoff: f64,
+    /// When true, PBC boundary crossings force a full ghost + neighbor rebuild.
+    /// Required for DEM (contact history depends on correct ghost identity).
+    /// Safe to leave false for pair potentials like LJ where stale ghosts are harmless.
+    pub pbc_strict: bool,
 }
 
 impl Default for Domain {
@@ -85,6 +89,7 @@ impl Domain {
             is_periodic: Vector3::new(false, false, false),
             volume: 1.0,
             ghost_cutoff: 0.0,
+            pbc_strict: false,
         }
     }
 }
@@ -135,6 +140,7 @@ impl DomainDecomposition for CartesianDecomposition {
             is_periodic,
             volume: size.x * size.y * size.z,
             ghost_cutoff: 0.0,
+            pbc_strict: false,
         }
     }
 }

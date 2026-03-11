@@ -5,14 +5,14 @@ boundary        p p p
 
 lattice         fcc 0.8442
 Lattice spacing in x,y,z = 1.6795962 1.6795962 1.6795962
-region          box block 0 29 0 29 0 30
+region          box block 0 5 0 5 0 10
 create_box      1 box
-Created orthogonal box = (0 0 0) to (48.70829 48.70829 50.387886)
-  1 by 2 by 2 MPI processor grid
+Created orthogonal box = (0 0 0) to (8.397981 8.397981 16.795962)
+  1 by 1 by 1 MPI processor grid
 create_atoms    1 box
-Created 100920 atoms
-  using lattice units in orthogonal box = (0 0 0) to (48.70829 48.70829 50.387886)
-  create_atoms CPU = 0.001 seconds
+Created 1000 atoms
+  using lattice units in orthogonal box = (0 0 0) to (8.397981 8.397981 16.795962)
+  create_atoms CPU = 0.000 seconds
 mass            1 1.0
 
 velocity        all create 1.44 87287 loop geom
@@ -35,41 +35,41 @@ Neighbor list info ...
   max neighbors/atom: 2000, page size: 100000
   master list distance cutoff = 2.8
   ghost atom cutoff = 2.8
-  binsize = 1.4, bins = 35 35 36
+  binsize = 1.4, bins = 6 6 12
   1 neighbor lists, perpetual/occasional/extra = 1 0 0
   (1) pair lj/cut, perpetual
       attributes: half, newton on
       pair build: half/bin/atomonly/newton
       stencil: half/bin/3d
       bin: standard
-Per MPI rank memory allocation (min/avg/max) = 12.74 | 12.74 | 12.74 Mbytes
+Per MPI rank memory allocation (min/avg/max) = 3.172 | 3.172 | 3.172 Mbytes
    Step        Atoms         Temp          KinEng         Press           CPU      
-         0      100920   1.44           2.1599786     -5.0196813      0            
-       200      100920   0.78924369     1.1838538      0.4750312      1.8957423    
-Loop time of 1.89576 on 4 procs for 200 steps with 100920 atoms
+         0        1000   1.44           2.15784       -5.0208849      0            
+       200        1000   0.83125363     1.2456336      0.79034609     0.069681166  
+Loop time of 0.069685 on 1 procs for 200 steps with 1000 atoms
 
-Performance: 45575.286 tau/day, 105.498 timesteps/s, 10.647 Matom-step/s
-97.8% CPU use with 4 MPI tasks x no OpenMP threads
+Performance: 1239865.855 tau/day, 2870.060 timesteps/s, 2.870 Matom-step/s
+98.4% CPU use with 1 MPI tasks x no OpenMP threads
 
 MPI task timing breakdown:
 Section |  min time  |  avg time  |  max time  |%varavg| %total
 ---------------------------------------------------------------
-Pair    | 1.4555     | 1.4648     | 1.4715     |   0.5 | 77.27
-Neigh   | 0.28135    | 0.28194    | 0.28242    |   0.1 | 14.87
-Comm    | 0.079439   | 0.084273   | 0.092786   |   1.7 |  4.45
-Output  | 5.1458e-05 | 9.3312e-05 | 0.00011821 |   0.0 |  0.00
-Modify  | 0.055413   | 0.060824   | 0.063377   |   1.3 |  3.21
-Other   |            | 0.003828   |            |       |  0.20
+Pair    | 0.053613   | 0.053613   | 0.053613   |   0.0 | 76.94
+Neigh   | 0.012253   | 0.012253   | 0.012253   |   0.0 | 17.58
+Comm    | 0.0017962  | 0.0017962  | 0.0017962  |   0.0 |  2.58
+Output  | 1.2875e-05 | 1.2875e-05 | 1.2875e-05 |   0.0 |  0.02
+Modify  | 0.0017662  | 0.0017662  | 0.0017662  |   0.0 |  2.53
+Other   |            | 0.0002431  |            |       |  0.35
 
-Nlocal:          25230 ave       25329 max       25146 min
-Histogram: 1 1 0 0 0 0 0 1 0 1
-Nghost:        17679.2 ave       17757 max       17619 min
-Histogram: 2 0 0 0 0 0 0 1 0 1
-Neighs:         945969 ave      954882 max      939185 min
-Histogram: 1 0 0 2 0 0 0 0 0 1
+Nlocal:           1000 ave        1000 max        1000 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Nghost:           2843 ave        2843 max        2843 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
+Neighs:          37458 ave       37458 max       37458 min
+Histogram: 1 0 0 0 0 0 0 0 0 0
 
-Total # of neighbors = 3783877
-Ave neighs/atom = 37.493827
+Total # of neighbors = 37458
+Ave neighs/atom = 37.458
 Neighbor list builds = 10
 Dangerous builds = 10
-Total wall time: 0:00:01
+Total wall time: 0:00:00

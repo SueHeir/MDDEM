@@ -488,6 +488,32 @@ fn unpack_ghost_atoms(atoms: &mut Atom, registry: &AtomDataRegistry, buf: &[f64]
 /// Per-atom stride in forward_comm: pos(3) + vel(3) + omega(3) = 9 f64s.
 const FORWARD_PACK_SIZE: usize = 9;
 
+/// For self-sends (single-process periodic), recompute the periodic offset for
+/// an atom based on its current position. After PBC wrapping, an atom originally
+/// near one boundary may now be near the other, making the stored offset stale.
+///
+/// For each dimension with a non-zero stored offset, determine the correct sign
+/// by checking the atom's position relative to the domain midpoint.
+#[inline]
+fn compute_per_atom_offset(
+    pos: &[f64; 3],
+    stored_offset: &[f64; 3],
+    boundaries_low: &nalgebra::Vector3<f64>,
+    boundaries_high: &nalgebra::Vector3<f64>,
+    size: &nalgebra::Vector3<f64>,
+) -> [f64; 3] {
+    let mut offset = [0.0; 3];
+    for dim in 0..3 {
+        if stored_offset[dim] != 0.0 {
+            let mid = (boundaries_low[dim] + boundaries_high[dim]) * 0.5;
+            // Atom below midpoint → ghost should be above → offset = +size
+            // Atom above midpoint → ghost should be below → offset = -size
+            offset[dim] = if pos[dim] < mid { size[dim] } else { -size[dim] };
+        }
+    }
+    offset
+}
+
 fn unpack_forward(msg: &[f64], atoms: &mut Atom, recv_start: usize, recv_count: usize) {
     for k in 0..recv_count {
         let base = k * FORWARD_PACK_SIZE;
@@ -501,16 +527,35 @@ fn forward_comm(
     atoms: &mut Atom,
     topo: &CommTopology,
     comm: &dyn CommBackend,
+    domain: &Domain,
     buf: &mut Vec<f64>,
 ) {
     let rank = comm.rank();
     for swap in &topo.swap_data {
         buf.clear();
+
+        // For self-sends (single-process periodic), recompute the periodic offset
+        // per atom based on current position. After PBC wrapping, an atom originally
+        // near one boundary may now be near the other, so the stored offset is stale.
+        // Recomputing ensures the ghost ends up at the correct periodic image.
+        let is_self_send = swap.to_proc == rank;
+
         // Pack positions, velocities, and omega (9 f64s per atom) with periodic offset
         for &idx in &swap.send_indices {
-            buf.push(atoms.pos[idx][0] + swap.periodic_offset[0]);
-            buf.push(atoms.pos[idx][1] + swap.periodic_offset[1]);
-            buf.push(atoms.pos[idx][2] + swap.periodic_offset[2]);
+            let offset = if is_self_send {
+                compute_per_atom_offset(
+                    &atoms.pos[idx],
+                    &swap.periodic_offset,
+                    &domain.boundaries_low,
+                    &domain.boundaries_high,
+                    &domain.size,
+                )
+            } else {
+                swap.periodic_offset
+            };
+            buf.push(atoms.pos[idx][0] + offset[0]);
+            buf.push(atoms.pos[idx][1] + offset[1]);
+            buf.push(atoms.pos[idx][2] + offset[2]);
             buf.push(atoms.vel[idx][0]);
             buf.push(atoms.vel[idx][1]);
             buf.push(atoms.vel[idx][2]);
@@ -557,9 +602,11 @@ pub fn borders(
 ) {
     let mut send_buff = std::mem::take(&mut buffers.border_send_buff);
 
-    // Fast path: forward_comm when communicate_only (ghost layout unchanged)
+    // Fast path: forward_comm when communicate_only (ghost layout unchanged).
+    // forward_comm recomputes per-atom periodic offsets for self-sends, so ghost
+    // positions stay correct even when atoms cross PBC boundaries between rebuilds.
     if atoms.communicate_only {
-        forward_comm(&mut atoms, &topo, &**comm, &mut send_buff);
+        forward_comm(&mut atoms, &topo, &**comm, &domain, &mut send_buff);
         buffers.border_send_buff = send_buff;
         return;
     }

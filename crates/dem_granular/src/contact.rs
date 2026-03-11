@@ -212,8 +212,8 @@ pub fn hertz_mindlin_contact_force(
             s *= f_t_max / f_t_spring_mag;
         }
 
-        // Tangential force with damping
-        let gamma_t = -2.0 * SQRT_5_3 * beta * (k_t * m_r).sqrt();
+        // Tangential force with damping (gamma_t > 0, opposes sliding velocity)
+        let gamma_t = 2.0 * SQRT_5_3 * beta * (k_t * m_r).sqrt();
         let mut ft_x = k_t * s.x - gamma_t * vt_x;
         let mut ft_y = k_t * s.y - gamma_t * vt_y;
         let mut ft_z = k_t * s.z - gamma_t * vt_z;
@@ -262,6 +262,30 @@ pub fn hertz_mindlin_contact_force(
     // Prune stale contacts for local atoms (remove entries not touched this step)
     for i in 0..nlocal {
         history.contacts[i].retain(|(_, _, active)| *active);
+    }
+
+    // Debug: check total force + torque on all atoms (local + ghost).
+    // In a correct Newton's 3rd law implementation, the sum of all forces
+    // from pair interactions must be zero (each pair contributes +F to one atom
+    // and -F to the other). A nonzero sum means a pair was counted asymmetrically.
+    #[cfg(debug_assertions)]
+    {
+        let total = atoms.len();
+        let mut sum_fx = 0.0;
+        let mut sum_fy = 0.0;
+        let mut sum_fz = 0.0;
+        for i in 0..total {
+            sum_fx += atoms.force[i][0];
+            sum_fy += atoms.force[i][1];
+            sum_fz += atoms.force[i][2];
+        }
+        let sum_f = (sum_fx * sum_fx + sum_fy * sum_fy + sum_fz * sum_fz).sqrt();
+        if sum_f > 1e-6 {
+            eprintln!(
+                "WARNING: nonzero net force after contact: |F|={:.6e} ({:.6e},{:.6e},{:.6e})",
+                sum_f, sum_fx, sum_fy, sum_fz
+            );
+        }
     }
 }
 
