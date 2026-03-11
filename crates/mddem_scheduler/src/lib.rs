@@ -148,10 +148,10 @@ impl<'res, T: 'static> SystemParam for Res<'res, T> {
         index: usize,
         _locals: *mut HashMap<TypeId, Box<dyn Any>>,
     ) -> Self::Item<'r> {
-        Res {
-            value: resources[index].borrow(),
-            _marker: PhantomData,
-        }
+        let guard = resources[index].borrow();
+        // Downcast once here; Deref uses the cached pointer.
+        let ptr: *const T = guard.downcast_ref::<T>().unwrap();
+        Res { _guard: guard, ptr }
     }
     fn resource_type_id() -> Option<TypeId> {
         Some(TypeId::of::<T>())
@@ -167,10 +167,10 @@ impl<'res, T: 'static> SystemParam for ResMut<'res, T> {
         index: usize,
         _locals: *mut HashMap<TypeId, Box<dyn Any>>,
     ) -> Self::Item<'r> {
-        ResMut {
-            value: resources[index].borrow_mut(),
-            _marker: PhantomData,
-        }
+        let mut guard = resources[index].borrow_mut();
+        // Downcast once here; Deref/DerefMut use the cached pointer.
+        let ptr: *mut T = guard.downcast_mut::<T>().unwrap();
+        ResMut { _guard: guard, ptr }
     }
     fn resource_type_id() -> Option<TypeId> {
         Some(TypeId::of::<T>())
@@ -182,35 +182,49 @@ impl<'res, T: 'static> SystemParam for ResMut<'res, T> {
 
 // ANCHOR: Res
 /// Shared immutable reference to resource `T`, injected into systems.
+///
+/// The downcast from `Box<dyn Any>` happens once at construction (in `retrieve`).
+/// `Deref` then uses the cached pointer — no virtual calls in hot loops.
 pub struct Res<'a, T: 'static> {
-    value: Ref<'a, Box<dyn Any>>,
-    _marker: PhantomData<&'a T>,
+    _guard: Ref<'a, Box<dyn Any>>,
+    ptr: *const T,
 }
 // ANCHOR_END: Res
 
 impl<T: 'static> Deref for Res<'_, T> {
     type Target = T;
+    #[inline(always)]
     fn deref(&self) -> &T {
-        self.value.downcast_ref().unwrap()
+        // SAFETY: ptr was obtained from downcast_ref in retrieve() and is valid
+        // for the lifetime 'a, guaranteed by _guard holding the Ref borrow.
+        unsafe { &*self.ptr }
     }
 }
 
 // ANCHOR: ResMut
 /// Exclusive mutable reference to resource `T`, injected into systems.
+///
+/// The downcast from `Box<dyn Any>` happens once at construction (in `retrieve`).
+/// `Deref`/`DerefMut` then use the cached pointer — no virtual calls in hot loops.
 pub struct ResMut<'a, T: 'static> {
-    value: RefMut<'a, Box<dyn Any>>,
-    _marker: PhantomData<&'a mut T>,
+    _guard: RefMut<'a, Box<dyn Any>>,
+    ptr: *mut T,
 }
 
 impl<T: 'static> Deref for ResMut<'_, T> {
     type Target = T;
+    #[inline(always)]
     fn deref(&self) -> &T {
-        self.value.downcast_ref().unwrap()
+        // SAFETY: ptr was obtained from downcast_mut in retrieve() and is valid
+        // for the lifetime 'a, guaranteed by _guard holding the RefMut borrow.
+        unsafe { &*self.ptr }
     }
 }
 impl<T: 'static> DerefMut for ResMut<'_, T> {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
-        self.value.downcast_mut().unwrap()
+        // SAFETY: same as Deref; exclusive access guaranteed by RefMut.
+        unsafe { &mut *self.ptr }
     }
 }
 // ANCHOR_END: ResMut

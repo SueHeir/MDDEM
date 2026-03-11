@@ -169,25 +169,19 @@ pub fn lj_force(
     let nlocal = atoms.nlocal as usize;
     let mut virial_sum = 0.0f64;
 
-    // Extract raw pointers ONCE to avoid repeated dyn Any downcast in the inner loop.
-    // ResMut<Atom> stores RefMut<Box<dyn Any>> — every deref does downcast_ref().unwrap(),
-    // which the compiler cannot hoist out of loops (mutable aliasing prevents LICM).
-    let pos_ptr = atoms.pos.as_ptr();
-    let force_ptr = atoms.force.as_mut_ptr();
-    let offsets_ptr = neighbor.neighbor_offsets.as_ptr();
-    let indices_ptr = neighbor.neighbor_indices.as_ptr();
-
+    // Direct CSR loop with batch force accumulation — load/store force[i] once per atom.
+    // Virial is always accumulated (1 fma per pair, negligible cost vs branching every pair).
     // SAFETY: i < nlocal <= atoms.len(), neighbor_offsets has nlocal+1 entries,
     // neighbor_indices[k] < atoms.len() (from CSR construction), j < atoms.len().
     for i in 0..nlocal {
-        let pi = unsafe { *pos_ptr.add(i) };
-        let mut fi = unsafe { *force_ptr.add(i) };
-        let start = unsafe { *offsets_ptr.add(i) } as usize;
-        let end = unsafe { *offsets_ptr.add(i + 1) } as usize;
+        let pi = unsafe { *atoms.pos.get_unchecked(i) };
+        let mut fi = unsafe { *atoms.force.get_unchecked(i) };
+        let start = unsafe { *neighbor.neighbor_offsets.get_unchecked(i) } as usize;
+        let end = unsafe { *neighbor.neighbor_offsets.get_unchecked(i + 1) } as usize;
 
         for k in start..end {
-            let j = unsafe { *indices_ptr.add(k) } as usize;
-            let pj = unsafe { *pos_ptr.add(j) };
+            let j = unsafe { *neighbor.neighbor_indices.get_unchecked(k) } as usize;
+            let pj = unsafe { *atoms.pos.get_unchecked(j) };
             let dx = pj[0] - pi[0];
             let dy = pj[1] - pi[1];
             let dz = pj[2] - pi[2];
@@ -210,12 +204,12 @@ pub fn lj_force(
             fi[0] -= fx;
             fi[1] -= fy;
             fi[2] -= fz;
-            let fj = unsafe { &mut *force_ptr.add(j) };
+            let fj = unsafe { atoms.force.get_unchecked_mut(j) };
             fj[0] += fx;
             fj[1] += fy;
             fj[2] += fz;
         }
-        unsafe { *force_ptr.add(i) = fi };
+        unsafe { *atoms.force.get_unchecked_mut(i) = fi };
     }
 
     virial.virial_sum = virial_sum;

@@ -232,25 +232,25 @@ Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). 
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
 |--------:|---------------:|----------------:|------:|
-|     108 |         19,121 |          31,087 |  1.6x |
-|   1,000 |          2,293 |           2,897 |  1.3x |
-|  10,000 |            259 |             296 |  1.1x |
-|  32,000 |           83.6 |            91.9 |  1.1x |
-| 100,920 |           26.6 |            29.0 |  1.1x |
+|     108 |         21,757 |          31,087 |  1.4x |
+|   1,000 |          2,341 |           2,897 |  1.2x |
+|  10,000 |            250 |             296 |  1.2x |
+|  32,000 |           81.4 |            91.9 |  1.1x |
+| 100,920 |           25.8 |            29.0 |  1.1x |
 
-LAMMPS is ~1.1x faster at scale, with consistent O(N) scaling in both codes. The force loop (58% of MDDEM runtime) uses LAMMPS-style precomputed constants and raw pointer access to avoid dynamic dispatch overhead. The neighbor list build (30% of runtime) uses CSR bins with a forward stencil, sorted position caches, sorted neighbor indices for sequential cache access, and unsafe bounds-check elimination.
+LAMMPS is ~1.1x faster at scale, with consistent O(N) scaling in both codes. The force loop (63% of MDDEM runtime) uses LAMMPS-style precomputed constants with a single reciprocal per pair. The neighbor list build (29% of runtime) uses CSR bins with a forward stencil, sorted position caches, sorted neighbor indices for sequential cache access, and unsafe bounds-check elimination. The DI scheduler caches downcast pointers at system entry so `Res<T>`/`ResMut<T>` access is a direct dereference with no dynamic dispatch in hot loops.
 
 MPI benchmark (4 processes, 2x2x1 decomposition) on the same hardware:
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | MDDEM Speedup | Ratio |
 |--------:|---------------:|----------------:|--------------:|------:|
-|     108 |         20,922 |          27,695 |         1.09x |  1.3x |
-|   1,000 |          4,228 |           9,433 |         1.84x |  2.2x |
-|  10,000 |            694 |           1,067 |         2.68x |  1.5x |
-|  32,000 |            263 |             323 |         3.15x |  1.2x |
-| 100,920 |           84.6 |             105 |         3.18x |  1.2x |
+|     108 |         21,891 |          27,695 |         1.01x |  1.3x |
+|   1,000 |          4,379 |           9,433 |         1.87x |  2.2x |
+|  10,000 |            677 |           1,067 |         2.71x |  1.6x |
+|  32,000 |            252 |             323 |         3.09x |  1.3x |
+| 100,920 |           83.9 |             105 |         3.25x |  1.3x |
 
-MDDEM MPI achieves 1.1-3.2x speedup over single-core, with the ratio to LAMMPS narrowing to 1.2x at scale. The 108-atom case uses multi-hop ghost communication (ghost cutoff exceeds subdomain size) and now runs correctly with 2x2x1 decomposition. At scale (32k+ atoms), MDDEM MPI performance is within 1.2x of LAMMPS. Spatial sorting of atoms by bin is enabled in both single-core and MPI modes, improving cache locality for force and neighbor list computations. Communication uses per-dimension exchange with non-blocking sends, multi-hop ghost forwarding when needed, and lightweight ghost position updates between neighbor rebuilds.
+MDDEM MPI achieves 1.0-3.3x speedup over single-core, with the ratio to LAMMPS narrowing to 1.3x at scale. The 108-atom case uses multi-hop ghost communication (ghost cutoff exceeds subdomain size) and now runs correctly with 2x2x1 decomposition. At scale (32k+ atoms), MDDEM MPI performance is within 1.3x of LAMMPS. Spatial sorting of atoms by bin is enabled in both single-core and MPI modes, improving cache locality for force and neighbor list computations. Communication uses per-dimension exchange with non-blocking sends, multi-hop ghost forwarding when needed, and lightweight ghost position updates between neighbor rebuilds.
 
 ## Roadmap
 
