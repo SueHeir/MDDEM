@@ -612,10 +612,6 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
 }
 
 pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>, _comm: Res<CommResource>, registry: Res<AtomDataRegistry>) {
-    // Skip sort in MPI mode for now — needs exchange coordination
-    if _comm.size() > 1 {
-        return;
-    }
     let nlocal = atoms.nlocal as usize;
     if nlocal == 0 || neighbor.bin_total_cells == 0 || nlocal > atoms.pos.len() {
         return;
