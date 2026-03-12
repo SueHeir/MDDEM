@@ -19,7 +19,7 @@ Cross-section (x-z plane, periodic in y):
 
 **Filling phase:** 200 particles are inserted in the upper region and settle under gravity onto the angled funnel walls and blocker.
 
-**Flowing phase:** Once the total kinetic energy drops below 1e-8 J (particles nearly stationary), the blocker wall is automatically removed and particles flow through the funnel exit to the floor.
+**Flowing phase:** Once the total kinetic energy drops below 1e-5 J (particles nearly stationary), the blocker wall is automatically removed and particles flow through the funnel exit to the floor.
 
 This example demonstrates MDDEM's Tier 2 (Rust API) by adding a custom system alongside the standard TOML-configured plugins.
 
@@ -72,7 +72,7 @@ This pattern — TOML config for standard physics, custom Rust systems for runti
 cargo run --example hopper -- examples/hopper/config.toml
 
 # With MPI
-cargo build-examples
+cargo build --release --example hopper
 mpiexec -n 4 ./target/release/examples/hopper examples/hopper/config.toml
 ```
 
@@ -92,8 +92,8 @@ mpiexec -n 4 ./target/release/examples/hopper examples/hopper/config.toml
 | Boundaries | Non-periodic x/z, periodic y |
 | Funnel angle | ~67 deg from horizontal |
 | Funnel exit | 1 cm opening at z = 0.015 m |
-| Blocker wall | z = 0.015 m (removed when KE < 1e-8 J) |
-| Total steps | 150,000, thermo 500 |
+| Blocker wall | z = 0.015 m (removed when KE < 1e-5 J) |
+| Total steps | 1,000,000, thermo 2000 |
 | KE check | Every 100 steps after step 1000 |
 
 ## Validation
