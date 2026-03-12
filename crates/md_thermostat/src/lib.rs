@@ -143,22 +143,10 @@ pub fn setup_nose_hoover(
     }
 }
 
-fn rescale_velocities(atoms: &mut Atom, scale: f64, mask: Option<&[bool]>) {
-    let nlocal = atoms.nlocal as usize;
-    for i in 0..nlocal {
-        if !group_includes(mask, i) {
-            continue;
-        }
-        atoms.vel[i][0] *= scale;
-        atoms.vel[i][1] *= scale;
-        atoms.vel[i][2] *= scale;
-    }
-}
-
-/// Pre-initial integration: half-step NH thermostat
+/// Fused pre-initial: half-step NH thermostat + Velocity Verlet initial integration.
 /// 1. Compute KE (global reduction for MPI)
 /// 2. Update p_xi by half step
-/// 3. Rescale velocities by exp(-dt/2 * p_xi/Q)
+/// 3. Fused loop: rescale velocities, half-kick, drift
 pub fn nh_pre_initial(
     mut atoms: ResMut<Atom>,
     mut nh: ResMut<NoseHooverState>,
@@ -173,11 +161,39 @@ pub fn nh_pre_initial(
     nh.p_xi += (dt / 2.0) * (2.0 * ke - nh.ndof * nh.target_temp);
 
     let scale = (-dt / 2.0 * nh.p_xi / nh.q_mass).exp();
-    rescale_velocities(&mut atoms, scale, mask);
+    let nlocal = atoms.nlocal as usize;
+
+    let inv_mass_ptr = atoms.inv_mass.as_ptr();
+    let force_ptr = atoms.force.as_ptr();
+    let vel_ptr = atoms.vel.as_mut_ptr();
+    let pos_ptr = atoms.pos.as_mut_ptr();
+
+    for i in 0..nlocal {
+        unsafe {
+            let v = &mut *vel_ptr.add(i);
+            // Rescale (thermostat group only)
+            if group_includes(mask, i) {
+                v[0] *= scale;
+                v[1] *= scale;
+                v[2] *= scale;
+            }
+            // Half-kick
+            let half_dt_over_m = 0.5 * dt * *inv_mass_ptr.add(i);
+            let f = &*force_ptr.add(i);
+            v[0] += half_dt_over_m * f[0];
+            v[1] += half_dt_over_m * f[1];
+            v[2] += half_dt_over_m * f[2];
+            // Drift
+            let p = &mut *pos_ptr.add(i);
+            p[0] += v[0] * dt;
+            p[1] += v[1] * dt;
+            p[2] += v[2] * dt;
+        }
+    }
 }
 
-/// Post-final integration: second half-step NH thermostat
-/// 1. Rescale velocities by exp(-dt/2 * p_xi/Q)
+/// Fused post-final: Velocity Verlet final integration + half-step NH thermostat.
+/// 1. Fused loop: half-kick, then rescale velocities
 /// 2. Recompute KE (global reduction for MPI)
 /// 3. Update p_xi by half step
 pub fn nh_post_final(
@@ -190,7 +206,29 @@ pub fn nh_post_final(
     let mask = groups.mask_for(&nh.group_name);
 
     let scale = (-dt / 2.0 * nh.p_xi / nh.q_mass).exp();
-    rescale_velocities(&mut atoms, scale, mask);
+    let nlocal = atoms.nlocal as usize;
+
+    let inv_mass_ptr = atoms.inv_mass.as_ptr();
+    let force_ptr = atoms.force.as_ptr();
+    let vel_ptr = atoms.vel.as_mut_ptr();
+
+    for i in 0..nlocal {
+        unsafe {
+            let v = &mut *vel_ptr.add(i);
+            // Half-kick
+            let half_dt_over_m = 0.5 * dt * *inv_mass_ptr.add(i);
+            let f = &*force_ptr.add(i);
+            v[0] += half_dt_over_m * f[0];
+            v[1] += half_dt_over_m * f[1];
+            v[2] += half_dt_over_m * f[2];
+            // Rescale (thermostat group only)
+            if group_includes(mask, i) {
+                v[0] *= scale;
+                v[1] *= scale;
+                v[2] *= scale;
+            }
+        }
+    }
 
     let ke_local = compute_ke(&atoms, mask);
     let ke = comm.all_reduce_sum_f64(ke_local);

@@ -18,7 +18,7 @@ Configuration follows a two-tier approach. **Tier 1** is declarative TOML config
 
 At first, I wanted to learn about LAMMPS communication more through rewriting it into Rust.  I also have had many pain points with editing LAMMPS code, and working with LAMMPS scripts, and wanted to see if a scheduler with dependency injection would work for something like this (big fan of bevy).
 
-Now that Claude code is good enough to debug MPI communication neighbor list problems (it still struggles a lot with these, don't we all), I have expanded the scope to hopefully be a nice starting place for anyone wanting to try and vibe code a MD or DEM simulation in rust. **I would not trust this code for anything you want to publish.** I also would not contribute to this code in a serious manual fashion. View it as a playground to test out AI agents for whatever work you're doing. That being said, it's producing reasonable physics results, at about 90% the performance of LAMMPS. 
+Now that Claude code is good enough to debug MPI communication neighbor list problems (it still struggles a lot with these, don't we all), I have expanded the scope to hopefully be a nice starting place for anyone wanting to try and vibe code a MD or DEM simulation in rust. **I would not trust this code for anything you want to publish.** I also would not contribute to this code in a serious manual fashion. View it as a playground to test out AI agents for whatever work you're doing. That being said, it's producing reasonable physics results, at about 92% the performance of LAMMPS. 
 
 If you're unsure about why this is even a repo (I kinda agree with you), I would look at the [hopper](examples/hopper/) example first. It's very simple, but shows how easy it is to add your own code into the mix. 
 
@@ -210,27 +210,25 @@ Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). 
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
 |--------:|---------------:|----------------:|------:|
-|     108 |         21,765 |          31,087 |  1.4x |
-|   1,000 |          2,270 |           2,897 |  1.3x |
-|  10,000 |            251 |             296 |  1.2x |
-|  32,000 |           81.2 |            91.9 |  1.1x |
-| 100,920 |           26.1 |            29.0 |  1.1x |
+|     108 |         20,655 |          31,087 | 1.50x |
+|   1,000 |          2,339 |           2,897 | 1.24x |
+|  10,000 |            262 |             296 | 1.13x |
+|  32,000 |           83.9 |            91.9 | 1.10x |
+| 100,920 |           26.8 |            29.0 | 1.08x |
 
-LAMMPS is ~1.1x faster at scale, with consistent O(N) scaling in both codes. The force loop (~63% of MDDEM runtime) uses LAMMPS-style precomputed constants with a single reciprocal per pair. The neighbor list build (~29% of runtime) uses CSR bins with a forward stencil, sorted position caches, sorted neighbor indices for sequential cache access, and unsafe bounds-check elimination. The DI scheduler caches downcast pointers at system entry so `Res<T>`/`ResMut<T>` access is a direct dereference with no dynamic dispatch in hot loops.
+LAMMPS is ~1.08-1.13x faster at scale, with consistent O(N) scaling in both codes. The force loop (~50% of MDDEM runtime) uses LAMMPS-style precomputed constants with a single reciprocal per pair and explicit FMA (`mul_add`) for force accumulation. The Nose-Hoover thermostat fuses velocity rescaling with Velocity Verlet integration to reduce array passes per timestep. The neighbor list build (~26% of runtime) uses CSR bins with a forward stencil, sorted position caches, sorted neighbor indices for sequential cache access, and unsafe bounds-check elimination. The DI scheduler caches downcast pointers at system entry so `Res<T>`/`ResMut<T>` access is a direct dereference with no dynamic dispatch in hot loops.
 
 MPI benchmark (4 processes, 2x2x1 decomposition) on the same hardware:
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | MDDEM Speedup | Ratio |
 |--------:|---------------:|----------------:|--------------:|------:|
-|     108 |           \*   |          27,695 |            \* |    \* |
-|   1,000 |          5,508 |           9,433 |         2.43x |  1.7x |
-|  10,000 |            782 |           1,067 |         3.12x |  1.4x |
-|  32,000 |            283 |             323 |         3.48x |  1.1x |
-| 100,920 |           91.7 |             105 |         3.51x |  1.1x |
+|     108 |         27,470 |          27,695 |         1.33x | 1.01x |
+|   1,000 |          5,399 |           9,433 |         2.31x | 1.75x |
+|  10,000 |            780 |           1,067 |         2.98x | 1.37x |
+|  32,000 |            286 |             323 |         3.41x | 1.13x |
+| 100,920 |           93.1 |             105 |         3.47x | 1.13x |
 
-\* The 108-atom MPI case is excluded — with 2x2x1 decomposition, subdomains are smaller than the ghost cutoff, producing invalid physics (NaN energies, zero neighbors). Probably a bug.
-
-MDDEM MPI achieves 2.4-3.5x speedup over single-core at scale, with the ratio to LAMMPS narrowing to 1.1x at 32k+ atoms. Spatial sorting of atoms by bin is enabled in both single-core and MPI modes, improving cache locality for force and neighbor list computations. Communication uses per-dimension exchange with non-blocking sends, multi-hop ghost forwarding when needed, and lightweight ghost position updates between neighbor rebuilds.
+MDDEM MPI achieves 2.3-3.5x speedup over single-core at scale, with the ratio to LAMMPS narrowing to 1.13x at 32k+ atoms. Spatial sorting of atoms by bin is enabled in both single-core and MPI modes, improving cache locality for force and neighbor list computations. Communication uses per-dimension exchange with non-blocking sends, multi-hop ghost forwarding when needed, and lightweight ghost position updates between neighbor rebuilds.
 
 ## Roadmap
 
@@ -310,7 +308,7 @@ fn main() {
 }
 ```
 
-`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, Velocity Verlet, and output. `GranularDefaultPlugins` adds DEM atom data, insertion, contact forces, gravity, and walls. `LJDefaultPlugins` adds FCC lattice, LJ forces, thermostat, and measurements. Individual plugins can be added separately for custom configurations.
+`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, and output. `GranularDefaultPlugins` adds DEM atom data, insertion, contact forces, rotational dynamics, Velocity Verlet, and walls. `LJDefaultPlugins` adds FCC lattice, LJ forces, Nose-Hoover thermostat (with fused Velocity Verlet integration), and measurements. Individual plugins can be added separately for custom configurations — add `VelocityVerletPlugin` explicitly when not using a thermostat that provides integration.
 
 ## Testing
 

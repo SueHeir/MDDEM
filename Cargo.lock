@@ -164,6 +164,7 @@ dependencies = [
  "mddem_core",
  "mddem_neighbor",
  "mddem_scheduler",
+ "mddem_verlet",
  "nalgebra",
 ]
 

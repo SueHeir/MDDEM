@@ -33,7 +33,7 @@ Tangential spring-history contacts are stored per-atom in a `ContactHistoryStore
 
 ## Usage
 
-`GranularDefaultPlugins` bundles all plugins plus `DemAtomPlugin` and `DemAtomInsertPlugin`:
+`GranularDefaultPlugins` bundles all plugins plus `DemAtomPlugin`, `DemAtomInsertPlugin`, and `VelocityVerletPlugin` (translational integration):
 
 ```rust
 use mddem::prelude::*;

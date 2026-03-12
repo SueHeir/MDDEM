@@ -16,6 +16,7 @@ use mddem_app::prelude::*;
 
 use dem_atom::DemAtomPlugin;
 use dem_atom_insert::DemAtomInsertPlugin;
+use mddem_verlet::VelocityVerletPlugin;
 
 pub use contact::HertzMindlinContactPlugin;
 
@@ -43,7 +44,7 @@ pub const MAX_OVERLAP_WARNINGS: usize = 100;
 /// - [`GranularTempPlugin`] — granular temperature output to file
 ///
 /// Does **not** include infrastructure plugins (input, comm, domain, neighbor,
-/// run, verlet, print). Use [`CorePlugins`] to get all infrastructure.
+/// run, print). Use [`CorePlugins`] to get all infrastructure.
 ///
 /// # Usage
 /// ```rust,ignore
@@ -60,6 +61,7 @@ impl PluginGroup for GranularDefaultPlugins {
         PluginGroupBuilder::start::<Self>()
             .add(DemAtomPlugin)
             .add(DemAtomInsertPlugin)
+            .add(VelocityVerletPlugin)
             .add(HertzMindlinContactPlugin)
             .add(RotationalDynamicsPlugin)
             .add(GranularTempPlugin)

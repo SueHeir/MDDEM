@@ -37,7 +37,7 @@ The validation script (`validate.py`) checks all measurements against expected v
 
 ## Plugins Used
 
-- `CorePlugins` — communication, domain, neighbor lists, Velocity Verlet, thermo output
+- `CorePlugins` — communication, domain, neighbor lists, thermo output
 - `LatticePlugin` — FCC lattice initialization with Maxwell-Boltzmann velocities
 - `LJForcePlugin` — LJ 12-6 pair force with virial accumulator and tail corrections
 - `NoseHooverPlugin` — Nose-Hoover NVT thermostat

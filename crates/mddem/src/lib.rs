@@ -29,8 +29,11 @@ use mddem_app::prelude::*;
 /// - [`DomainPlugin`](mddem_core::DomainPlugin) — Cartesian domain decomposition
 /// - [`NeighborPlugin`](mddem_neighbor::NeighborPlugin) — sweep-and-prune neighbor lists
 /// - [`RunPlugin`](mddem_core::RunPlugin) — run/cycle management
-/// - [`VelocityVerletPlugin`](mddem_verlet::VelocityVerletPlugin) — translational Velocity Verlet integration
 /// - [`PrintPlugin`](mddem_print::PrintPlugin) — thermo output, dump files, restart files
+///
+/// **Note:** Velocity Verlet integration is **not** included here. Use
+/// [`VelocityVerletPlugin`](mddem_verlet::VelocityVerletPlugin) directly, or rely on
+/// [`NoseHooverPlugin`](md_thermostat::NoseHooverPlugin) which provides fused integration.
 ///
 /// MPI finalization is registered as a cleanup callback and runs automatically
 /// at the end of [`App::start()`].
@@ -57,7 +60,6 @@ impl PluginGroup for CorePlugins {
             })
             .add(mddem_core::GroupPlugin)
             .add(mddem_core::RunPlugin)
-            .add(mddem_verlet::VelocityVerletPlugin)
             .add(mddem_print::PrintPlugin)
     }
 }
@@ -67,7 +69,7 @@ impl PluginGroup for CorePlugins {
 /// Includes:
 /// - [`LatticePlugin`](md_lattice::LatticePlugin) — FCC lattice initialization
 /// - [`LJForcePlugin`](md_lj::LJForcePlugin) — LJ 12-6 pair force + virial
-/// - [`NoseHooverPlugin`](md_thermostat::NoseHooverPlugin) — NVT thermostat
+/// - [`NoseHooverPlugin`](md_thermostat::NoseHooverPlugin) — NVT thermostat with fused Velocity Verlet integration
 /// - [`MeasurePlugin`](md_measure::MeasurePlugin) — RDF, MSD, pressure measurements
 pub struct LJDefaultPlugins;
 

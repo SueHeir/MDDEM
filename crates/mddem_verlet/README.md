@@ -19,7 +19,14 @@ This is time-reversible, symplectic, and second-order accurate.
 
 ## Usage
 
-`VelocityVerletPlugin` is included in `CorePlugins`. It registers two systems — `initial_integration` and `final_integration` — at the appropriate schedule sets.
+`VelocityVerletPlugin` registers two systems — `initial_integration` and `final_integration` — at the appropriate schedule sets. Add it explicitly when your simulation does not use a thermostat that provides fused integration (e.g., `NoseHooverPlugin` fuses velocity rescaling with Verlet integration internally).
+
+`VelocityVerletPlugin` is included in `GranularDefaultPlugins`. For MD simulations without a thermostat, add it manually:
+
+```rust
+app.add_plugins(CorePlugins)
+    .add_plugins(VelocityVerletPlugin);
+```
 
 Rotational integration (quaternion-based angular Velocity Verlet) is provided separately by `dem_granular::RotationalDynamicsPlugin`.
 

@@ -188,7 +188,7 @@ pub fn lj_force(
             let dx = pj[0] - pi[0];
             let dy = pj[1] - pi[1];
             let dz = pj[2] - pi[2];
-            let r2 = dx * dx + dy * dy + dz * dz;
+            let r2 = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
 
             if r2 >= cutoff2 {
                 continue;
@@ -196,21 +196,17 @@ pub fn lj_force(
 
             let r2inv = 1.0 / r2;
             let r6inv = r2inv * r2inv * r2inv;
-            let fpair = r2inv * r6inv * (lj1 * r6inv - lj2);
+            let fpair = r2inv * r6inv * lj1.mul_add(r6inv, -lj2);
 
-            virial_sum += fpair * r2;
+            virial_sum = fpair.mul_add(r2, virial_sum);
 
-            let fx = fpair * dx;
-            let fy = fpair * dy;
-            let fz = fpair * dz;
-
-            fi[0] -= fx;
-            fi[1] -= fy;
-            fi[2] -= fz;
-            let fj = unsafe { force_ptr.add(j).as_mut().unwrap_unchecked() };
-            fj[0] += fx;
-            fj[1] += fy;
-            fj[2] += fz;
+            fi[0] = (-fpair).mul_add(dx, fi[0]);
+            fi[1] = (-fpair).mul_add(dy, fi[1]);
+            fi[2] = (-fpair).mul_add(dz, fi[2]);
+            let fj = unsafe { &mut *force_ptr.add(j) };
+            fj[0] = fpair.mul_add(dx, fj[0]);
+            fj[1] = fpair.mul_add(dy, fj[1]);
+            fj[2] = fpair.mul_add(dz, fj[2]);
         }
         unsafe { *force_ptr.add(i) = fi };
     }
