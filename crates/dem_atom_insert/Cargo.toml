@@ -10,10 +10,10 @@ keywords = ["dem", "particle", "insertion", "simulation"]
 categories = ["simulation", "science"]
 
 [dependencies]
-mddem_core = { path = "../mddem_core", version = "0.1.2", default-features = false }
-mddem_app = { path = "../mddem_app", version = "0.1.2" }
-mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.2" }
-dem_atom = { path = "../dem_atom", version = "0.1.2" }
+mddem_core = { path = "../mddem_core", version = "0.1.3", default-features = false }
+mddem_app = { path = "../mddem_app", version = "0.1.3" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.3" }
+dem_atom = { path = "../dem_atom", version = "0.1.3" }
 nalgebra = "0.33.2"
 rand = "0.9"
 rand_distr = "0.5.1"
