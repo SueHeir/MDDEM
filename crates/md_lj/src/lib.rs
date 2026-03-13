@@ -152,6 +152,11 @@ pub fn lj_force(
     // neighbor_indices[k] < atoms.len() (from CSR construction), j < atoms.len().
     let pos_ptr = atoms.pos.as_ptr();
     let force_ptr = atoms.force.as_mut_ptr();
+    // Cache CSR pointers to prevent alias-reload in inner loops.
+    // Without this, the compiler reloads the Vec data pointer every iteration
+    // because it can't prove the force writes don't alias the Neighbor struct.
+    let offsets_ptr = neighbor.neighbor_offsets.as_ptr();
+    let indices_ptr = neighbor.neighbor_indices.as_ptr();
 
     let virial_active = virial.as_ref().map_or(false, |v| v.active);
 
@@ -167,11 +172,11 @@ pub fn lj_force(
         for i in 0..nlocal {
             let pi = unsafe { *pos_ptr.add(i) };
             let mut fi = unsafe { *force_ptr.add(i) };
-            let start = unsafe { *neighbor.neighbor_offsets.get_unchecked(i) } as usize;
-            let end = unsafe { *neighbor.neighbor_offsets.get_unchecked(i + 1) } as usize;
+            let start = unsafe { *offsets_ptr.add(i) } as usize;
+            let end = unsafe { *offsets_ptr.add(i + 1) } as usize;
 
             for k in start..end {
-                let j = unsafe { *neighbor.neighbor_indices.get_unchecked(k) } as usize;
+                let j = unsafe { *indices_ptr.add(k) } as usize;
                 let pj = unsafe { *pos_ptr.add(j) };
                 let dx = pj[0] - pi[0];
                 let dy = pj[1] - pi[1];
@@ -220,11 +225,11 @@ pub fn lj_force(
         for i in 0..nlocal {
             let pi = unsafe { *pos_ptr.add(i) };
             let mut fi = unsafe { *force_ptr.add(i) };
-            let start = unsafe { *neighbor.neighbor_offsets.get_unchecked(i) } as usize;
-            let end = unsafe { *neighbor.neighbor_offsets.get_unchecked(i + 1) } as usize;
+            let start = unsafe { *offsets_ptr.add(i) } as usize;
+            let end = unsafe { *offsets_ptr.add(i + 1) } as usize;
 
             for k in start..end {
-                let j = unsafe { *neighbor.neighbor_indices.get_unchecked(k) } as usize;
+                let j = unsafe { *indices_ptr.add(k) } as usize;
                 let pj = unsafe { *pos_ptr.add(j) };
                 let dx = pj[0] - pi[0];
                 let dy = pj[1] - pi[1];

@@ -18,7 +18,7 @@ Configuration follows a two-tier approach. **Tier 1** is declarative TOML config
 
 At first, I wanted to learn about LAMMPS communication more through rewriting it into Rust.  I also have had many pain points with editing LAMMPS code, and working with LAMMPS scripts, and wanted to see if a scheduler with dependency injection would work for something like this (big fan of bevy).
 
-Now that Claude code is good enough to debug MPI communication neighbor list problems (it still struggles a lot with these, don't we all), I have expanded the scope to hopefully be a nice starting place for anyone wanting to try and vibe code a MD or DEM simulation in rust. **I would not trust this code for anything you want to publish.** I also would not contribute to this code in a serious manual fashion. View it as a playground to test out AI agents for whatever work you're doing. That being said, it's producing reasonable physics results, at about 93% the performance of LAMMPS.
+Now that Claude code is good enough to debug MPI communication neighbor list problems (it still struggles a lot with these, don't we all), I have expanded the scope to hopefully be a nice starting place for anyone wanting to try and vibe code a MD or DEM simulation in rust. **I would not trust this code for anything you want to publish.** I also would not contribute to this code in a serious manual fashion. View it as a playground to test out AI agents for whatever work you're doing. That being said, it's producing reasonable physics results, within 2-3% of LAMMPS single-core and 10% on MPI.
 
 If you're unsure about why this is even a repo (I kinda agree with you), I would look at the [hopper](examples/hopper/) example first. It's very simple, but shows how easy it is to add your own code into the mix. 
 
@@ -210,26 +210,26 @@ Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). 
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
 |--------:|---------------:|----------------:|------:|
-|     108 |         23,018 |          31,040 | 1.35x |
-|   1,000 |          2,464 |           2,978 | 1.21x |
-|  10,000 |            267 |             301 | 1.13x |
-|  32,000 |           85.3 |            93.6 | 1.10x |
-| 100,920 |           27.6 |            29.5 | 1.07x |
-| 202,612 |           13.7 |            14.6 | 1.07x |
+|     108 |         23,305 |          31,145 | 1.34x |
+|   1,000 |          2,562 |           2,943 | 1.15x |
+|  10,000 |            277 |             293 | 1.06x |
+|  32,000 |           88.1 |            92.7 | 1.05x |
+| 100,920 |           28.4 |            29.1 | 1.02x |
+| 202,612 |           14.1 |            14.5 | 1.03x |
 
-LAMMPS is ~1.07-1.10x faster at scale, with consistent O(N) scaling in both codes. Virial stress is computed conditionally — only on thermo/measurement steps — so the force inner loop uses FMA without virial overhead on most steps. The force loop (~64% of MDDEM runtime) uses LAMMPS-style precomputed constants with a single reciprocal per pair and explicit FMA (`mul_add`) for force accumulation. The Nose-Hoover thermostat fuses velocity rescaling with Velocity Verlet integration to reduce array passes per timestep. The neighbor list build (~29% of runtime) uses CSR bins with a forward stencil, sorted position caches, and unsafe bounds-check elimination. The DI scheduler caches downcast pointers at system entry so `Res<T>`/`ResMut<T>` access is a direct dereference with no dynamic dispatch in hot loops.
+LAMMPS is ~1.02-1.05x faster at scale, with consistent O(N) scaling in both codes. Virial stress is computed conditionally — only on thermo/measurement steps — so the force inner loop uses FMA without virial overhead on most steps. The force loop (~64% of MDDEM runtime) uses LAMMPS-style precomputed constants with a single reciprocal per pair, explicit FMA (`mul_add`) for force accumulation, and cached CSR pointers to prevent alias-induced reloads in the inner loop. The Nose-Hoover thermostat fuses velocity rescaling with Velocity Verlet integration to reduce array passes per timestep. The neighbor list build (~29% of runtime) uses CSR bins with a forward stencil, sorted position caches, and unsafe bounds-check elimination. The DI scheduler caches downcast pointers at system entry so `Res<T>`/`ResMut<T>` access is a direct dereference with no dynamic dispatch in hot loops.
 
 MPI benchmark (4 processes, 2x2x1 decomposition) on the same hardware:
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | MDDEM Speedup | Ratio |
 |--------:|---------------:|----------------:|--------------:|------:|
-|     108 |         31,100 |          29,677 |         1.35x | 0.95x |
-|   1,000 |          5,835 |           9,507 |         2.37x | 1.63x |
-|  10,000 |            862 |           1,107 |         3.23x | 1.28x |
-|  32,000 |            305 |             342 |         3.57x | 1.12x |
-| 100,920 |           96.9 |             110 |         3.51x | 1.13x |
+|     108 |         28,893 |          29,565 |         1.24x | 1.02x |
+|   1,000 |          5,725 |           9,498 |         2.23x | 1.66x |
+|  10,000 |            857 |           1,088 |         3.09x | 1.27x |
+|  32,000 |            305 |             335 |         3.46x | 1.10x |
+| 100,920 |           98.5 |             108 |         3.47x | 1.10x |
 
-MDDEM MPI achieves 2.4-3.6x speedup over single-core at scale, with the ratio to LAMMPS narrowing to 1.12-1.13x at 32k+ atoms. Spatial sorting of atoms by bin is enabled in both single-core and MPI modes, improving cache locality for force and neighbor list computations. Communication uses per-dimension exchange with non-blocking sends, multi-hop ghost forwarding when needed, and lightweight ghost position updates between neighbor rebuilds.
+MDDEM MPI achieves 2.2-3.5x speedup over single-core at scale, with the ratio to LAMMPS narrowing to 1.10x at 32k+ atoms. Spatial sorting of atoms by bin is enabled in both single-core and MPI modes, improving cache locality for force and neighbor list computations. Communication uses per-dimension exchange with non-blocking sends, multi-hop ghost forwarding when needed, and lightweight ghost position updates between neighbor rebuilds.
 
 ## Roadmap
 

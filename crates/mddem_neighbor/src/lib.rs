@@ -862,7 +862,7 @@ pub fn bin_neighbor_list(
                     let dx = pj[0] - pi[0];
                     let dy = pj[1] - pi[1];
                     let dz = pj[2] - pi[2];
-                    let r2 = dx * dx + dy * dy + dz * dz;
+                    let r2 = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
                     if r2 < cutoff_sq {
                         let j = unsafe { *sorted_atoms.get_unchecked(m) };
                         push_index!(j);
@@ -879,7 +879,7 @@ pub fn bin_neighbor_list(
                     let dx = pj[0] - pi[0];
                     let dy = pj[1] - pi[1];
                     let dz = pj[2] - pi[2];
-                    let r2 = dx * dx + dy * dy + dz * dz;
+                    let r2 = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
                     if r2 < cutoff_sq {
                         let j = unsafe { *sorted_atoms.get_unchecked(m) };
                         push_index!(j);
@@ -889,6 +889,7 @@ pub fn bin_neighbor_list(
         }
     } else {
         // Slow path: per-pair skin computation
+        let skin_fraction_sq = skin_fraction * skin_fraction;
         for i in 0..nlocal {
             offsets.push(nidx as u32);
             let my_cell = unsafe { *atom_cell.get_unchecked(i) } as usize;
@@ -904,9 +905,9 @@ pub fn bin_neighbor_list(
                     let dx = pj[0] - pi[0];
                     let dy = pj[1] - pi[1];
                     let dz = pj[2] - pi[2];
-                    let r2 = dx * dx + dy * dy + dz * dz;
-                    let cutoff = (si + unsafe { *atoms.skin.get_unchecked(j) }) * skin_fraction;
-                    if r2 < cutoff * cutoff {
+                    let r2 = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
+                    let sum_skin = si + unsafe { *atoms.skin.get_unchecked(j) };
+                    if r2 < sum_skin * sum_skin * skin_fraction_sq {
                         push_index!(j as u32);
                     }
                 }
@@ -922,9 +923,9 @@ pub fn bin_neighbor_list(
                     let dx = pj[0] - pi[0];
                     let dy = pj[1] - pi[1];
                     let dz = pj[2] - pi[2];
-                    let r2 = dx * dx + dy * dy + dz * dz;
-                    let cutoff = (si + unsafe { *atoms.skin.get_unchecked(j) }) * skin_fraction;
-                    if r2 < cutoff * cutoff {
+                    let r2 = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
+                    let sum_skin = si + unsafe { *atoms.skin.get_unchecked(j) };
+                    if r2 < sum_skin * sum_skin * skin_fraction_sq {
                         push_index!(j as u32);
                     }
                 }
