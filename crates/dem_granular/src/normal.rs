@@ -13,7 +13,7 @@ pub struct HertzNormalForcePlugin;
 
 impl Plugin for HertzNormalForcePlugin {
     fn build(&self, app: &mut App) {
-        app.add_update_system(hertz_normal_force.label("hertz_normal"), ScheduleSet::Force);
+        app.add_update_system(hertz_normal_force, ScheduleSet::Force);
     }
 }
 

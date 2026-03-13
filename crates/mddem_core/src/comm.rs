@@ -344,7 +344,7 @@ processors_z = 1"#,
 
         app.add_setup_system(comm_read_input, ScheduleSetupSet::PreSetup)
             .add_setup_system(comm_setup, ScheduleSetupSet::PostSetup)
-            .add_update_system(borders.label("borders"), ScheduleSet::PreNeighbor)
+            .add_update_system(borders, ScheduleSet::PreNeighbor)
             .add_update_system(reverse_send_force, ScheduleSet::PostForce);
 
         #[cfg(feature = "mpi_backend")]

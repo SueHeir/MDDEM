@@ -433,12 +433,12 @@ impl Plugin for AtomPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(Atom::new())
             .add_resource(AtomDataRegistry::new())
-            .add_update_system(remove_ghost_atoms.label("remove_ghost_atoms"), ScheduleSet::PostInitialIntegration)
+            .add_update_system(remove_ghost_atoms, ScheduleSet::PostInitialIntegration)
             .add_update_system(zero_all_forces, ScheduleSet::PostInitialIntegration);
     }
 }
 
-fn remove_ghost_atoms(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) {
+pub fn remove_ghost_atoms(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) {
     if atoms.communicate_only {
         return;
     }

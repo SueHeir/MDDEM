@@ -29,7 +29,7 @@ impl Plugin for CommunicationPlugin {
 
         app.add_setup_system(comm_read_input, ScheduleSetupSet::PreSetup)
             .add_setup_system(comm_setup, ScheduleSetupSet::PostSetup)
-            .add_update_system(borders.label("borders"), ScheduleSet::PreNeighbor)
+            .add_update_system(borders, ScheduleSet::PreNeighbor)
             .add_update_system(reverse_send_force, ScheduleSet::PostForce);
     }
 }
@@ -87,7 +87,7 @@ impl PluginGroup for MyPlugins {
 
 Disabled plugins are simply not added — no error is raised if the disabled plugin was never in the group.
 
-**Interaction with `requires_label()`**: If a disabled plugin registers a system with a label that another system depends on via `.requires_label()`, the scheduler will panic at startup with a clear error. This is intentional — it prevents silent misconfiguration when replacing plugins. When disabling a plugin, make sure your replacement provides the same labels, or update the dependent systems.
+**Interaction with `requires_label()`**: If a disabled plugin registers a system that another system depends on via `.requires_label()`, the scheduler will panic at startup with a clear error. This is intentional — it prevents silent misconfiguration when replacing plugins. When disabling a plugin, make sure your replacement provides the same string labels (via `.label("name")`), or update the dependent systems. This is why replaceable cross-plugin ordering contracts should use string labels rather than function handles — a replacement system can adopt the same `.label()` string, but it cannot match another function's type identity.
 
 **DEM use cases**
 - `GranularDefaultPlugins` bundles Hertz-Mindlin fused contact + Velocity Verlet + rotational dynamics; users extend with custom plugins

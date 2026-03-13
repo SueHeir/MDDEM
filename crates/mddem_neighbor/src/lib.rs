@@ -234,7 +234,7 @@ sort_every = 1000"#,
             .add_setup_system(neighbor_read_input, ScheduleSetupSet::Setup)
             .add_setup_system(neighbor_setup, ScheduleSetupSet::PostSetup)
             .add_update_system(
-                decide_rebuild.label("decide_rebuild").before("remove_ghost_atoms"),
+                decide_rebuild.label("decide_rebuild").before(mddem_core::remove_ghost_atoms),
                 ScheduleSet::PostInitialIntegration,
             );
         match self.style {
@@ -248,7 +248,7 @@ sort_every = 1000"#,
                 app.add_update_system(
                     sort_atoms_by_bin
                         .label("sort_atoms")
-                        .before("borders"),
+                        .before(mddem_core::borders),
                     ScheduleSet::PreNeighbor,
                 );
                 app.add_update_system(bin_neighbor_list, ScheduleSet::Neighbor);

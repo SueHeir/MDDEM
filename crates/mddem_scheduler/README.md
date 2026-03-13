@@ -121,9 +121,25 @@ app.add_update_system(
 - Mean-square displacement logging during NVT production after an NVE equilibration
 - Pressure tensor averaging on a coarser schedule than force evaluation
 
-## System Ordering -- `.label()`, `.before()`, `.after()`
+## System Ordering -- `.before()`, `.after()`, `.label()`
 
 Within a `ScheduleSet`, systems normally run in registration order. Explicit ordering constraints let you express dependencies without hard-coding plugin registration order. The scheduler performs a topological sort (Kahn's algorithm) at startup and panics on cycles.
+
+Pass **function handles** directly for type-safe, import-checked ordering — typos are caught at compile time:
+
+```rust
+app.add_update_system(hertz_normal_force, ScheduleSet::Force);
+app.add_update_system(
+    tangential_force.after(hertz_normal_force),
+    ScheduleSet::Force,
+);
+app.add_update_system(
+    lubrication_force.after(hertz_normal_force).before(tangential_force),
+    ScheduleSet::Force,
+);
+```
+
+**String labels** also work and are the right choice for systems designed to be **replaceable**:
 
 ```rust
 app.add_update_system(
@@ -131,16 +147,17 @@ app.add_update_system(
     ScheduleSet::Force,
 );
 app.add_update_system(
-    tangential_force.label("tangential").after("hertz"),
-    ScheduleSet::Force,
-);
-app.add_update_system(
-    lubrication_force.after("hertz").before("tangential"),
+    tangential_force.after("hertz"),
     ScheduleSet::Force,
 );
 ```
 
-Labels are plain strings and scoped to their `ScheduleSet` -- `"hertz"` in `Force` and `"hertz"` in `PostForce` are independent.
+Labels are scoped to their `ScheduleSet` -- `"hertz"` in `Force` and `"hertz"` in `PostForce` are independent.
+
+### When to use which
+
+- **Function handles** — best for same-crate or tightly-coupled ordering where you control both sides. Refactor-friendly: renaming a function updates all references automatically.
+- **String labels** — best for public API contracts where the system may be swapped out. A replacement system can adopt the same `.label("name")` so that downstream `.after("name")` / `.before("name")` constraints keep working without changes. If you use `.after(some_function)` and someone replaces `some_function` with a different implementation, the ordering silently becomes a no-op.
 
 **DEM use cases**
 - Normal contact must be computed before tangential contact (tangential force depends on normal overlap)
@@ -237,23 +254,36 @@ Each line shows the step number, the `ScheduleSet`, and the full system name. Th
 
 ## Required Labels -- `.requires_label()`
 
-Use `.requires_label()` to declare that a system depends on another labeled system being present in the same `ScheduleSet`. If the required label is missing at startup, `organize_systems()` panics with a clear error. This catches configuration mistakes like forgetting a plugin or accidentally removing a system that another system depends on.
+Use `.requires_label()` to declare that a system depends on another system being present in the same `ScheduleSet`. If the required system is missing at startup, `organize_systems()` panics with a clear error. This catches configuration mistakes like forgetting a plugin or accidentally removing a system that another system depends on.
+
+Both function handles and string labels work:
 
 ```rust
+// Function handle — type-safe, but tied to the specific function
+app.add_update_system(hertz_normal_force, ScheduleSet::Force);
+app.add_update_system(
+    mindlin_tangential
+        .after(hertz_normal_force)
+        .requires_label(hertz_normal_force),
+    ScheduleSet::Force,
+);
+
+// String label — stable contract, survives system replacement
 app.add_update_system(
     hertz_normal_force.label("hertz"),
     ScheduleSet::Force,
 );
 app.add_update_system(
     mindlin_tangential
-        .label("tangential")
         .after("hertz")
         .requires_label("hertz"),
     ScheduleSet::Force,
 );
 ```
 
-Unlike `.after()`, which silently becomes a no-op when the target label is absent, `.requires_label()` enforces that the dependency exists. Use `.after()` for ordering and `.requires_label()` for correctness guarantees.
+Unlike `.after()`, which silently becomes a no-op when the target is absent, `.requires_label()` enforces that the dependency exists. Use `.after()` for ordering and `.requires_label()` for correctness guarantees.
+
+For replaceable systems, prefer string labels with `.requires_label()` — this way a replacement plugin that provides the same `.label("hertz")` satisfies the requirement without touching dependent code.
 
 **DEM use cases**
 - Tangential contact requires normal contact (overlap, normal force magnitude)

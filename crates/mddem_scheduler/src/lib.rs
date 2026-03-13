@@ -389,6 +389,60 @@ impl_into_system!(T1, T2, T3, T4, T5, T6, T7, T8);
 impl_into_system!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
 impl_into_system!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
 
+// ─── IntoSystemLabel ─────────────────────────────────────────────────────────
+
+/// Marker for string-based labels (`&str`, `String`).
+pub struct StrLabelMarker;
+/// Marker for function-handle-based labels.
+pub struct FnLabelMarker<I>(PhantomData<I>);
+
+/// Converts a label source (string or function handle) into a `String` label.
+///
+/// Strings pass through directly. Function handles resolve to their
+/// `std::any::type_name`, matching the system's registered name.
+pub trait IntoSystemLabel<M> {
+    fn into_label(self) -> String;
+}
+
+impl IntoSystemLabel<StrLabelMarker> for &str {
+    fn into_label(self) -> String {
+        self.to_string()
+    }
+}
+
+impl IntoSystemLabel<StrLabelMarker> for String {
+    fn into_label(self) -> String {
+        self
+    }
+}
+
+macro_rules! impl_into_system_label {
+    ($($params:ident),*) => {
+        impl<F, $($params: SystemParam),*> IntoSystemLabel<FnLabelMarker<($($params,)*)>> for F
+        where
+            for<'a, 'b> &'a mut F:
+                FnMut($($params),*) +
+                FnMut($(<$params as SystemParam>::Item<'b>),*)
+        {
+            fn into_label(self) -> String {
+                std::any::type_name::<F>().to_string()
+            }
+        }
+    }
+}
+
+impl_into_system_label!();
+impl_into_system_label!(T1);
+impl_into_system_label!(T1, T2);
+impl_into_system_label!(T1, T2, T3);
+impl_into_system_label!(T1, T2, T3, T4);
+impl_into_system_label!(T1, T2, T3, T4, T5);
+impl_into_system_label!(T1, T2, T3, T4, T5, T6);
+impl_into_system_label!(T1, T2, T3, T4, T5, T6, T7);
+impl_into_system_label!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_into_system_label!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_into_system_label!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+
 // ─── Condition trait & FunctionCondition ─────────────────────────────────────
 
 /// A DI-injected function that returns `bool`, used with `.run_if()`.
@@ -465,16 +519,16 @@ impl<S: System + 'static> SystemDescriptor<S> {
         self.label = Some(lbl.into());
         self
     }
-    pub fn before(mut self, target: impl Into<String>) -> Self {
-        self.befores.push(target.into());
+    pub fn before<M>(mut self, target: impl IntoSystemLabel<M>) -> Self {
+        self.befores.push(target.into_label());
         self
     }
-    pub fn after(mut self, target: impl Into<String>) -> Self {
-        self.afters.push(target.into());
+    pub fn after<M>(mut self, target: impl IntoSystemLabel<M>) -> Self {
+        self.afters.push(target.into_label());
         self
     }
-    pub fn requires_label(mut self, target: impl Into<String>) -> Self {
-        self.requires.push(target.into());
+    pub fn requires_label<M>(mut self, target: impl IntoSystemLabel<M>) -> Self {
+        self.requires.push(target.into_label());
         self
     }
     pub fn run_if<I2, C: Condition + 'static>(
@@ -522,33 +576,33 @@ where
         }
     }
 
-    fn before(self, target: impl Into<String>) -> SystemDescriptor<Self::System> {
+    fn before<M>(self, target: impl IntoSystemLabel<M>) -> SystemDescriptor<Self::System> {
         SystemDescriptor {
             system: self.into_system(),
             label: None,
-            befores: vec![target.into()],
+            befores: vec![target.into_label()],
             afters: vec![],
             requires: vec![],
         }
     }
 
-    fn after(self, target: impl Into<String>) -> SystemDescriptor<Self::System> {
+    fn after<M>(self, target: impl IntoSystemLabel<M>) -> SystemDescriptor<Self::System> {
         SystemDescriptor {
             system: self.into_system(),
             label: None,
             befores: vec![],
-            afters: vec![target.into()],
+            afters: vec![target.into_label()],
             requires: vec![],
         }
     }
 
-    fn requires_label(self, target: impl Into<String>) -> SystemDescriptor<Self::System> {
+    fn requires_label<M>(self, target: impl IntoSystemLabel<M>) -> SystemDescriptor<Self::System> {
         SystemDescriptor {
             system: self.into_system(),
             label: None,
             befores: vec![],
             afters: vec![],
-            requires: vec![target.into()],
+            requires: vec![target.into_label()],
         }
     }
 }
@@ -729,6 +783,9 @@ fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, ScheduleSet)>) {
 
     let mut label_to_idx: HashMap<String, usize> = HashMap::new();
     for (i, (entry, _)) in group.iter().enumerate() {
+        // Index by system name (enables function-handle-based ordering)
+        label_to_idx.insert(entry.name.clone(), i);
+        // Explicit labels override if present
         if let Some(lbl) = &entry.label {
             label_to_idx.insert(lbl.clone(), i);
         }
@@ -850,14 +907,17 @@ impl Scheduler {
         for mut group in groups {
             topo_sort_group(&mut group);
 
-            // Validate requires_label: every required label must exist in this group
-            let labels_in_group: Vec<Option<&str>> = group
-                .iter()
-                .map(|(entry, _)| entry.label.as_deref())
-                .collect();
+            // Validate requires_label: every required label/name must exist in this group
+            let mut known_labels: Vec<&str> = Vec::new();
+            for (entry, _) in &group {
+                known_labels.push(&entry.name);
+                if let Some(lbl) = &entry.label {
+                    known_labels.push(lbl);
+                }
+            }
             for (entry, set) in &group {
                 for req in &entry.requires {
-                    if !labels_in_group.iter().any(|l| l == &Some(req.as_str())) {
+                    if !known_labels.contains(&req.as_str()) {
                         errors.push(format!(
                             "  System \"{}\" in {:?} requires label \"{}\" which is not present in that ScheduleSet",
                             entry.name, set, req
@@ -1389,6 +1449,8 @@ pub mod prelude {
         // Simulation states
         CurrentState,
         IntoScheduledSystem,
+        // System label (function-handle or string ordering)
+        IntoSystemLabel,
         Local,
         NextState,
         Res,
@@ -1603,5 +1665,87 @@ mod tests {
             "Expected no warnings, got: {:?}",
             warnings
         );
+    }
+
+    // ─── function-handle-based ordering tests ─────────────────────────────────
+
+    struct Counter(i32);
+
+    fn sys_first(mut c: ResMut<Counter>) {
+        assert_eq!(c.0, 0, "sys_first should run first");
+        c.0 = 1;
+    }
+
+    fn sys_second(mut c: ResMut<Counter>) {
+        assert_eq!(c.0, 1, "sys_second should run after sys_first");
+        c.0 = 2;
+    }
+
+    #[test]
+    fn fn_handle_after_ordering() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_resource(Counter(0));
+        // Register in reverse order — .after() should fix it
+        scheduler.add_update_system(sys_second.after(sys_first), ScheduleSet::Force);
+        scheduler.add_update_system(sys_first, ScheduleSet::Force);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+        let c = scheduler.get_resource_ref::<Counter>().unwrap();
+        assert_eq!(c.0, 2);
+    }
+
+    #[test]
+    fn fn_handle_before_ordering() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_resource(Counter(0));
+        // Register in reverse order — .before() should fix it
+        scheduler.add_update_system(sys_second, ScheduleSet::Force);
+        scheduler.add_update_system(sys_first.before(sys_second), ScheduleSet::Force);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+        let c = scheduler.get_resource_ref::<Counter>().unwrap();
+        assert_eq!(c.0, 2);
+    }
+
+    #[test]
+    fn fn_handle_requires_label_passes() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_update_system(force_a, ScheduleSet::Force);
+        scheduler.add_update_system(
+            force_b.requires_label(force_a),
+            ScheduleSet::Force,
+        );
+        scheduler.organize_systems();
+    }
+
+    #[test]
+    #[should_panic(expected = "requires label")]
+    fn fn_handle_requires_label_panics_when_missing() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_update_system(
+            force_b.requires_label(force_a),
+            ScheduleSet::Force,
+        );
+        scheduler.organize_systems();
+    }
+
+    #[test]
+    fn string_labels_still_work() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_resource(Counter(0));
+        scheduler.add_update_system(sys_second.after("first"), ScheduleSet::Force);
+        scheduler.add_update_system(sys_first.label("first"), ScheduleSet::Force);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+        let c = scheduler.get_resource_ref::<Counter>().unwrap();
+        assert_eq!(c.0, 2);
     }
 }

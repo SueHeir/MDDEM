@@ -101,7 +101,7 @@ impl Plugin for MindlinTangentialForcePlugin {
         app.add_update_system(
             mindlin_tangential_force
                 .label("mindlin_tangential")
-                .after("hertz_normal"),
+                .after(crate::normal::hertz_normal_force),
             ScheduleSet::Force,
         );
     }
