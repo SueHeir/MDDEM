@@ -147,71 +147,108 @@ pub fn lj_force(
     let lj2 = 24.0 * lj.epsilon * sigma6;
 
     let nlocal = atoms.nlocal as usize;
-    let mut vxx = 0.0f64;
-    let mut vyy = 0.0f64;
-    let mut vzz = 0.0f64;
-    let mut vxy = 0.0f64;
-    let mut vxz = 0.0f64;
-    let mut vyz = 0.0f64;
 
-    // Direct CSR loop with batch force accumulation — load/store force[i] once per atom.
-    // Virial is always accumulated (negligible cost vs branching every pair).
     // SAFETY: i < nlocal <= atoms.len(), neighbor_offsets has nlocal+1 entries,
     // neighbor_indices[k] < atoms.len() (from CSR construction), j < atoms.len().
     let pos_ptr = atoms.pos.as_ptr();
     let force_ptr = atoms.force.as_mut_ptr();
 
-    for i in 0..nlocal {
-        let pi = unsafe { *pos_ptr.add(i) };
-        let mut fi = unsafe { *force_ptr.add(i) };
-        let start = unsafe { *neighbor.neighbor_offsets.get_unchecked(i) } as usize;
-        let end = unsafe { *neighbor.neighbor_offsets.get_unchecked(i + 1) } as usize;
+    let virial_active = virial.as_ref().map_or(false, |v| v.active);
 
-        for k in start..end {
-            let j = unsafe { *neighbor.neighbor_indices.get_unchecked(k) } as usize;
-            let pj = unsafe { *pos_ptr.add(j) };
-            let dx = pj[0] - pi[0];
-            let dy = pj[1] - pi[1];
-            let dz = pj[2] - pi[2];
-            let r2 = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
+    if virial_active {
+        // Virial path: accumulate virial stress tensor alongside forces.
+        let mut vxx = 0.0f64;
+        let mut vyy = 0.0f64;
+        let mut vzz = 0.0f64;
+        let mut vxy = 0.0f64;
+        let mut vxz = 0.0f64;
+        let mut vyz = 0.0f64;
 
-            if r2 >= cutoff2 {
-                continue;
+        for i in 0..nlocal {
+            let pi = unsafe { *pos_ptr.add(i) };
+            let mut fi = unsafe { *force_ptr.add(i) };
+            let start = unsafe { *neighbor.neighbor_offsets.get_unchecked(i) } as usize;
+            let end = unsafe { *neighbor.neighbor_offsets.get_unchecked(i + 1) } as usize;
+
+            for k in start..end {
+                let j = unsafe { *neighbor.neighbor_indices.get_unchecked(k) } as usize;
+                let pj = unsafe { *pos_ptr.add(j) };
+                let dx = pj[0] - pi[0];
+                let dy = pj[1] - pi[1];
+                let dz = pj[2] - pi[2];
+                let r2 = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
+
+                if r2 >= cutoff2 {
+                    continue;
+                }
+
+                let r2inv = 1.0 / r2;
+                let r6inv = r2inv * r2inv * r2inv;
+                let fpair = r2inv * r6inv * lj1.mul_add(r6inv, -lj2);
+
+                let fx = -fpair * dx;
+                let fy = -fpair * dy;
+                let fz = -fpair * dz;
+                vxx += dx * fx;
+                vyy += dy * fy;
+                vzz += dz * fz;
+                vxy += dx * fy;
+                vxz += dx * fz;
+                vyz += dy * fz;
+
+                fi[0] += fx;
+                fi[1] += fy;
+                fi[2] += fz;
+                let fj = unsafe { &mut *force_ptr.add(j) };
+                fj[0] -= fx;
+                fj[1] -= fy;
+                fj[2] -= fz;
             }
-
-            let r2inv = 1.0 / r2;
-            let r6inv = r2inv * r2inv * r2inv;
-            let fpair = r2inv * r6inv * lj1.mul_add(r6inv, -lj2);
-
-            // Force on atom i from j: (-fpair*dx, -fpair*dy, -fpair*dz)
-            let fx = -fpair * dx;
-            let fy = -fpair * dy;
-            let fz = -fpair * dz;
-            vxx += dx * fx;
-            vyy += dy * fy;
-            vzz += dz * fz;
-            vxy += dx * fy;
-            vxz += dx * fz;
-            vyz += dy * fz;
-
-            fi[0] += fx;
-            fi[1] += fy;
-            fi[2] += fz;
-            let fj = unsafe { &mut *force_ptr.add(j) };
-            fj[0] -= fx;
-            fj[1] -= fy;
-            fj[2] -= fz;
+            unsafe { *force_ptr.add(i) = fi };
         }
-        unsafe { *force_ptr.add(i) = fi };
-    }
 
-    if let Some(mut virial) = virial {
-        virial.xx += vxx;
-        virial.yy += vyy;
-        virial.zz += vzz;
-        virial.xy += vxy;
-        virial.xz += vxz;
-        virial.yz += vyz;
+        if let Some(mut virial) = virial {
+            virial.xx += vxx;
+            virial.yy += vyy;
+            virial.zz += vzz;
+            virial.xy += vxy;
+            virial.xz += vxz;
+            virial.yz += vyz;
+        }
+    } else {
+        // Fast path: no virial accumulation, enables FMA for force updates.
+        for i in 0..nlocal {
+            let pi = unsafe { *pos_ptr.add(i) };
+            let mut fi = unsafe { *force_ptr.add(i) };
+            let start = unsafe { *neighbor.neighbor_offsets.get_unchecked(i) } as usize;
+            let end = unsafe { *neighbor.neighbor_offsets.get_unchecked(i + 1) } as usize;
+
+            for k in start..end {
+                let j = unsafe { *neighbor.neighbor_indices.get_unchecked(k) } as usize;
+                let pj = unsafe { *pos_ptr.add(j) };
+                let dx = pj[0] - pi[0];
+                let dy = pj[1] - pi[1];
+                let dz = pj[2] - pi[2];
+                let r2 = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
+
+                if r2 >= cutoff2 {
+                    continue;
+                }
+
+                let r2inv = 1.0 / r2;
+                let r6inv = r2inv * r2inv * r2inv;
+                let fpair = r2inv * r6inv * lj1.mul_add(r6inv, -lj2);
+
+                fi[0] = (-fpair).mul_add(dx, fi[0]);
+                fi[1] = (-fpair).mul_add(dy, fi[1]);
+                fi[2] = (-fpair).mul_add(dz, fi[2]);
+                let fj = unsafe { &mut *force_ptr.add(j) };
+                fj[0] = fpair.mul_add(dx, fj[0]);
+                fj[1] = fpair.mul_add(dy, fj[1]);
+                fj[2] = fpair.mul_add(dz, fj[2]);
+            }
+            unsafe { *force_ptr.add(i) = fi };
+        }
     }
 }
 
@@ -235,6 +272,7 @@ mod tests {
         };
         app.add_resource(lj_config);
         app.add_resource(mddem_core::VirialStress::default());
+        app.add_resource(mddem_core::RunState::default());
         app.add_resource(Domain::default());
 
         let mut atom = Atom::new();

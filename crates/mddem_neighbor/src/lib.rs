@@ -935,14 +935,6 @@ pub fn bin_neighbor_list(
     unsafe { indices.set_len(nidx) };
     offsets.push(nidx as u32);
 
-    // Sort each atom's neighbor indices by j for cache-friendly access in force loops.
-    // Sequential j access improves prefetching for atoms.pos[j] and atoms.force[j].
-    for i in 0..nlocal {
-        let s = offsets[i] as usize;
-        let e = offsets[i + 1] as usize;
-        indices[s..e].sort_unstable();
-    }
-
     neighbor.neighbor_offsets = offsets;
     neighbor.neighbor_indices = indices;
     neighbor.bin_stencil_forward = stencil_forward;

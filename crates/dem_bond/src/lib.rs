@@ -241,7 +241,9 @@ pub fn bond_normal_force(
 
             // Accumulate virial stress tensor
             if let Some(ref mut v) = virial {
-                v.add_pair(dx, dy, dz, fx, fy, fz);
+                if v.active {
+                    v.add_pair(dx, dy, dz, fx, fy, fz);
+                }
             }
 
             // Accumulate bond metrics

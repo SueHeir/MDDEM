@@ -153,6 +153,7 @@ output_interval = 1000"#,
         app.add_resource(RdfAccumulator::new(config.rdf_bins, config.rdf_cutoff))
             .add_resource(MsdTracker::default())
             .add_resource(PressureHistory::default())
+            .add_setup_system(setup_measure_virial, ScheduleSetupSet::PostSetup)
             .add_update_system(accumulate_rdf, ScheduleSet::PostFinalIntegration)
             .add_update_system(track_msd, ScheduleSet::PostFinalIntegration)
             .add_update_system(compute_pressure, ScheduleSet::PostFinalIntegration)
@@ -161,6 +162,17 @@ output_interval = 1000"#,
 }
 
 // ── Systems ─────────────────────────────────────────────────────────────────
+
+pub fn setup_measure_virial(
+    config: Res<MeasureConfig>,
+    mut virial: Option<ResMut<VirialStress>>,
+) {
+    if config.msd_interval > 0 {
+        if let Some(ref mut v) = virial {
+            v.set_interval(config.msd_interval);
+        }
+    }
+}
 
 pub fn accumulate_rdf(
     atoms: Res<Atom>,

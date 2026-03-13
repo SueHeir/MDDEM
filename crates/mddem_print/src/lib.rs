@@ -278,12 +278,16 @@ pub fn setup_thermo(
     comm: Res<CommResource>,
     run_state: Res<RunState>,
     mut thermo: ResMut<Thermo>,
+    mut virial: Option<ResMut<VirialStress>>,
 ) {
     let index = scheduler_manager.index;
     if index >= config.num_stages() {
         return;
     }
     thermo.interval = config.current_stage(index).thermo;
+    if let Some(ref mut v) = virial {
+        v.set_interval(thermo.interval);
+    }
     thermo.start_time = Instant::now();
     thermo.last_printed_step = run_state.total_cycle;
 
@@ -424,9 +428,13 @@ pub fn print_thermo(
 /// MPI-reduce each virial component and push to thermo values.
 pub fn output_virial_to_thermo(
     virial: Option<Res<VirialStress>>,
+    run_state: Res<RunState>,
     comm: Res<CommResource>,
     mut thermo: ResMut<Thermo>,
 ) {
+    if !run_state.total_cycle.is_multiple_of(thermo.interval) {
+        return;
+    }
     let virial = match virial {
         Some(v) => v,
         None => return,

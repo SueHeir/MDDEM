@@ -5,6 +5,8 @@ use std::any::TypeId;
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 
+use crate::RunState;
+
 /// Symmetric virial stress tensor (upper triangle: xx, yy, zz, xy, xz, yz).
 ///
 /// Accumulated by all force types (LJ, bond, contact) during the Force stage.
@@ -14,7 +16,6 @@ use mddem_scheduler::prelude::*;
 /// - `dx, dy, dz` = `pos[j] - pos[i]`
 /// - `fx, fy, fz` = force on atom i from atom j
 /// - Pressure: `P = NkT/V - trace/(3V)` (repulsion → negative trace → positive P)
-#[derive(Default)]
 pub struct VirialStress {
     pub xx: f64,
     pub yy: f64,
@@ -22,6 +23,25 @@ pub struct VirialStress {
     pub xy: f64,
     pub xz: f64,
     pub yz: f64,
+    /// Whether virial should be computed this step.
+    pub active: bool,
+    /// `None` = every step, `Some(n)` = every n steps.
+    interval: Option<usize>,
+}
+
+impl Default for VirialStress {
+    fn default() -> Self {
+        VirialStress {
+            xx: 0.0,
+            yy: 0.0,
+            zz: 0.0,
+            xy: 0.0,
+            xz: 0.0,
+            yz: 0.0,
+            active: true,
+            interval: None,
+        }
+    }
 }
 
 impl VirialStress {
@@ -51,6 +71,18 @@ impl VirialStress {
     pub fn trace(&self) -> f64 {
         self.xx + self.yy + self.zz
     }
+
+    /// Set the virial computation interval. Takes the minimum of the current
+    /// and new interval so all consumers get virial data when they need it.
+    pub fn set_interval(&mut self, every: usize) {
+        if every == 0 {
+            return;
+        }
+        self.interval = Some(match self.interval {
+            None => every,
+            Some(cur) => cur.min(every),
+        });
+    }
 }
 
 /// Plugin that registers [`VirialStress`] and the [`zero_virial_stress`] system.
@@ -77,8 +109,15 @@ impl Plugin for VirialStressPlugin {
 }
 
 /// Zero the virial tensor before force computation each step.
-pub fn zero_virial_stress(mut virial: ResMut<VirialStress>) {
-    virial.zero();
+/// Sets `active` based on the interval and current step.
+pub fn zero_virial_stress(mut virial: ResMut<VirialStress>, run_state: Res<RunState>) {
+    virial.active = match virial.interval {
+        None => true,
+        Some(n) => run_state.total_cycle.is_multiple_of(n),
+    };
+    if virial.active {
+        virial.zero();
+    }
 }
 
 #[cfg(test)]

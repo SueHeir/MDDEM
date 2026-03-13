@@ -259,7 +259,9 @@ pub fn hertz_mindlin_contact_force(
 
         // Virial: force on i from j = (-fn + ft)
         if let Some(ref mut v) = virial {
-            v.add_pair(dx, dy, dz, -fn_x + ft_x, -fn_y + ft_y, -fn_z + ft_z);
+            if v.active {
+                v.add_pair(dx, dy, dz, -fn_x + ft_x, -fn_y + ft_y, -fn_z + ft_z);
+            }
         }
 
         // Store updated spring back (canonical form) and mark active

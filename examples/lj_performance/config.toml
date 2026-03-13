@@ -43,12 +43,5 @@ coupling = 1.0
 steps = 500
 thermo = 50
 
-[measure]
-rdf_bins = 200
-rdf_cutoff = 3.0
-rdf_interval = 10000
-msd_interval = 10000
-output_interval = 10000
-
 [dump]
 interval = 0

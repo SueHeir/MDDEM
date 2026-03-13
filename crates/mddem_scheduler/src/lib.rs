@@ -978,8 +978,10 @@ impl Scheduler {
         }
 
         // 2. Asymmetric Verlet — InitialIntegration without FinalIntegration or vice versa
-        let has_initial = has_systems[set_to_value(&ScheduleSet::InitialIntegration) as usize];
-        let has_final = has_systems[set_to_value(&ScheduleSet::FinalIntegration) as usize];
+        let has_initial = has_systems[set_to_value(&ScheduleSet::InitialIntegration) as usize]
+            || has_systems[set_to_value(&ScheduleSet::PreInitialIntegration) as usize];
+        let has_final = has_systems[set_to_value(&ScheduleSet::FinalIntegration) as usize]
+            || has_systems[set_to_value(&ScheduleSet::PostFinalIntegration) as usize];
         if has_initial && !has_final {
             warnings.push(
                 "[MDDEM Warning] InitialIntegration has systems but FinalIntegration is empty. \
