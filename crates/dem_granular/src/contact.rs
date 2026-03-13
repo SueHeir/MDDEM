@@ -9,7 +9,7 @@ use mddem_scheduler::prelude::*;
 use nalgebra::Vector3;
 
 use dem_atom::{DemAtom, MaterialTable};
-use mddem_core::{Atom, AtomDataRegistry};
+use mddem_core::{Atom, AtomDataRegistry, BondStore, VirialStress, VirialStressPlugin};
 use mddem_neighbor::Neighbor;
 
 use crate::tangential::ContactHistoryStore;
@@ -23,6 +23,7 @@ pub struct HertzMindlinContactPlugin;
 
 impl Plugin for HertzMindlinContactPlugin {
     fn build(&self, app: &mut App) {
+        app.add_plugins(VirialStressPlugin);
         // Register ContactHistoryStore if not already registered
         if let Some(registry_option) = app.get_mut_resource(TypeId::of::<AtomDataRegistry>()) {
             let mut registry_binder = registry_option.borrow_mut();
@@ -43,10 +44,12 @@ pub fn hertz_mindlin_contact_force(
     neighbor: Res<Neighbor>,
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
+    mut virial: Option<ResMut<VirialStress>>,
 ) {
     let mut dem = registry.expect_mut::<DemAtom>("hertz_mindlin_contact_force");
     let mut history =
         registry.expect_mut::<ContactHistoryStore>("hertz_mindlin_contact_force");
+    let bond_store = registry.get::<BondStore>();
     let dt = atoms.dt;
 
     // Ensure contacts vec covers all atoms (local + ghost)
@@ -65,6 +68,12 @@ pub fn hertz_mindlin_contact_force(
     }
 
     for (i, j) in neighbor.pairs(nlocal) {
+        if let Some(ref bonds) = bond_store {
+            if bonds.are_excluded(i, j, &atoms.tag) {
+                continue;
+            }
+        }
+
         let r1 = dem.radius[i];
         let r2 = dem.radius[j];
 
@@ -247,6 +256,11 @@ pub fn hertz_mindlin_contact_force(
         dem.torque[j][0] += tj_x;
         dem.torque[j][1] += tj_y;
         dem.torque[j][2] += tj_z;
+
+        // Virial: force on i from j = (-fn + ft)
+        if let Some(ref mut v) = virial {
+            v.add_pair(dx, dy, dz, -fn_x + ft_x, -fn_y + ft_y, -fn_z + ft_z);
+        }
 
         // Store updated spring back (canonical form) and mark active
         let new_spring = sign * s;

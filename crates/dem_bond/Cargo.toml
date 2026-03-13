@@ -1,0 +1,19 @@
+[package]
+name = "dem_bond"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bond force models for MDDEM: elastic bonds, breakable bonds, sintering"
+
+[dependencies]
+mddem_core = { path = "../mddem_core", version = "0.1.3", default-features = false }
+mddem_app = { path = "../mddem_app", version = "0.1.3" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.3" }
+dem_atom = { path = "../dem_atom", version = "0.1.3" }
+mddem_neighbor = { path = "../mddem_neighbor", version = "0.1.3" }
+mddem_print = { path = "../mddem_print", version = "0.1.3" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+nalgebra = "0.33"

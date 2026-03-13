@@ -11,7 +11,7 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use mddem_core::{compute_ke, Atom, AtomDataRegistry, CommResource, Config, GroupRegistry, Input, RunConfig, RunState};
+use mddem_core::{compute_ke, Atom, AtomDataRegistry, CommResource, Config, GroupRegistry, Input, RunConfig, RunState, VirialStress};
 use mddem_neighbor::Neighbor;
 
 // ── Thermo config ───────────────────────────────────────────────────────────
@@ -261,6 +261,7 @@ interval = 0"#,
         app.add_resource(Thermo::new())
             .add_setup_system(setup_thermo, ScheduleSetupSet::PostSetup)
             .add_setup_system(read_restart, ScheduleSetupSet::PostSetup)
+            .add_update_system(output_virial_to_thermo, ScheduleSet::PostForce)
             .add_update_system(print_vtp, ScheduleSet::PostFinalIntegration)
             .add_update_system(print_thermo, ScheduleSet::PostFinalIntegration)
             .add_update_system(dump_atoms, ScheduleSet::PostFinalIntegration)
@@ -416,6 +417,32 @@ pub fn print_thermo(
         thermo.start_time = Instant::now();
         thermo.last_printed_step = step;
     }
+}
+
+// ── Virial stress output ────────────────────────────────────────────────────
+
+/// MPI-reduce each virial component and push to thermo values.
+pub fn output_virial_to_thermo(
+    virial: Option<Res<VirialStress>>,
+    comm: Res<CommResource>,
+    mut thermo: ResMut<Thermo>,
+) {
+    let virial = match virial {
+        Some(v) => v,
+        None => return,
+    };
+    let xx = comm.all_reduce_sum_f64(virial.xx);
+    let yy = comm.all_reduce_sum_f64(virial.yy);
+    let zz = comm.all_reduce_sum_f64(virial.zz);
+    let xy = comm.all_reduce_sum_f64(virial.xy);
+    let xz = comm.all_reduce_sum_f64(virial.xz);
+    let yz = comm.all_reduce_sum_f64(virial.yz);
+    thermo.set("virial_xx", xx);
+    thermo.set("virial_yy", yy);
+    thermo.set("virial_zz", zz);
+    thermo.set("virial_xy", xy);
+    thermo.set("virial_xz", xz);
+    thermo.set("virial_yz", yz);
 }
 
 // ── VTP output ──────────────────────────────────────────────────────────────

@@ -210,25 +210,25 @@ Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). 
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
 |--------:|---------------:|----------------:|------:|
-|     108 |         20,655 |          31,087 | 1.50x |
-|   1,000 |          2,339 |           2,897 | 1.24x |
-|  10,000 |            262 |             296 | 1.13x |
-|  32,000 |           83.9 |            91.9 | 1.10x |
-| 100,920 |           26.8 |            29.0 | 1.08x |
+|     108 |         21,505 |          31,087 | 1.44x |
+|   1,000 |          2,286 |           2,897 | 1.27x |
+|  10,000 |            246 |             296 | 1.20x |
+|  32,000 |           80.3 |            91.9 | 1.14x |
+| 100,920 |           25.8 |            29.0 | 1.12x |
 
-LAMMPS is ~1.08-1.13x faster at scale, with consistent O(N) scaling in both codes. The force loop (~50% of MDDEM runtime) uses LAMMPS-style precomputed constants with a single reciprocal per pair and explicit FMA (`mul_add`) for force accumulation. The Nose-Hoover thermostat fuses velocity rescaling with Velocity Verlet integration to reduce array passes per timestep. The neighbor list build (~26% of runtime) uses CSR bins with a forward stencil, sorted position caches, sorted neighbor indices for sequential cache access, and unsafe bounds-check elimination. The DI scheduler caches downcast pointers at system entry so `Res<T>`/`ResMut<T>` access is a direct dereference with no dynamic dispatch in hot loops.
+LAMMPS is ~1.12-1.14x faster at scale, with consistent O(N) scaling in both codes. The force loop (~50% of MDDEM runtime) uses LAMMPS-style precomputed constants with a single reciprocal per pair and explicit FMA (`mul_add`) for force accumulation. The Nose-Hoover thermostat fuses velocity rescaling with Velocity Verlet integration to reduce array passes per timestep. The neighbor list build (~26% of runtime) uses CSR bins with a forward stencil, sorted position caches, sorted neighbor indices for sequential cache access, and unsafe bounds-check elimination. The DI scheduler caches downcast pointers at system entry so `Res<T>`/`ResMut<T>` access is a direct dereference with no dynamic dispatch in hot loops.
 
 MPI benchmark (4 processes, 2x2x1 decomposition) on the same hardware:
 
 | Atoms   | MDDEM (step/s) | LAMMPS (step/s) | MDDEM Speedup | Ratio |
 |--------:|---------------:|----------------:|--------------:|------:|
-|     108 |         27,470 |          27,695 |         1.33x | 1.01x |
-|   1,000 |          5,399 |           9,433 |         2.31x | 1.75x |
-|  10,000 |            780 |           1,067 |         2.98x | 1.37x |
-|  32,000 |            286 |             323 |         3.41x | 1.13x |
-| 100,920 |           93.1 |             105 |         3.47x | 1.13x |
+|     108 |         24,691 |          27,695 |         1.15x | 1.12x |
+|   1,000 |          5,405 |           9,433 |         2.36x | 1.75x |
+|  10,000 |            798 |           1,067 |         3.24x | 1.34x |
+|  32,000 |            275 |             323 |         3.42x | 1.17x |
+| 100,920 |           89.4 |             105 |         3.47x | 1.17x |
 
-MDDEM MPI achieves 2.3-3.5x speedup over single-core at scale, with the ratio to LAMMPS narrowing to 1.13x at 32k+ atoms. Spatial sorting of atoms by bin is enabled in both single-core and MPI modes, improving cache locality for force and neighbor list computations. Communication uses per-dimension exchange with non-blocking sends, multi-hop ghost forwarding when needed, and lightweight ghost position updates between neighbor rebuilds.
+MDDEM MPI achieves 2.4-3.5x speedup over single-core at scale, with the ratio to LAMMPS narrowing to 1.17x at 32k+ atoms. Spatial sorting of atoms by bin is enabled in both single-core and MPI modes, improving cache locality for force and neighbor list computations. Communication uses per-dimension exchange with non-blocking sends, multi-hop ghost forwarding when needed, and lightweight ghost position updates between neighbor rebuilds.
 
 ## Roadmap
 
@@ -239,6 +239,8 @@ Planned features, organized by implementation wave:
 2. ~~**Custom thermo computes**~~ — `ThermoCompute` trait + configurable thermo columns
 3. ~~**Langevin thermostat**~~ — Stochastic friction + random force
 4. ~~**AddForce / SetForce / Freeze / MoveLinear**~~ — Group-based atom manipulation fixes
+5. ~~**Virial stress tensor**~~ — Full 6-component symmetric tensor shared across LJ, bond, and contact forces
+6. ~~**Bonded particle model**~~ — Bond lists between DEM spheres with auto-bonding, spring-damper normal forces, and bond exclusion from contact
 
 ### Wave 3: Medium Complexity
 5. **Shrink-wrap boundaries** — Auto-expanding domain per axis
@@ -251,7 +253,7 @@ Planned features, organized by implementation wave:
 
 ### Wave 5: New Physics
 10. **Short-range Coulomb** — `k_e*q_i*q_j/r^2` with cutoff (no PPPM)
-11. **Bonded particle model** — Bond lists between DEM spheres (parallel bonds, breakage criteria) for modeling cemented/rock-like materials
+11. **Parallel bonds / breakage** — Tangential + bending bond forces, breakage criteria for modeling cemented/rock-like materials
 
 Every feature ships with an example and validation against analytical solutions or LAMMPS.
 

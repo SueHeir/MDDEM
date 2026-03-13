@@ -16,8 +16,9 @@ Measurement tools for [MDDEM](https://github.com/SueHeir/MDDEM): radial distribu
 - Diffusion coefficient from Einstein relation: `D = MSD / (6*t)` in the linear regime
 
 ### Virial Pressure (`compute_pressure`)
-- `P = rho*T + virial_sum/(3*V) + P_tail`
-- Uses `VirialAccumulator` from `md_lj` and `LJTailCorrections` for long-range correction
+- `P = rho*T - trace(virial)/(3*V) + P_tail`
+- Uses `VirialStress` from `mddem_core` (shared across all force types) and `LJTailCorrections` for long-range correction
+- Both resources are optional — pressure is computed when available
 
 ### File Output (`write_measurements`)
 Writes to `{output_dir}/data/` at configurable intervals:

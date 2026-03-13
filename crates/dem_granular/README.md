@@ -18,6 +18,8 @@ Fused normal + tangential contact force in a single pass (equivalent to LAMMPS `
 - Spring truncated at Coulomb limit: `|F_t| <= mu * |F_n|`
 - Viscous tangential damping
 
+Contact forces contribute to the shared `VirialStress` tensor (from `mddem_core`) for stress analysis.
+
 The separate `HertzNormalForcePlugin` and `MindlinTangentialForcePlugin` are also available for custom configurations, but `GranularDefaultPlugins` uses the fused plugin for better performance.
 
 ### Rotational Dynamics (`RotationalDynamicsPlugin`)

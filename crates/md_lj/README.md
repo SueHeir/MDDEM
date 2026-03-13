@@ -8,7 +8,7 @@ Lennard-Jones 12-6 pair force for [MDDEM](https://github.com/SueHeir/MDDEM): the
 Standard Lennard-Jones potential with cutoff:
 - Force: `f/r = 24*eps/r^2 * (2*(sigma/r)^12 - (sigma/r)^6)`
 - Repulsive at `r < sigma`, attractive at `sigma < r < cutoff`
-- Virial accumulation for pressure computation
+- Full virial stress tensor accumulation (via `VirialStressPlugin` from `mddem_core`)
 - Ghost atom scaling (0.5 for cross-boundary pairs)
 
 ### Tail Corrections
@@ -28,7 +28,7 @@ cutoff = 2.5     # cutoff distance in sigma units
 ## Resources
 
 - `LJConfig` — deserialized config
-- `VirialAccumulator` — accumulated pair virial per step (reset each step)
+- `VirialStress` — full symmetric virial stress tensor (from `mddem_core`, shared with bond/contact forces)
 - `LJTailCorrections` — energy and pressure tail corrections (computed once at setup)
 
 ## Usage

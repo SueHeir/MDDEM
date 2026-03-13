@@ -3,7 +3,7 @@ use mddem_scheduler::prelude::*;
 use nalgebra::Vector3;
 
 use dem_atom::{DemAtom, MaterialTable};
-use mddem_core::{Atom, AtomDataRegistry};
+use mddem_core::{Atom, AtomDataRegistry, BondStore};
 use mddem_neighbor::Neighbor;
 
 use crate::{LARGE_OVERLAP_WARN_THRESHOLD, MAX_OVERLAP_WARNINGS, SQRT_5_3};
@@ -24,10 +24,17 @@ pub fn hertz_normal_force(
     material_table: Res<MaterialTable>,
 ) {
     let dem = registry.expect::<DemAtom>("hertz_normal_force");
+    let bond_store = registry.get::<BondStore>();
 
     let nlocal = atoms.nlocal as usize;
     let mut overlap_warnings = 0usize;
     for (i, j) in neighbor.pairs(nlocal) {
+        if let Some(ref bonds) = bond_store {
+            if bonds.are_excluded(i, j, &atoms.tag) {
+                continue;
+            }
+        }
+
 
         let p1 = Vector3::new(atoms.pos[i][0], atoms.pos[i][1], atoms.pos[i][2]);
         let p2 = Vector3::new(atoms.pos[j][0], atoms.pos[j][1], atoms.pos[j][2]);

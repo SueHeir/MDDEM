@@ -6,7 +6,7 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, CommResource, Config, Domain};
+use mddem_core::{Atom, CommResource, Config, Domain, VirialStressPlugin};
 use mddem_neighbor::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -48,21 +48,6 @@ impl Default for LJConfig {
 
 // ── Resources ───────────────────────────────────────────────────────────────
 
-/// Accumulates pairwise virial contributions for pressure calculation.
-pub struct VirialAccumulator {
-    pub virial_sum: f64,
-    pub active: bool,
-}
-
-impl Default for VirialAccumulator {
-    fn default() -> Self {
-        VirialAccumulator {
-            virial_sum: 0.0,
-            active: true,
-        }
-    }
-}
-
 /// Long-range tail corrections for energy and pressure beyond the LJ cutoff.
 pub struct LJTailCorrections {
     pub energy_tail: f64,
@@ -96,10 +81,9 @@ cutoff = 2.5     # in sigma units"#,
     fn build(&self, app: &mut App) {
         Config::load::<LJConfig>(app, "lj");
 
-        app.add_resource(VirialAccumulator::default())
-            .add_resource(LJTailCorrections::default())
+        app.add_plugins(VirialStressPlugin);
+        app.add_resource(LJTailCorrections::default())
             .add_setup_system(setup_lj_tails, ScheduleSetupSet::PostSetup)
-            .add_update_system(zero_virial, ScheduleSet::PostInitialIntegration)
             .add_update_system(lj_force.label("lj"), ScheduleSet::Force);
     }
 }
@@ -148,16 +132,12 @@ pub fn setup_lj_tails(
     }
 }
 
-pub fn zero_virial(mut virial: ResMut<VirialAccumulator>) {
-    virial.virial_sum = 0.0;
-}
-
 pub fn lj_force(
     mut atoms: ResMut<Atom>,
     neighbor: Res<Neighbor>,
     lj: Res<LJConfig>,
     _domain: Res<Domain>,
-    mut virial: ResMut<VirialAccumulator>,
+    virial: Option<ResMut<mddem_core::VirialStress>>,
 ) {
     let cutoff2 = (lj.cutoff * lj.sigma).powi(2);
     // Precompute LAMMPS-style constants: lj1 = 48*eps*sigma^12, lj2 = 24*eps*sigma^6
@@ -167,10 +147,15 @@ pub fn lj_force(
     let lj2 = 24.0 * lj.epsilon * sigma6;
 
     let nlocal = atoms.nlocal as usize;
-    let mut virial_sum = 0.0f64;
+    let mut vxx = 0.0f64;
+    let mut vyy = 0.0f64;
+    let mut vzz = 0.0f64;
+    let mut vxy = 0.0f64;
+    let mut vxz = 0.0f64;
+    let mut vyz = 0.0f64;
 
     // Direct CSR loop with batch force accumulation — load/store force[i] once per atom.
-    // Virial is always accumulated (1 fma per pair, negligible cost vs branching every pair).
+    // Virial is always accumulated (negligible cost vs branching every pair).
     // SAFETY: i < nlocal <= atoms.len(), neighbor_offsets has nlocal+1 entries,
     // neighbor_indices[k] < atoms.len() (from CSR construction), j < atoms.len().
     let pos_ptr = atoms.pos.as_ptr();
@@ -198,20 +183,36 @@ pub fn lj_force(
             let r6inv = r2inv * r2inv * r2inv;
             let fpair = r2inv * r6inv * lj1.mul_add(r6inv, -lj2);
 
-            virial_sum = fpair.mul_add(r2, virial_sum);
+            // Force on atom i from j: (-fpair*dx, -fpair*dy, -fpair*dz)
+            let fx = -fpair * dx;
+            let fy = -fpair * dy;
+            let fz = -fpair * dz;
+            vxx += dx * fx;
+            vyy += dy * fy;
+            vzz += dz * fz;
+            vxy += dx * fy;
+            vxz += dx * fz;
+            vyz += dy * fz;
 
-            fi[0] = (-fpair).mul_add(dx, fi[0]);
-            fi[1] = (-fpair).mul_add(dy, fi[1]);
-            fi[2] = (-fpair).mul_add(dz, fi[2]);
+            fi[0] += fx;
+            fi[1] += fy;
+            fi[2] += fz;
             let fj = unsafe { &mut *force_ptr.add(j) };
-            fj[0] = fpair.mul_add(dx, fj[0]);
-            fj[1] = fpair.mul_add(dy, fj[1]);
-            fj[2] = fpair.mul_add(dz, fj[2]);
+            fj[0] -= fx;
+            fj[1] -= fy;
+            fj[2] -= fz;
         }
         unsafe { *force_ptr.add(i) = fi };
     }
 
-    virial.virial_sum = virial_sum;
+    if let Some(mut virial) = virial {
+        virial.xx += vxx;
+        virial.yy += vyy;
+        virial.zz += vzz;
+        virial.xy += vxy;
+        virial.xz += vxz;
+        virial.yz += vyz;
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -233,7 +234,7 @@ mod tests {
             cutoff: 2.5,
         };
         app.add_resource(lj_config);
-        app.add_resource(VirialAccumulator::default());
+        app.add_resource(mddem_core::VirialStress::default());
         app.add_resource(Domain::default());
 
         let mut atom = Atom::new();
@@ -250,7 +251,10 @@ mod tests {
         neighbor.neighbor_indices = vec![1];        // atom 0's neighbor is atom 1
         app.add_resource(neighbor);
 
-        app.add_update_system(zero_virial, ScheduleSet::PostInitialIntegration);
+        app.add_update_system(
+            mddem_core::virial::zero_virial_stress,
+            ScheduleSet::PreForce,
+        );
         app.add_update_system(lj_force, ScheduleSet::Force);
         app.organize_systems();
         app
@@ -325,13 +329,15 @@ mod tests {
     }
 
     #[test]
-    fn virial_positive_at_close_range() {
+    fn virial_negative_trace_at_close_range() {
         let mut app = make_two_atom_app(0.9);
         app.run();
-        let virial = app.get_resource_ref::<VirialAccumulator>().unwrap();
+        let virial = app
+            .get_resource_ref::<mddem_core::VirialStress>()
+            .unwrap();
         assert!(
-            virial.virial_sum > 0.0,
-            "virial should be positive at close range"
+            virial.trace() < 0.0,
+            "virial trace should be negative at close range (repulsion)"
         );
     }
 }

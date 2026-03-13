@@ -9,8 +9,8 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::Deserialize;
 
-use md_lj::{LJTailCorrections, VirialAccumulator};
-use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState};
+use md_lj::LJTailCorrections;
+use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState, VirialStress};
 use mddem_neighbor::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -395,8 +395,8 @@ pub fn track_msd(
 pub fn compute_pressure(
     atoms: Res<Atom>,
     run_state: Res<RunState>,
-    virial: Res<VirialAccumulator>,
-    tails: Res<LJTailCorrections>,
+    virial: Option<Res<VirialStress>>,
+    tails: Option<Res<LJTailCorrections>>,
     domain: Res<Domain>,
     comm: Res<CommResource>,
     config: Res<MeasureConfig>,
@@ -424,9 +424,16 @@ pub fn compute_pressure(
     let ndof = 3.0 * n - 3.0;
     let temp = if ndof > 0.0 { 2.0 * global_ke / ndof } else { 0.0 };
 
-    // Virial pressure: P = rho*T + virial_sum/(3*V) + P_tail
-    let global_virial = comm.all_reduce_sum_f64(virial.virial_sum);
-    let pressure = rho * temp + global_virial / (3.0 * v) + tails.pressure_tail;
+    // Virial pressure: P = rho*T - trace/(3*V) + P_tail
+    let global_trace = match virial {
+        Some(ref v) => {
+            let local_trace = v.trace();
+            comm.all_reduce_sum_f64(local_trace)
+        }
+        None => 0.0,
+    };
+    let tail = tails.map_or(0.0, |t| t.pressure_tail);
+    let pressure = rho * temp - global_trace / (3.0 * v) + tail;
 
     if comm.rank() == 0 {
         pressure_hist.values.push((step, pressure));

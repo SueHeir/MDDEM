@@ -155,6 +155,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dem_bond"
+version = "0.1.3"
+dependencies = [
+ "dem_atom",
+ "mddem_app",
+ "mddem_core",
+ "mddem_neighbor",
+ "mddem_print",
+ "mddem_scheduler",
+ "nalgebra",
+ "serde",
+]
+
+[[package]]
 name = "dem_granular"
 version = "0.1.3"
 dependencies = [
@@ -433,6 +447,7 @@ version = "0.1.3"
 dependencies = [
  "dem_atom",
  "dem_atom_insert",
+ "dem_bond",
  "dem_granular",
  "dem_gravity",
  "dem_wall",
@@ -455,6 +470,7 @@ version = "0.1.3"
 dependencies = [
  "libffi-sys",
  "mddem",
+ "nalgebra",
 ]
 
 [[package]]
