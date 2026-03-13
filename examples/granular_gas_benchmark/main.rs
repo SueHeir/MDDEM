@@ -2,7 +2,7 @@
 //! theoretical cooling curves for a granular gas in a periodic box.
 //!
 //! ```bash
-//! cargo run --example benchmark --no-default-features -- examples/benchmark/config.toml
+//! cargo run --example granular_gas_benchmark --no-default-features -- examples/granular_gas_benchmark/run_debug.toml
 //! ```
 
 use mddem::prelude::*;

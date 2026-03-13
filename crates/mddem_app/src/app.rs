@@ -152,6 +152,19 @@ impl App {
         }
     }
 
+    pub fn remove_update_system<I, S: mddem_scheduler::System + 'static>(
+        &mut self,
+        system: impl IntoSystem<I, System = S>,
+    ) -> &mut Self {
+        self.sub_apps.main.remove_update_system(system);
+        self
+    }
+
+    pub fn remove_update_system_by_label(&mut self, label: &str) -> &mut Self {
+        self.sub_apps.main.remove_update_system_by_label(label);
+        self
+    }
+
     pub fn enable_schedule_print(&mut self) -> &mut Self {
         self.sub_apps.main.enable_schedule_print();
         self

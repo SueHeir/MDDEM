@@ -32,7 +32,7 @@ coupling = 1.0       # relaxation time tau_T
 ## Resources
 
 - `ThermostatConfig` — deserialized config
-- `NoseHooverState` — thermostat state: `p_xi`, `Q`, `target_temp`, `ndof`
+- `NoseHooverState` — thermostat state: `p_xi`, `q_mass`, `target_temp`, `ndof`, `group_name`
 
 ## Usage
 

@@ -24,11 +24,12 @@ pub struct CommunicationPlugin;
 
 impl Plugin for CommunicationPlugin {
     fn build(&self, app: &mut App) {
-        app.add_resource(Comm::new())
-            .add_setup_system(read_input, ScheduleSetupSet::PreSetup)
-            .add_setup_system(setup, ScheduleSetupSet::PostSetup)
-            .add_update_system(exchange, ScheduleSet::Exchange)
-            .add_update_system(borders, ScheduleSet::PreNeighbor)
+        app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
+        app.add_resource(CommBuffers::default());
+
+        app.add_setup_system(comm_read_input, ScheduleSetupSet::PreSetup)
+            .add_setup_system(comm_setup, ScheduleSetupSet::PostSetup)
+            .add_update_system(borders.label("borders"), ScheduleSet::PreNeighbor)
             .add_update_system(reverse_send_force, ScheduleSet::PostForce);
     }
 }
@@ -48,8 +49,8 @@ impl PluginGroup for GranularDefaultPlugins {
         PluginGroupBuilder::start::<Self>()
             .add(DemAtomPlugin)
             .add(DemAtomInsertPlugin)
-            .add(HertzNormalForcePlugin)
-            .add(MindlinTangentialForcePlugin)
+            .add(VelocityVerletPlugin)
+            .add(HertzMindlinContactPlugin)
             .add(RotationalDynamicsPlugin)
             .add(GranularTempPlugin)
     }
@@ -68,8 +69,28 @@ fn main() {
 }
 ```
 
+### Disabling Plugins
+
+Use `.disable::<P>()` on a `PluginGroupBuilder` to skip a plugin from a group. This is useful when you want most of a group's defaults but need to replace one plugin with your own:
+
+```rust
+pub struct MyPlugins;
+
+impl PluginGroup for MyPlugins {
+    fn build(self) -> PluginGroupBuilder {
+        GranularDefaultPlugins.build()
+            .disable::<HertzMindlinContactPlugin>()
+            .add(CustomContactForcePlugin)
+    }
+}
+```
+
+Disabled plugins are simply not added — no error is raised if the disabled plugin was never in the group.
+
+**Interaction with `requires_label()`**: If a disabled plugin registers a system with a label that another system depends on via `.requires_label()`, the scheduler will panic at startup with a clear error. This is intentional — it prevents silent misconfiguration when replacing plugins. When disabling a plugin, make sure your replacement provides the same labels, or update the dependent systems.
+
 **DEM use cases**
-- `GranularDefaultPlugins` bundles Hertz normal + Mindlin tangential + rotational dynamics; users extend with custom plugins
+- `GranularDefaultPlugins` bundles Hertz-Mindlin fused contact + Velocity Verlet + rotational dynamics; users extend with custom plugins
 - Separate `DEMContactPlugin` from `DEMBondPlugin`; bond simulations add both, contact-only simulations add just the first
 - Test harnesses use a stripped group (no I/O plugins) for fast unit-level integration tests
 

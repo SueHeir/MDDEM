@@ -3,6 +3,8 @@ use mddem_scheduler::{apply_state_transitions, CurrentState, NextState, Schedule
 
 use crate::App;
 use core::any::Any;
+use std::any::TypeId;
+use std::collections::HashSet;
 
 /// A self-contained module that registers resources and systems with an [`App`].
 pub trait Plugin: Downcast + Any + Send + Sync {
@@ -60,18 +62,28 @@ pub trait PluginGroup: Sized {
 /// Builder for a [`PluginGroup`]. Add plugins in order; they will be registered in that order.
 pub struct PluginGroupBuilder {
     plugins: Vec<Box<dyn Plugin>>,
+    disabled: HashSet<TypeId>,
 }
 
 impl PluginGroupBuilder {
     pub fn start<G: PluginGroup>() -> Self {
         Self {
             plugins: Vec::new(),
+            disabled: HashSet::new(),
         }
     }
 
     #[allow(clippy::should_implement_trait)]
     pub fn add<P: Plugin>(mut self, plugin: P) -> Self {
+        if self.disabled.contains(&TypeId::of::<P>()) {
+            return self;
+        }
         self.plugins.push(Box::new(plugin));
+        self
+    }
+
+    pub fn disable<P: Plugin>(mut self) -> Self {
+        self.disabled.insert(TypeId::of::<P>());
         self
     }
 

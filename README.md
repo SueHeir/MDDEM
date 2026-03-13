@@ -194,7 +194,7 @@ cargo run --release -- config.toml --schedule
 | Example | Description | Run |
 |---------|-------------|-----|
 | [granular_basic](examples/granular_basic/) | 500-particle granular gas in a periodic box | `cargo run --example granular_basic -- examples/granular_basic/config.toml` |
-| [granular_gas_benchmark](examples/granular_gas_benchmark/) | Haff's cooling law validation with LAMMPS comparison | `cargo run --example granular_gas_benchmark -- examples/granular_gas_benchmark/config.toml` |
+| [granular_gas_benchmark](examples/granular_gas_benchmark/) | Haff's cooling law validation with LAMMPS comparison | `cargo run --example granular_gas_benchmark -- examples/granular_gas_benchmark/run_debug.toml` |
 | [hopper](examples/hopper/) | 2D slot hopper with angled walls, gravity, and simulation states | `cargo run --example hopper -- examples/hopper/config.toml` |
 | [lj_argon](examples/lj_argon/) | LJ fluid validated against liquid Argon (RDF, MSD, pressure) | `cargo run --release --example lj_argon -- examples/lj_argon/config.toml` |
 | [lj_langevin](examples/lj_langevin/) | LJ fluid with Langevin thermostat | `cargo run --release --example lj_langevin -- examples/lj_langevin/config.toml` |
@@ -308,7 +308,7 @@ fn main() {
 }
 ```
 
-`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, and output. `GranularDefaultPlugins` adds DEM atom data, insertion, contact forces, rotational dynamics, Velocity Verlet, and walls. `LJDefaultPlugins` adds FCC lattice, LJ forces, Nose-Hoover thermostat (with fused Velocity Verlet integration), and measurements. Individual plugins can be added separately for custom configurations — add `VelocityVerletPlugin` explicitly when not using a thermostat that provides integration.
+`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, groups, and output. `GranularDefaultPlugins` adds DEM atom data, insertion, contact forces, rotational dynamics, Velocity Verlet, and granular temperature. `LJDefaultPlugins` adds FCC lattice, LJ forces, Nose-Hoover thermostat (with fused Velocity Verlet integration), and measurements. Individual plugins can be added separately for custom configurations — add `VelocityVerletPlugin` explicitly when not using a thermostat that provides integration.
 
 ## Testing
 

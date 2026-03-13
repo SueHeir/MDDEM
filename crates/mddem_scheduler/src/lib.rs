@@ -37,14 +37,22 @@ macro_rules! impl_system {
                 call_inner(&mut self.f, $($params),*)
             }
 
-            fn prepare(&mut self, index: &HashMap<TypeId, usize>) {
+            fn prepare(&mut self, index: &HashMap<TypeId, usize>) -> Vec<String> {
                 self.indices.clear();
+                let mut _missing = Vec::new();
                 $(
-                    let _idx = <$params as SystemParam>::resource_type_id()
-                        .and_then(|tid| index.get(&tid).copied())
+                    let _type_info = <$params as SystemParam>::resource_type_id();
+                    let _idx = _type_info
+                        .and_then(|(tid, _)| index.get(&tid).copied())
                         .unwrap_or(usize::MAX);
+                    if _idx == usize::MAX && !<$params as SystemParam>::is_optional() {
+                        if let Some((_, name)) = _type_info {
+                            _missing.push(name.to_string());
+                        }
+                    }
                     self.indices.push(_idx);
                 )*
+                _missing
             }
 
             fn name(&self) -> &str { std::any::type_name::<F>() }
@@ -94,14 +102,22 @@ macro_rules! impl_condition {
                 call_inner(&mut self.f, $($params),*)
             }
 
-            fn prepare(&mut self, index: &HashMap<TypeId, usize>) {
+            fn prepare(&mut self, index: &HashMap<TypeId, usize>) -> Vec<String> {
                 self.indices.clear();
+                let mut _missing = Vec::new();
                 $(
-                    let _idx = <$params as SystemParam>::resource_type_id()
-                        .and_then(|tid| index.get(&tid).copied())
+                    let _type_info = <$params as SystemParam>::resource_type_id();
+                    let _idx = _type_info
+                        .and_then(|(tid, _)| index.get(&tid).copied())
                         .unwrap_or(usize::MAX);
+                    if _idx == usize::MAX && !<$params as SystemParam>::is_optional() {
+                        if let Some((_, name)) = _type_info {
+                            _missing.push(name.to_string());
+                        }
+                    }
                     self.indices.push(_idx);
                 )*
+                _missing
             }
         }
     }
@@ -134,8 +150,11 @@ pub trait SystemParam {
         index: usize,
         locals: *mut HashMap<TypeId, Box<dyn Any>>,
     ) -> Self::Item<'r>;
-    fn resource_type_id() -> Option<TypeId> {
+    fn resource_type_id() -> Option<(TypeId, &'static str)> {
         None
+    }
+    fn is_optional() -> bool {
+        false
     }
 }
 // ANCHOR_END: SystemParam
@@ -153,8 +172,8 @@ impl<'res, T: 'static> SystemParam for Res<'res, T> {
         let ptr: *const T = guard.downcast_ref::<T>().unwrap();
         Res { _guard: guard, ptr }
     }
-    fn resource_type_id() -> Option<TypeId> {
-        Some(TypeId::of::<T>())
+    fn resource_type_id() -> Option<(TypeId, &'static str)> {
+        Some((TypeId::of::<T>(), std::any::type_name::<T>()))
     }
 }
 // ANCHOR_END: ResSystemParam
@@ -172,8 +191,8 @@ impl<'res, T: 'static> SystemParam for ResMut<'res, T> {
         let ptr: *mut T = guard.downcast_mut::<T>().unwrap();
         ResMut { _guard: guard, ptr }
     }
-    fn resource_type_id() -> Option<TypeId> {
-        Some(TypeId::of::<T>())
+    fn resource_type_id() -> Option<(TypeId, &'static str)> {
+        Some((TypeId::of::<T>(), std::any::type_name::<T>()))
     }
 }
 // ANCHOR_END: ResMutSystemParam
@@ -271,13 +290,61 @@ impl<T: Default + 'static> DerefMut for Local<'_, T> {
 }
 // ANCHOR_END: Local
 
+// ─── Option<Res<T>> / Option<ResMut<T>> ──────────────────────────────────────
+
+impl<'res, T: 'static> SystemParam for Option<Res<'res, T>> {
+    type Item<'new> = Option<Res<'new, T>>;
+    fn retrieve<'r>(
+        resources: &'r [RefCell<Box<dyn Any>>],
+        index: usize,
+        _locals: *mut HashMap<TypeId, Box<dyn Any>>,
+    ) -> Self::Item<'r> {
+        if index == usize::MAX {
+            return None;
+        }
+        let guard = resources[index].borrow();
+        let ptr: *const T = guard.downcast_ref::<T>().unwrap();
+        Some(Res { _guard: guard, ptr })
+    }
+    fn resource_type_id() -> Option<(TypeId, &'static str)> {
+        Some((TypeId::of::<T>(), std::any::type_name::<T>()))
+    }
+    fn is_optional() -> bool {
+        true
+    }
+}
+
+impl<'res, T: 'static> SystemParam for Option<ResMut<'res, T>> {
+    type Item<'new> = Option<ResMut<'new, T>>;
+    fn retrieve<'r>(
+        resources: &'r [RefCell<Box<dyn Any>>],
+        index: usize,
+        _locals: *mut HashMap<TypeId, Box<dyn Any>>,
+    ) -> Self::Item<'r> {
+        if index == usize::MAX {
+            return None;
+        }
+        let mut guard = resources[index].borrow_mut();
+        let ptr: *mut T = guard.downcast_mut::<T>().unwrap();
+        Some(ResMut { _guard: guard, ptr })
+    }
+    fn resource_type_id() -> Option<(TypeId, &'static str)> {
+        Some((TypeId::of::<T>(), std::any::type_name::<T>()))
+    }
+    fn is_optional() -> bool {
+        true
+    }
+}
+
 // ─── System trait & FunctionSystem ───────────────────────────────────────────
 
 // ANCHOR: System
 /// A runnable unit of work that receives resources via dependency injection.
 pub trait System {
     fn run(&mut self, resources: &[RefCell<Box<dyn Any>>]);
-    fn prepare(&mut self, _index: &HashMap<TypeId, usize>) {}
+    fn prepare(&mut self, _index: &HashMap<TypeId, usize>) -> Vec<String> {
+        Vec::new()
+    }
     fn name(&self) -> &str {
         "unknown"
     }
@@ -327,7 +394,9 @@ impl_into_system!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
 /// A DI-injected function that returns `bool`, used with `.run_if()`.
 pub trait Condition {
     fn evaluate(&mut self, resources: &[RefCell<Box<dyn Any>>]) -> bool;
-    fn prepare(&mut self, _index: &HashMap<TypeId, usize>) {}
+    fn prepare(&mut self, _index: &HashMap<TypeId, usize>) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 pub struct FunctionCondition<Input, F> {
@@ -370,9 +439,10 @@ impl<S: System, C: Condition> System for ConditionalSystem<S, C> {
             self.system.run(resources);
         }
     }
-    fn prepare(&mut self, index: &HashMap<TypeId, usize>) {
-        self.condition.prepare(index);
-        self.system.prepare(index);
+    fn prepare(&mut self, index: &HashMap<TypeId, usize>) -> Vec<String> {
+        let mut missing = self.condition.prepare(index);
+        missing.extend(self.system.prepare(index));
+        missing
     }
     fn name(&self) -> &str {
         self.system.name()
@@ -387,6 +457,7 @@ pub struct SystemDescriptor<S: System + 'static> {
     pub label: Option<String>,
     pub befores: Vec<String>,
     pub afters: Vec<String>,
+    pub requires: Vec<String>,
 }
 
 impl<S: System + 'static> SystemDescriptor<S> {
@@ -402,6 +473,10 @@ impl<S: System + 'static> SystemDescriptor<S> {
         self.afters.push(target.into());
         self
     }
+    pub fn requires_label(mut self, target: impl Into<String>) -> Self {
+        self.requires.push(target.into());
+        self
+    }
     pub fn run_if<I2, C: Condition + 'static>(
         self,
         cond: impl IntoCondition<I2, Condition = C>,
@@ -414,6 +489,7 @@ impl<S: System + 'static> SystemDescriptor<S> {
             label: self.label,
             befores: self.befores,
             afters: self.afters,
+            requires: self.requires,
         }
     }
 }
@@ -442,6 +518,7 @@ where
             label: Some(lbl.into()),
             befores: vec![],
             afters: vec![],
+            requires: vec![],
         }
     }
 
@@ -451,6 +528,7 @@ where
             label: None,
             befores: vec![target.into()],
             afters: vec![],
+            requires: vec![],
         }
     }
 
@@ -460,6 +538,17 @@ where
             label: None,
             befores: vec![],
             afters: vec![target.into()],
+            requires: vec![],
+        }
+    }
+
+    fn requires_label(self, target: impl Into<String>) -> SystemDescriptor<Self::System> {
+        SystemDescriptor {
+            system: self.into_system(),
+            label: None,
+            befores: vec![],
+            afters: vec![],
+            requires: vec![target.into()],
         }
     }
 }
@@ -491,6 +580,7 @@ where
             label: None,
             befores: vec![],
             afters: vec![],
+            requires: vec![],
         }
     }
 }
@@ -507,6 +597,7 @@ impl<S: System + 'static, C: Condition + 'static> IntoScheduledSystem<CondMarker
             label: None,
             befores: vec![],
             afters: vec![],
+            requires: vec![],
         }
     }
 }
@@ -521,6 +612,7 @@ impl<S: System + 'static> IntoScheduledSystem<DescMarker> for SystemDescriptor<S
             label: self.label,
             befores: self.befores,
             afters: self.afters,
+            requires: self.requires,
         }
     }
 }
@@ -533,6 +625,7 @@ pub struct StoredSystemEntry {
     pub label: Option<String>,
     pub befores: Vec<String>,
     pub afters: Vec<String>,
+    pub requires: Vec<String>,
 }
 
 // ─── Schedule sets ────────────────────────────────────────────────────────────
@@ -695,6 +788,8 @@ pub struct Scheduler {
     print_schedule: bool,
     system_timings: Vec<f64>,
     timing_steps: usize,
+    trace: bool,
+    suppress_warnings: bool,
 }
 // ANCHOR_END: Scheduler
 
@@ -710,6 +805,8 @@ impl Default for Scheduler {
             print_schedule: false,
             system_timings: Vec::new(),
             timing_steps: 0,
+            trace: std::env::var("MDDEM_TRACE").is_ok(),
+            suppress_warnings: std::env::var("MDDEM_SUPPRESS_WARNINGS").is_ok(),
         }
     }
 }
@@ -725,8 +822,14 @@ impl Scheduler {
         let all = std::mem::take(&mut self.update_systems);
         if all.is_empty() {
             // Still prepare setup systems
+            let mut errors: Vec<String> = Vec::new();
             for (entry, _) in &mut self.setup_systems {
-                entry.system.prepare(&self.resource_index);
+                for missing in entry.system.prepare(&self.resource_index) {
+                    errors.push(format!("  System \"{}\" requires `{}`", entry.name, missing));
+                }
+            }
+            if !errors.is_empty() {
+                panic!("Schedule validation errors:\n{}", errors.join("\n"));
             }
             return;
         }
@@ -743,21 +846,114 @@ impl Scheduler {
             groups.push(vec![entry]);
         }
 
+        let mut errors: Vec<String> = Vec::new();
         for mut group in groups {
             topo_sort_group(&mut group);
+
+            // Validate requires_label: every required label must exist in this group
+            let labels_in_group: Vec<Option<&str>> = group
+                .iter()
+                .map(|(entry, _)| entry.label.as_deref())
+                .collect();
+            for (entry, set) in &group {
+                for req in &entry.requires {
+                    if !labels_in_group.iter().any(|l| l == &Some(req.as_str())) {
+                        errors.push(format!(
+                            "  System \"{}\" in {:?} requires label \"{}\" which is not present in that ScheduleSet",
+                            entry.name, set, req
+                        ));
+                    }
+                }
+            }
+
             self.update_systems.extend(group);
         }
 
-        // Prepare all systems with cached resource indices
+        // Prepare all systems with cached resource indices, collecting missing resource errors
         for (entry, _) in &mut self.setup_systems {
-            entry.system.prepare(&self.resource_index);
+            for missing in entry.system.prepare(&self.resource_index) {
+                errors.push(format!("  System \"{}\" requires `{}`", entry.name, missing));
+            }
         }
         for (entry, _) in &mut self.update_systems {
-            entry.system.prepare(&self.resource_index);
+            for missing in entry.system.prepare(&self.resource_index) {
+                errors.push(format!("  System \"{}\" requires `{}`", entry.name, missing));
+            }
+        }
+        if !errors.is_empty() {
+            panic!("Schedule validation errors:\n{}", errors.join("\n"));
         }
 
         // Initialize index-based timing vector
         self.system_timings = vec![0.0; self.update_systems.len()];
+
+        // Emit non-blocking warnings for suspicious schedule configurations
+        self.validate_schedule();
+    }
+
+    /// Returns warning strings for suspicious schedule configurations.
+    /// Called at the end of `organize_systems()` to print warnings to stderr.
+    fn schedule_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if self.update_systems.is_empty() {
+            return warnings;
+        }
+
+        // Build a bool array: which ScheduleSets have at least one system?
+        let mut has_systems = [false; 14];
+        for (_, set) in &self.update_systems {
+            has_systems[set_to_value(set) as usize] = true;
+        }
+
+        // Count total update systems (excluding Setup slot 0)
+        let update_count: usize = has_systems[1..].iter().filter(|&&b| b).count();
+
+        // 1. No Force systems — warn if schedule is non-empty but Force set is empty
+        if update_count > 0 && !has_systems[set_to_value(&ScheduleSet::Force) as usize] {
+            warnings.push(
+                "[MDDEM Warning] No systems registered in the Force schedule set. \
+                 Forces will not be computed. Did you forget a force plugin?"
+                    .to_string(),
+            );
+        }
+
+        // 2. Asymmetric Verlet — InitialIntegration without FinalIntegration or vice versa
+        let has_initial = has_systems[set_to_value(&ScheduleSet::InitialIntegration) as usize];
+        let has_final = has_systems[set_to_value(&ScheduleSet::FinalIntegration) as usize];
+        if has_initial && !has_final {
+            warnings.push(
+                "[MDDEM Warning] InitialIntegration has systems but FinalIntegration is empty. \
+                 This produces an asymmetric Verlet integration."
+                    .to_string(),
+            );
+        } else if !has_initial && has_final {
+            warnings.push(
+                "[MDDEM Warning] FinalIntegration has systems but InitialIntegration is empty. \
+                 This produces an asymmetric Verlet integration."
+                    .to_string(),
+            );
+        }
+
+        // 3. No integrator — many update systems but no integration at all
+        if update_count > 2 && !has_initial && !has_final {
+            warnings.push(
+                "[MDDEM Warning] Schedule has update systems but no integrator \
+                 (neither InitialIntegration nor FinalIntegration has systems). \
+                 Particles will not move."
+                    .to_string(),
+            );
+        }
+
+        warnings
+    }
+
+    fn validate_schedule(&self) {
+        if self.suppress_warnings {
+            return;
+        }
+        for warning in self.schedule_warnings() {
+            eprintln!("{}", warning);
+        }
     }
 
     pub fn setup(&mut self) {
@@ -767,7 +963,10 @@ impl Scheduler {
     }
 
     pub fn run(&mut self) {
-        for (idx, (entry, _set)) in self.update_systems.iter_mut().enumerate() {
+        for (idx, (entry, set)) in self.update_systems.iter_mut().enumerate() {
+            if self.trace {
+                eprintln!("[step {}] {:?}: {}", self.timing_steps, set, entry.name);
+            }
             let t0 = std::time::Instant::now();
             entry.system.run(&self.resources);
             self.system_timings[idx] += t0.elapsed().as_secs_f64();
@@ -837,6 +1036,7 @@ impl Scheduler {
                 label: None,
                 befores: vec![],
                 afters: vec![],
+                requires: vec![],
             },
             schedule_set,
         ));
@@ -849,6 +1049,21 @@ impl Scheduler {
     ) {
         self.update_systems
             .push((system.into_stored(), schedule_set));
+    }
+
+    pub fn remove_update_system<I, S: System + 'static>(
+        &mut self,
+        system: impl IntoSystem<I, System = S>,
+    ) {
+        let sys = system.into_system();
+        let name = sys.name();
+        self.update_systems
+            .retain(|(entry, _)| entry.name != name);
+    }
+
+    pub fn remove_update_system_by_label(&mut self, label: &str) {
+        self.update_systems
+            .retain(|(entry, _)| entry.label.as_deref() != Some(label));
     }
 
     pub fn add_scheduler_manager(&mut self) {
@@ -1190,4 +1405,203 @@ pub mod prelude {
         // Run conditions
         SystemExt,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MyResource(i32);
+
+    fn system_requiring_resource(_res: Res<MyResource>) {}
+
+    #[test]
+    #[should_panic(expected = "Schedule validation errors")]
+    fn missing_resource_panics_at_organize() {
+        let mut scheduler = Scheduler::default();
+        scheduler.add_update_system(system_requiring_resource, ScheduleSet::Force);
+        scheduler.organize_systems();
+    }
+
+    fn system_with_optional_resource(res: Option<Res<MyResource>>) {
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn optional_resource_works_when_missing() {
+        let mut scheduler = Scheduler::default();
+        scheduler.add_update_system(system_with_optional_resource, ScheduleSet::Force);
+        scheduler.organize_systems();
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+    }
+
+    fn system_with_optional_present(res: Option<Res<MyResource>>) {
+        assert!(res.is_some());
+        assert_eq!(res.unwrap().0, 42);
+    }
+
+    #[test]
+    fn optional_resource_works_when_present() {
+        let mut scheduler = Scheduler::default();
+        scheduler.add_resource(MyResource(42));
+        scheduler.add_update_system(system_with_optional_present, ScheduleSet::Force);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+    }
+
+    #[test]
+    fn remove_update_system_by_label() {
+        let mut scheduler = Scheduler::default();
+        scheduler.add_update_system(
+            system_requiring_resource.label("my_system"),
+            ScheduleSet::Force,
+        );
+        assert_eq!(scheduler.update_systems.len(), 1);
+        scheduler.remove_update_system_by_label("my_system");
+        assert_eq!(scheduler.update_systems.len(), 0);
+    }
+
+    fn dummy_system(_res: Res<MyResource>) {}
+
+    #[test]
+    fn remove_update_system_by_function() {
+        let mut scheduler = Scheduler::default();
+        scheduler.add_update_system(dummy_system, ScheduleSet::Force);
+        assert_eq!(scheduler.update_systems.len(), 1);
+        scheduler.remove_update_system(dummy_system);
+        assert_eq!(scheduler.update_systems.len(), 0);
+    }
+
+    // ─── requires_label tests ────────────────────────────────────────────────
+
+    fn force_a() {}
+    fn force_b() {}
+
+    #[test]
+    #[should_panic(expected = "requires label")]
+    fn requires_label_panics_when_missing() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_update_system(
+            force_b.label("force_b").requires_label("force_a"),
+            ScheduleSet::Force,
+        );
+        scheduler.organize_systems();
+    }
+
+    #[test]
+    fn requires_label_passes_when_present() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_update_system(force_a.label("force_a"), ScheduleSet::Force);
+        scheduler.add_update_system(
+            force_b.label("force_b").requires_label("force_a"),
+            ScheduleSet::Force,
+        );
+        scheduler.organize_systems();
+    }
+
+    fn always_true() -> bool {
+        true
+    }
+
+    #[test]
+    #[should_panic(expected = "requires label")]
+    fn requires_label_works_with_run_if() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_update_system(
+            force_b
+                .label("force_b")
+                .requires_label("force_a")
+                .run_if(always_true),
+            ScheduleSet::Force,
+        );
+        scheduler.organize_systems();
+    }
+
+    #[test]
+    fn requires_label_passes_with_run_if() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_update_system(force_a.label("force_a"), ScheduleSet::Force);
+        scheduler.add_update_system(
+            force_b
+                .label("force_b")
+                .requires_label("force_a")
+                .run_if(always_true),
+            ScheduleSet::Force,
+        );
+        scheduler.organize_systems();
+    }
+
+    // ─── validate_schedule warning tests ─────────────────────────────────────
+
+    #[test]
+    fn validate_warns_no_force_systems() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_update_system(force_a, ScheduleSet::InitialIntegration);
+        scheduler.add_update_system(force_b, ScheduleSet::FinalIntegration);
+        scheduler.organize_systems();
+        let warnings = scheduler.schedule_warnings();
+        assert!(
+            warnings.iter().any(|w| w.contains("Force")),
+            "Expected warning about missing Force systems, got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn validate_warns_asymmetric_verlet() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_update_system(force_a, ScheduleSet::InitialIntegration);
+        scheduler.add_update_system(force_b, ScheduleSet::Force);
+        scheduler.organize_systems();
+        let warnings = scheduler.schedule_warnings();
+        assert!(
+            warnings.iter().any(|w| w.contains("asymmetric")),
+            "Expected warning about asymmetric Verlet, got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn validate_warns_no_integrator() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        fn sys_a() {}
+        fn sys_b() {}
+        fn sys_c() {}
+        scheduler.add_update_system(sys_a, ScheduleSet::Force);
+        scheduler.add_update_system(sys_b, ScheduleSet::PostForce);
+        scheduler.add_update_system(sys_c, ScheduleSet::Exchange);
+        scheduler.organize_systems();
+        let warnings = scheduler.schedule_warnings();
+        assert!(
+            warnings.iter().any(|w| w.contains("no integrator")),
+            "Expected warning about no integrator, got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn validate_no_warnings_for_normal_schedule() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_update_system(force_a, ScheduleSet::InitialIntegration);
+        scheduler.add_update_system(force_b, ScheduleSet::Force);
+        scheduler.add_update_system(force_a, ScheduleSet::FinalIntegration);
+        scheduler.organize_systems();
+        let warnings = scheduler.schedule_warnings();
+        assert!(
+            warnings.is_empty(),
+            "Expected no warnings, got: {:?}",
+            warnings
+        );
+    }
 }

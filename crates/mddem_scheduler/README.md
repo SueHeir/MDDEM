@@ -57,6 +57,33 @@ pub fn my_system(
 
 Note: For per-atom data that needs to travel with atoms during MPI exchange (e.g., tangential contact history), use `AtomData` registered in the `AtomDataRegistry` instead of `Local`.
 
+## Optional Resources: `Option<Res<T>>` and `Option<ResMut<T>>`
+
+When a resource may or may not be present, wrap it in `Option`. The system receives `None` instead of panicking when the resource hasn't been registered:
+
+```rust
+fn my_system(thermostat: Option<Res<ThermostatConfig>>) {
+    if let Some(config) = thermostat {
+        // thermostat is available, use it
+    }
+    // otherwise, skip thermostat logic
+}
+```
+
+This is useful for systems that adapt to which plugins are loaded — for example, a force system that optionally reads a damping coefficient if a damping plugin is present.
+
+## Resource Validation at Startup
+
+When `organize_systems()` runs, all required resources are validated. If any system requires a `Res<T>` or `ResMut<T>` that hasn't been registered, the scheduler panics with a clear error listing every missing resource:
+
+```
+Missing resources detected:
+  System "nh_pre_initial" requires `md_thermostat::NoseHooverState`
+  System "lj_force" requires `md_lj::LJConfig`
+```
+
+`Option<Res<T>>` and `Option<ResMut<T>>` params are not validated — they are allowed to be missing. `Local<T>` is per-system state and is also excluded from validation.
+
 ## Run Conditions -- `.run_if()`
 
 A run condition is any DI function that returns `bool`. Attach one to a system with `.run_if()`; the system is skipped when the condition returns `false`.
@@ -188,3 +215,83 @@ The DOT output includes:
 Example output:
 
 <img src="../../schedule.png">
+
+## Trace Mode
+
+Set the `MDDEM_TRACE` environment variable to print every system invocation to stderr as it runs:
+
+```bash
+MDDEM_TRACE=1 cargo run --release -- config.toml
+```
+
+Output looks like:
+
+```
+[step 0] Force: md_lj::lj_force
+[step 0] PostForce: mddem_core::comm::reverse_send_force
+[step 0] FinalIntegration: md_thermostat::nh_final_integration
+...
+```
+
+Each line shows the step number, the `ScheduleSet`, and the full system name. This is useful for debugging system ordering or identifying which system is panicking.
+
+## Required Labels -- `.requires_label()`
+
+Use `.requires_label()` to declare that a system depends on another labeled system being present in the same `ScheduleSet`. If the required label is missing at startup, `organize_systems()` panics with a clear error. This catches configuration mistakes like forgetting a plugin or accidentally removing a system that another system depends on.
+
+```rust
+app.add_update_system(
+    hertz_normal_force.label("hertz"),
+    ScheduleSet::Force,
+);
+app.add_update_system(
+    mindlin_tangential
+        .label("tangential")
+        .after("hertz")
+        .requires_label("hertz"),
+    ScheduleSet::Force,
+);
+```
+
+Unlike `.after()`, which silently becomes a no-op when the target label is absent, `.requires_label()` enforces that the dependency exists. Use `.after()` for ordering and `.requires_label()` for correctness guarantees.
+
+**DEM use cases**
+- Tangential contact requires normal contact (overlap, normal force magnitude)
+- Cohesive bond model requires a contact detection system
+- Rolling resistance requires rotational dynamics
+
+**MD use cases**
+- Angle/dihedral force requires bond topology setup
+- PPPM long-range solver requires real-space pair force (for splitting)
+- RATTLE constraint requires unconstrained force accumulation
+
+## Schedule Warnings
+
+At startup, `organize_systems()` checks for suspicious schedule configurations and prints warnings to stderr. These are non-blocking — the simulation still runs — but they catch common mistakes:
+
+1. **No Force systems** — The schedule has update systems but nothing in the `Force` set
+2. **Asymmetric Verlet** — `InitialIntegration` has systems but `FinalIntegration` doesn't (or vice versa)
+3. **No integrator** — Multiple update systems but neither `InitialIntegration` nor `FinalIntegration` has any
+
+Suppress warnings with the `MDDEM_SUPPRESS_WARNINGS` environment variable:
+
+```bash
+MDDEM_SUPPRESS_WARNINGS=1 cargo run --release -- config.toml
+```
+
+**Best practice**: Always use `--schedule` to visually inspect the compiled schedule when setting up a new simulation.
+
+## System Removal
+
+Systems can be removed before the schedule is finalized. Pass the function handle directly for type-safe removal:
+
+```rust
+app.remove_update_system(hertz_normal_force);
+app.add_update_system(custom_force, ScheduleSet::Force);
+```
+
+You can also remove by label string if needed:
+
+```rust
+app.remove_update_system_by_label("hertz");
+```

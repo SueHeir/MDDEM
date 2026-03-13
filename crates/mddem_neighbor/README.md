@@ -36,6 +36,7 @@ bin_size = 0.005       # Minimum bin size for bin-based neighbor list
 ```rust
 use mddem_neighbor::{NeighborPlugin, NeighborStyle};
 
+// CorePlugins uses Bin by default; override with a different algorithm:
 app.add_plugins(NeighborPlugin {
     style: NeighborStyle::SweepAndPrune,
 });

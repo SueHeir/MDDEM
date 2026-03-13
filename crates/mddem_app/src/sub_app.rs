@@ -74,6 +74,17 @@ impl SubApp {
         self.scheduler.get_resource_ref::<R>()
     }
 
+    pub fn remove_update_system<I, S: mddem_scheduler::System + 'static>(
+        &mut self,
+        system: impl IntoSystem<I, System = S>,
+    ) {
+        self.scheduler.remove_update_system(system);
+    }
+
+    pub fn remove_update_system_by_label(&mut self, label: &str) {
+        self.scheduler.remove_update_system_by_label(label);
+    }
+
     pub fn enable_schedule_print(&mut self) {
         self.scheduler.enable_schedule_print();
     }
