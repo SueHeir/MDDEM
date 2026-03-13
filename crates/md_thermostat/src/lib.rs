@@ -404,8 +404,7 @@ mod tests {
     use mddem_test_utils::make_single_comm;
 
     fn push_atom(atom: &mut Atom, tag: u32) {
-        use nalgebra::Vector3;
-        atom.push_test_atom(tag, Vector3::zeros(), 0.5, 1.0);
+        atom.push_test_atom(tag, [0.0; 3], 0.5, 1.0);
     }
 
     fn make_nh_app(n: usize, velocities: &[(f64, f64, f64)], t_target: f64, tau: f64) -> App {

@@ -15,4 +15,3 @@ mddem_app = { path = "../mddem_app", version = "0.1.3" }
 mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.3" }
 
 [dev-dependencies]
-nalgebra = "0.33.2"

@@ -5,7 +5,6 @@ use std::{
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
-use nalgebra::Vector3;
 
 /// Number of f64s packed/unpacked for one atom's base fields.
 pub const ATOM_PACK_SIZE: usize = 15;
@@ -352,14 +351,14 @@ impl Atom {
         self.tag.iter().cloned().max().unwrap_or(0)
     }
 
-    fn pack_atom_inner(&self, i: usize, origin_index_val: f64, pos_offset: Vector3<f64>, buf: &mut Vec<f64>) {
+    fn pack_atom_inner(&self, i: usize, origin_index_val: f64, pos_offset: [f64; 3], buf: &mut Vec<f64>) {
         buf.push(self.tag[i] as f64);
         buf.push(origin_index_val);
         buf.push(self.skin[i]);
         buf.push(self.atom_type[i] as f64);
-        buf.push(self.pos[i][0] + pos_offset.x);
-        buf.push(self.pos[i][1] + pos_offset.y);
-        buf.push(self.pos[i][2] + pos_offset.z);
+        buf.push(self.pos[i][0] + pos_offset[0]);
+        buf.push(self.pos[i][1] + pos_offset[1]);
+        buf.push(self.pos[i][2] + pos_offset[2]);
         buf.push(self.vel[i][0]);
         buf.push(self.vel[i][1]);
         buf.push(self.vel[i][2]);
@@ -371,10 +370,10 @@ impl Atom {
     }
 
     pub fn pack_exchange(&self, i: usize, buf: &mut Vec<f64>) {
-        self.pack_atom_inner(i, 0.0, Vector3::zeros(), buf);
+        self.pack_atom_inner(i, 0.0, [0.0; 3], buf);
     }
 
-    pub fn pack_border(&mut self, i: usize, change_pos: Vector3<f64>, buf: &mut Vec<f64>) {
+    pub fn pack_border(&mut self, i: usize, change_pos: [f64; 3], buf: &mut Vec<f64>) {
         self.pack_atom_inner(i, i as f64, change_pos, buf);
     }
 
@@ -393,11 +392,11 @@ impl Atom {
         ATOM_PACK_SIZE
     }
 
-    pub fn push_test_atom(&mut self, tag: u32, pos: Vector3<f64>, radius: f64, mass: f64) {
+    pub fn push_test_atom(&mut self, tag: u32, pos: [f64; 3], radius: f64, mass: f64) {
         self.tag.push(tag);
         self.atom_type.push(0);
         self.origin_index.push(0);
-        self.pos.push([pos.x, pos.y, pos.z]);
+        self.pos.push(pos);
         self.vel.push([0.0; 3]);
         self.force.push([0.0; 3]);
         self.mass.push(mass);

@@ -2,8 +2,6 @@
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
-#[cfg(test)]
-use nalgebra::Vector3;
 use rand_distr::{Distribution, Normal};
 use serde::Deserialize;
 
@@ -116,9 +114,9 @@ pub fn fcc_insert(
     // FCC: 4 atoms per unit cell, a = (4/rho)^(1/3)
     let a_ideal = (4.0 / rho).cbrt();
 
-    let lx = domain.size.x;
-    let ly = domain.size.y;
-    let lz = domain.size.z;
+    let lx = domain.size[0];
+    let ly = domain.size[1];
+    let lz = domain.size[2];
 
     let nx = (lx / a_ideal).floor() as usize;
     let ny = (ly / a_ideal).floor() as usize;
@@ -146,9 +144,9 @@ pub fn fcc_insert(
         [0.0, 0.5, 0.5],
     ];
 
-    let x0 = domain.boundaries_low.x;
-    let y0 = domain.boundaries_low.y;
-    let z0 = domain.boundaries_low.z;
+    let x0 = domain.boundaries_low[0];
+    let y0 = domain.boundaries_low[1];
+    let z0 = domain.boundaries_low[2];
 
     let mut max_tag = atom.get_max_tag();
     let start_idx = atom.len();
@@ -292,13 +290,13 @@ mod tests {
         app.add_resource(lattice);
 
         let mut comm = SingleProcessComm::new();
-        comm.set_processor_grid(Vector3::new(1, 1, 1), Vector3::new(0, 0, 0));
+        comm.set_processor_grid([1, 1, 1], [0, 0, 0]);
         app.add_resource(mddem_core::CommResource(Box::new(comm)));
 
         let mut domain = Domain::new();
-        domain.boundaries_low = Vector3::new(0.0, 0.0, 0.0);
-        domain.boundaries_high = Vector3::new(lx, lx, lx);
-        domain.size = Vector3::new(lx, lx, lx);
+        domain.boundaries_low = [0.0, 0.0, 0.0];
+        domain.boundaries_high = [lx, lx, lx];
+        domain.size = [lx, lx, lx];
         domain.volume = lx * lx * lx;
         app.add_resource(domain);
 

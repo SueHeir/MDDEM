@@ -4,7 +4,6 @@
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
-use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
 
 use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, Domain};
@@ -76,8 +75,8 @@ pub struct Neighbor {
     pub neighbor_indices: Vec<u32>,   // flat j indices (all pairs, local + ghost)
     pub sweep_and_prune: Vec<(usize, f64)>,
     pub bin_min_size: f64,
-    pub bin_size: Vector3<f64>,
-    pub bin_count: Vector3<i32>,
+    pub bin_size: [f64; 3],
+    pub bin_count: [i32; 3],
     pub last_build_pos: Vec<[f64; 3]>,
     pub steps_since_build: usize,
     pub last_build_total: usize,
@@ -86,7 +85,7 @@ pub struct Neighbor {
     pub bin_stencil: Vec<i32>,    // flat offsets for neighbor cell stencil (full)
     pub bin_stencil_forward: Vec<i32>, // offsets > 0 (half stencil for local-local dedup)
     pub bin_stencil_self: bool,        // whether self-cell (offset 0) is in stencil
-    pub bin_origin: Vector3<f64>, // lower-left corner of bin grid (sub_domain_low - bin_size)
+    pub bin_origin: [f64; 3], // lower-left corner of bin grid (sub_domain_low - bin_size)
     pub bin_total_cells: usize,   // nx * ny * nz (including ghost layers)
     pub every: usize,             // rebuild every N steps (0 = displacement only)
     pub check: bool,              // also check displacement when every > 0
@@ -176,8 +175,8 @@ impl Neighbor {
             neighbor_indices: Vec::new(),
             sweep_and_prune: Vec::new(),
             bin_min_size: 1.0,
-            bin_size: Vector3::new(1.0, 1.0, 1.0),
-            bin_count: Vector3::new(1, 1, 1),
+            bin_size: [1.0; 3],
+            bin_count: [1, 1, 1],
             last_build_pos: Vec::new(),
             steps_since_build: 0,
             last_build_total: 0,
@@ -186,7 +185,7 @@ impl Neighbor {
             bin_stencil: Vec::new(),
             bin_stencil_forward: Vec::new(),
             bin_stencil_self: false,
-            bin_origin: Vector3::new(0.0, 0.0, 0.0),
+            bin_origin: [0.0; 3],
             bin_total_cells: 0,
             every: 0,
             check: true,
@@ -312,38 +311,44 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
         neighbor.bin_min_size = required_bin;
     }
 
-    let whole_number_of_bins = domain.sub_length / neighbor.bin_min_size;
-    let xi = whole_number_of_bins.x.floor().max(1.0) as i32;
-    let yi = whole_number_of_bins.y.floor().max(1.0) as i32;
-    let zi = whole_number_of_bins.z.floor().max(1.0) as i32;
-    if whole_number_of_bins.x < 1.0 || whole_number_of_bins.y < 1.0 || whole_number_of_bins.z < 1.0 {
+    let wbx = domain.sub_length[0] / neighbor.bin_min_size;
+    let wby = domain.sub_length[1] / neighbor.bin_min_size;
+    let wbz = domain.sub_length[2] / neighbor.bin_min_size;
+    let xi = wbx.floor().max(1.0) as i32;
+    let yi = wby.floor().max(1.0) as i32;
+    let zi = wbz.floor().max(1.0) as i32;
+    if wbx < 1.0 || wby < 1.0 || wbz < 1.0 {
         if comm.rank() == 0 {
             println!("WARNING: subdomain smaller than bin_size in at least one dimension, clamping to 1 bin");
         }
     }
 
-    let actual_bin_size = Vector3::new(
-        domain.sub_length.x / xi as f64,
-        domain.sub_length.y / yi as f64,
-        domain.sub_length.z / zi as f64,
-    );
+    let actual_bin_size = [
+        domain.sub_length[0] / xi as f64,
+        domain.sub_length[1] / yi as f64,
+        domain.sub_length[2] / zi as f64,
+    ];
 
     // Stencil range: ceil(cutoff / bin_size) in each dimension
-    let sx = (max_cutoff / actual_bin_size.x).ceil() as i32;
-    let sy = (max_cutoff / actual_bin_size.y).ceil() as i32;
-    let sz = (max_cutoff / actual_bin_size.z).ceil() as i32;
+    let sx = (max_cutoff / actual_bin_size[0]).ceil() as i32;
+    let sy = (max_cutoff / actual_bin_size[1]).ceil() as i32;
+    let sz = (max_cutoff / actual_bin_size[2]).ceil() as i32;
 
     // Ghost layers must match stencil range
     let nx = xi + 2 * sx;
     let ny = yi + 2 * sy;
     let nz = zi + 2 * sz;
-    neighbor.bin_count = Vector3::new(nx, ny, nz);
+    neighbor.bin_count = [nx, ny, nz];
     neighbor.bin_size = actual_bin_size;
 
     // Flat bin grid setup
     let total_cells = (nx * ny * nz) as usize;
     neighbor.bin_total_cells = total_cells;
-    neighbor.bin_origin = domain.sub_domain_low - neighbor.bin_size.component_mul(&Vector3::new(sx as f64, sy as f64, sz as f64));
+    neighbor.bin_origin = [
+        domain.sub_domain_low[0] - actual_bin_size[0] * sx as f64,
+        domain.sub_domain_low[1] - actual_bin_size[1] * sy as f64,
+        domain.sub_domain_low[2] - actual_bin_size[2] * sz as f64,
+    ];
 
     // Precompute stencil offsets — only include cells whose minimum distance < cutoff
     let cutoff2 = max_cutoff * max_cutoff;
@@ -354,9 +359,9 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
         for dy in -sy..=sy {
             for dz in -sz..=sz {
                 // Minimum distance from central cell to cell at offset (dx,dy,dz)
-                let min_dx = (dx.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size.x;
-                let min_dy = (dy.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size.y;
-                let min_dz = (dz.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size.z;
+                let min_dx = (dx.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size[0];
+                let min_dy = (dy.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size[1];
+                let min_dz = (dz.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size[2];
                 if min_dx * min_dx + min_dy * min_dy + min_dz * min_dz < cutoff2 {
                     let offset = dx * ny * nz + dy * nz + dz;
                     neighbor.bin_stencil.push(offset);
@@ -372,11 +377,11 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
 
     // Store box dimensions for minimum-image displacement check
     neighbor.pbc_box = [
-        domain.boundaries_high.x - domain.boundaries_low.x,
-        domain.boundaries_high.y - domain.boundaries_low.y,
-        domain.boundaries_high.z - domain.boundaries_low.z,
+        domain.boundaries_high[0] - domain.boundaries_low[0],
+        domain.boundaries_high[1] - domain.boundaries_low[1],
+        domain.boundaries_high[2] - domain.boundaries_low[2],
     ];
-    neighbor.pbc_flags = [domain.is_periodic.x, domain.is_periodic.y, domain.is_periodic.z];
+    neighbor.pbc_flags = domain.is_periodic;
 
     if comm.rank() == 0 {
         println!(
@@ -520,9 +525,9 @@ pub fn decide_rebuild(
         let low = domain.boundaries_low;
         let high = domain.boundaries_high;
         for i in 0..atoms.nlocal as usize {
-            if atoms.pos[i][0] < low.x || atoms.pos[i][0] >= high.x
-                || atoms.pos[i][1] < low.y || atoms.pos[i][1] >= high.y
-                || atoms.pos[i][2] < low.z || atoms.pos[i][2] >= high.z
+            if atoms.pos[i][0] < low[0] || atoms.pos[i][0] >= high[0]
+                || atoms.pos[i][1] < low[1] || atoms.pos[i][1] >= high[1]
+                || atoms.pos[i][2] < low[2] || atoms.pos[i][2] >= high[2]
             {
                 local_needs = 1.0;
                 break;
@@ -639,18 +644,18 @@ pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>
         return;
     }
 
-    let inv_bsx = 1.0 / neighbor.bin_size.x;
-    let inv_bsy = 1.0 / neighbor.bin_size.y;
-    let inv_bsz = 1.0 / neighbor.bin_size.z;
-    let ny = neighbor.bin_count.y;
-    let nz = neighbor.bin_count.z;
-    let nx = neighbor.bin_count.x;
+    let inv_bsx = 1.0 / neighbor.bin_size[0];
+    let inv_bsy = 1.0 / neighbor.bin_size[1];
+    let inv_bsz = 1.0 / neighbor.bin_size[2];
+    let ny = neighbor.bin_count[1];
+    let nz = neighbor.bin_count[2];
+    let nx = neighbor.bin_count[0];
 
     let mut indices: Vec<(u32, usize)> = (0..nlocal)
         .map(|i| {
-            let cx = ((atoms.pos[i][0] - neighbor.bin_origin.x) * inv_bsx).floor() as i32;
-            let cy = ((atoms.pos[i][1] - neighbor.bin_origin.y) * inv_bsy).floor() as i32;
-            let cz = ((atoms.pos[i][2] - neighbor.bin_origin.z) * inv_bsz).floor() as i32;
+            let cx = ((atoms.pos[i][0] - neighbor.bin_origin[0]) * inv_bsx).floor() as i32;
+            let cy = ((atoms.pos[i][1] - neighbor.bin_origin[1]) * inv_bsy).floor() as i32;
+            let cz = ((atoms.pos[i][2] - neighbor.bin_origin[2]) * inv_bsz).floor() as i32;
             let cx = cx.clamp(0, nx - 1);
             let cy = cy.clamp(0, ny - 1);
             let cz = cz.clamp(0, nz - 1);
@@ -731,16 +736,16 @@ pub fn bin_neighbor_list(
 
     save_build_positions(&atoms, &mut neighbor);
 
-    let ny = neighbor.bin_count.y;
-    let nz = neighbor.bin_count.z;
-    let nx = neighbor.bin_count.x;
+    let ny = neighbor.bin_count[1];
+    let nz = neighbor.bin_count[2];
+    let nx = neighbor.bin_count[0];
     let total_cells = neighbor.bin_total_cells;
-    let inv_bsx = 1.0 / neighbor.bin_size.x;
-    let inv_bsy = 1.0 / neighbor.bin_size.y;
-    let inv_bsz = 1.0 / neighbor.bin_size.z;
-    let bin_ox = neighbor.bin_origin.x;
-    let bin_oy = neighbor.bin_origin.y;
-    let bin_oz = neighbor.bin_origin.z;
+    let inv_bsx = 1.0 / neighbor.bin_size[0];
+    let inv_bsy = 1.0 / neighbor.bin_size[1];
+    let inv_bsz = 1.0 / neighbor.bin_size[2];
+    let bin_ox = neighbor.bin_origin[0];
+    let bin_oy = neighbor.bin_origin[1];
+    let bin_oz = neighbor.bin_origin[2];
 
     // Step 1: Assign each atom to a bin cell (reuse persistent arrays)
     let mut atom_cell = std::mem::take(&mut neighbor.bin_atom_cell);
@@ -951,9 +956,8 @@ pub fn bin_neighbor_list(
 mod tests {
     use super::*;
     use mddem_core::Atom;
-    use nalgebra::Vector3;
-
-    fn push_atom(atom: &mut Atom, tag: u32, pos: Vector3<f64>, radius: f64) {
+    
+    fn push_atom(atom: &mut Atom, tag: u32, pos: [f64; 3], radius: f64) {
         atom.push_test_atom(tag, pos, radius, 1.0);
     }
 
@@ -961,8 +965,8 @@ mod tests {
     fn brute_force_finds_close_pair() {
         let mut app = App::new();
         let mut atom = Atom::new();
-        push_atom(&mut atom, 0, Vector3::new(0.0, 0.0, 0.0), 0.5);
-        push_atom(&mut atom, 1, Vector3::new(0.5, 0.0, 0.0), 0.5);
+        push_atom(&mut atom, 0, [0.0, 0.0, 0.0], 0.5);
+        push_atom(&mut atom, 1, [0.5, 0.0, 0.0], 0.5);
         atom.nlocal = 2;
         atom.natoms = 2;
 
@@ -985,8 +989,8 @@ mod tests {
     fn brute_force_misses_distant_pair() {
         let mut app = App::new();
         let mut atom = Atom::new();
-        push_atom(&mut atom, 0, Vector3::new(0.0, 0.0, 0.0), 0.1);
-        push_atom(&mut atom, 1, Vector3::new(5.0, 0.0, 0.0), 0.1);
+        push_atom(&mut atom, 0, [0.0, 0.0, 0.0], 0.1);
+        push_atom(&mut atom, 1, [5.0, 0.0, 0.0], 0.1);
         atom.nlocal = 2;
         atom.natoms = 2;
 
@@ -1007,15 +1011,15 @@ mod tests {
     fn bin_neighbor_list_finds_close_pair() {
         let mut app = App::new();
         let mut atom = Atom::new();
-        push_atom(&mut atom, 0, Vector3::new(0.5, 0.5, 0.5), 0.5);
-        push_atom(&mut atom, 1, Vector3::new(1.0, 0.5, 0.5), 0.5);
+        push_atom(&mut atom, 0, [0.5, 0.5, 0.5], 0.5);
+        push_atom(&mut atom, 1, [1.0, 0.5, 0.5], 0.5);
         atom.nlocal = 2;
         atom.natoms = 2;
 
         let mut domain = mddem_core::Domain::new();
-        domain.sub_domain_low = Vector3::new(0.0, 0.0, 0.0);
-        domain.sub_domain_high = Vector3::new(2.0, 2.0, 2.0);
-        domain.sub_length = Vector3::new(2.0, 2.0, 2.0);
+        domain.sub_domain_low = [0.0, 0.0, 0.0];
+        domain.sub_domain_high = [2.0, 2.0, 2.0];
+        domain.sub_length = [2.0, 2.0, 2.0];
 
         let mut neighbor = Neighbor::new();
         neighbor.skin_fraction = 1.0;
@@ -1075,8 +1079,8 @@ mod tests {
     fn sweep_and_prune_finds_close_pair() {
         let mut app = App::new();
         let mut atom = Atom::new();
-        push_atom(&mut atom, 0, Vector3::new(0.0, 0.0, 0.0), 0.5);
-        push_atom(&mut atom, 1, Vector3::new(0.5, 0.0, 0.0), 0.5);
+        push_atom(&mut atom, 0, [0.0, 0.0, 0.0], 0.5);
+        push_atom(&mut atom, 1, [0.5, 0.0, 0.0], 0.5);
         atom.nlocal = 2;
         atom.natoms = 2;
 

@@ -4,7 +4,6 @@ use std::any::{Any, TypeId};
 use std::f64::consts::PI;
 
 use mddem_app::prelude::*;
-use nalgebra::{Quaternion, UnitQuaternion};
 use serde::Deserialize;
 
 use mddem_core::{AtomData, AtomDataRegistry, AtomPlugin, Config};
@@ -136,7 +135,7 @@ pub struct DemAtom {
     pub radius: Vec<f64>,
     pub density: Vec<f64>,
     pub inv_inertia: Vec<f64>,
-    pub quaternion: Vec<UnitQuaternion<f64>>,
+    pub quaternion: Vec<[f64; 4]>,
     pub omega: Vec<[f64; 3]>,
     pub ang_mom: Vec<[f64; 3]>,
     pub torque: Vec<[f64; 3]>,
@@ -195,10 +194,10 @@ impl AtomData for DemAtom {
         buf.push(self.density[i]);
         buf.push(self.inv_inertia[i]);
         let q = self.quaternion[i];
-        buf.push(q.w);
-        buf.push(q.i);
-        buf.push(q.j);
-        buf.push(q.k);
+        buf.push(q[0]);
+        buf.push(q[1]);
+        buf.push(q[2]);
+        buf.push(q[3]);
         buf.push(self.omega[i][0]);
         buf.push(self.omega[i][1]);
         buf.push(self.omega[i][2]);
@@ -214,9 +213,7 @@ impl AtomData for DemAtom {
         self.radius.push(buf[0]);
         self.density.push(buf[1]);
         self.inv_inertia.push(buf[2]);
-        self.quaternion.push(UnitQuaternion::from_quaternion(
-            Quaternion::new(buf[3], buf[4], buf[5], buf[6]),
-        ));
+        self.quaternion.push([buf[3], buf[4], buf[5], buf[6]]);
         self.omega.push([buf[7], buf[8], buf[9]]);
         self.ang_mom.push([buf[10], buf[11], buf[12]]);
         self.torque.push([buf[13], buf[14], buf[15]]);
@@ -237,7 +234,7 @@ impl AtomData for DemAtom {
             self.inv_inertia[..n].copy_from_slice(&scratch);
         }
         {
-            let scratch: Vec<UnitQuaternion<f64>> = perm.iter().map(|&p| self.quaternion[p]).collect();
+            let scratch: Vec<[f64; 4]> = perm.iter().map(|&p| self.quaternion[p]).collect();
             self.quaternion[..n].copy_from_slice(&scratch);
         }
         {

@@ -293,7 +293,6 @@ mod tests {
     use super::*;
     use dem_atom::{DemAtom, MaterialTable};
     use mddem_core::{Atom, AtomDataRegistry};
-    use nalgebra::Vector3;
 
     fn push_test_atom(
         atom: &mut Atom,
@@ -305,7 +304,7 @@ mod tests {
         radius: f64,
     ) {
         let mass = 2500.0 * 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3);
-        atom.push_test_atom(tag, Vector3::new(pos_x, pos_y, pos_z), radius, mass);
+        atom.push_test_atom(tag, [pos_x, pos_y, pos_z], radius, mass);
         dem.radius.push(radius);
         dem.density.push(2500.0);
         dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));

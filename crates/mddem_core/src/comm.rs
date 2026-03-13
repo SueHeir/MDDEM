@@ -2,7 +2,6 @@ use std::process::exit;
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
-use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
 
 use crate::{Atom, AtomDataRegistry, Config, Domain};
@@ -52,9 +51,9 @@ impl Default for CommConfig {
 pub trait CommBackend: Send + Sync + 'static {
     fn rank(&self) -> i32;
     fn size(&self) -> i32;
-    fn processor_decomposition(&self) -> Vector3<i32>;
-    fn processor_position(&self) -> Vector3<i32>;
-    fn set_processor_grid(&mut self, decomp: Vector3<i32>, position: Vector3<i32>);
+    fn processor_decomposition(&self) -> [i32; 3];
+    fn processor_position(&self) -> [i32; 3];
+    fn set_processor_grid(&mut self, decomp: [i32; 3], position: [i32; 3]);
     fn all_reduce_sum_f64(&self, local: f64) -> f64;
     fn all_reduce_min_f64(&self, local: f64) -> f64;
     fn barrier(&self);
@@ -87,8 +86,8 @@ impl std::ops::DerefMut for CommResource {
 
 /// No-op communication backend for single-process simulations.
 pub struct SingleProcessComm {
-    processor_decomposition: Vector3<i32>,
-    processor_position: Vector3<i32>,
+    processor_decomposition: [i32; 3],
+    processor_position: [i32; 3],
 }
 
 impl Default for SingleProcessComm {
@@ -100,8 +99,8 @@ impl Default for SingleProcessComm {
 impl SingleProcessComm {
     pub fn new() -> Self {
         SingleProcessComm {
-            processor_decomposition: Vector3::new(1, 1, 1),
-            processor_position: Vector3::new(0, 0, 0),
+            processor_decomposition: [1, 1, 1],
+            processor_position: [0, 0, 0],
         }
     }
 }
@@ -113,14 +112,14 @@ impl CommBackend for SingleProcessComm {
     fn size(&self) -> i32 {
         1
     }
-    fn processor_decomposition(&self) -> Vector3<i32> {
+    fn processor_decomposition(&self) -> [i32; 3] {
         self.processor_decomposition
     }
-    fn processor_position(&self) -> Vector3<i32> {
+    fn processor_position(&self) -> [i32; 3] {
         self.processor_position
     }
 
-    fn set_processor_grid(&mut self, decomp: Vector3<i32>, position: Vector3<i32>) {
+    fn set_processor_grid(&mut self, decomp: [i32; 3], position: [i32; 3]) {
         self.processor_decomposition = decomp;
         self.processor_position = position;
     }
@@ -185,8 +184,8 @@ pub struct SwapData {
 /// Swap directions and counts for ghost communication (replaces MpiCommInternal).
 /// Works for both single-process and MPI.
 pub struct CommTopology {
-    pub swap_directions: [Vector3<i32>; 2],
-    pub periodic_swap: [Vector3<f64>; 2],
+    pub swap_directions: [[i32; 3]; 2],
+    pub periodic_swap: [[f64; 3]; 2],
     pub swap_data: Vec<SwapData>,   // sendlists for forward_comm
     pub maxneed: [i32; 3],          // number of swap layers per dimension (0 = not yet computed)
 }
@@ -222,8 +221,8 @@ pub struct MpiCommBackend {
     world: mpi::topology::SimpleCommunicator,
     rank: i32,
     size: i32,
-    processor_decomposition: Vector3<i32>,
-    processor_position: Vector3<i32>,
+    processor_decomposition: [i32; 3],
+    processor_position: [i32; 3],
 }
 
 #[cfg(feature = "mpi_backend")]
@@ -239,14 +238,14 @@ impl CommBackend for MpiCommBackend {
     fn size(&self) -> i32 {
         self.size
     }
-    fn processor_decomposition(&self) -> Vector3<i32> {
+    fn processor_decomposition(&self) -> [i32; 3] {
         self.processor_decomposition
     }
-    fn processor_position(&self) -> Vector3<i32> {
+    fn processor_position(&self) -> [i32; 3] {
         self.processor_position
     }
 
-    fn set_processor_grid(&mut self, decomp: Vector3<i32>, position: Vector3<i32>) {
+    fn set_processor_grid(&mut self, decomp: [i32; 3], position: [i32; 3]) {
         self.processor_decomposition = decomp;
         self.processor_position = position;
     }
@@ -325,8 +324,8 @@ processors_z = 1"#,
                 world,
                 rank,
                 size,
-                processor_decomposition: Vector3::zeros(),
-                processor_position: Vector3::zeros(),
+                processor_decomposition: [0; 3],
+                processor_position: [0; 3],
             })));
         }
         #[cfg(not(feature = "mpi_backend"))]
@@ -336,8 +335,8 @@ processors_z = 1"#,
 
         app.add_resource(CommBuffers::default());
         app.add_resource(CommTopology {
-            swap_directions: [Vector3::new(-1, -1, -1), Vector3::new(-1, -1, -1)],
-            periodic_swap: [Vector3::zeros(), Vector3::zeros()],
+            swap_directions: [[-1, -1, -1], [-1, -1, -1]],
+            periodic_swap: [[0.0; 3], [0.0; 3]],
             swap_data: Vec::new(),
             maxneed: [0, 0, 0],
         });
@@ -364,11 +363,11 @@ pub fn comm_read_input(config: Res<CommConfig>, mut comm: ResMut<CommResource>) 
         );
     }
 
-    let decomp = Vector3::new(
+    let decomp = [
         config.processors_x,
         config.processors_y,
         config.processors_z,
-    );
+    ];
     let mul = config.processors_x * config.processors_y * config.processors_z;
     if mul != comm.size() {
         if comm.rank() == 0 {
@@ -387,25 +386,25 @@ pub fn comm_read_input(config: Res<CommConfig>, mut comm: ResMut<CommResource>) 
     let rank = comm.rank();
     let pz = config.processors_z;
     let py = config.processors_y;
-    let position = Vector3::new(
+    let position = [
         rank / (py * pz),
         (rank / pz) % py,
         rank % pz,
-    );
+    ];
 
     comm.set_processor_grid(decomp, position);
 }
 
-fn pos_to_rank(pos: Vector3<i32>, decomp: Vector3<i32>) -> i32 {
-    pos.x * decomp.y * decomp.z + pos.y * decomp.z + pos.z
+fn pos_to_rank(pos: [i32; 3], decomp: [i32; 3]) -> i32 {
+    pos[0] * decomp[1] * decomp[2] + pos[1] * decomp[2] + pos[2]
 }
 
 pub fn comm_setup(comm: Res<CommResource>, mut topo: ResMut<CommTopology>, domain: Res<Domain>) {
     let decomp = comm.processor_decomposition();
     let pos = comm.processor_position();
-    let periodic = [domain.is_periodic.x, domain.is_periodic.y, domain.is_periodic.z];
-    let decomp_arr = [decomp.x, decomp.y, decomp.z];
-    let pos_arr = [pos.x, pos.y, pos.z];
+    let periodic = domain.is_periodic;
+    let decomp_arr = decomp;
+    let pos_arr = pos;
 
     for dim in 0..3 {
         // Forward neighbor (+1 in this dimension)
@@ -460,7 +459,7 @@ fn pack_border_atoms(
             pos_dim >= domain.sub_domain_high[dim] - cut
         };
         if in_skin {
-            let mut change_pos = Vector3::zeros();
+            let mut change_pos = [0.0; 3];
             change_pos[dim] = periodic_offset * domain.size[dim];
             atoms.pack_border(i, change_pos, send_buff);
             registry.pack_all(i, send_buff);
@@ -497,9 +496,9 @@ const FORWARD_PACK_SIZE: usize = 6;
 fn compute_per_atom_offset(
     pos: &[f64; 3],
     stored_offset: &[f64; 3],
-    boundaries_low: &nalgebra::Vector3<f64>,
-    boundaries_high: &nalgebra::Vector3<f64>,
-    size: &nalgebra::Vector3<f64>,
+    boundaries_low: &[f64; 3],
+    boundaries_high: &[f64; 3],
+    size: &[f64; 3],
 ) -> [f64; 3] {
     let mut offset = [0.0; 3];
     for dim in 0..3 {
@@ -621,7 +620,7 @@ pub fn borders(
     // Compute maxneed on first full rebuild (ghost_cutoff is set by neighbor_setup)
     if topo.maxneed == [0, 0, 0] {
         let decomp = comm.processor_decomposition();
-        let decomp_arr = [decomp.x, decomp.y, decomp.z];
+        let decomp_arr = decomp;
         for dim in 0..3 {
             if decomp_arr[dim] == 1 {
                 topo.maxneed[dim] = 1;
@@ -815,7 +814,7 @@ pub fn exchange(
         return;
     }
     let proc_decomp = comm.processor_decomposition();
-    let decomp_arr = [proc_decomp.x, proc_decomp.y, proc_decomp.z];
+    let decomp_arr = proc_decomp;
 
     // Reuse persistent exchange buffers (only need 2: lo and hi per dimension)
     let mut atoms_buff = std::mem::take(&mut buffers.exchange_buffs);
@@ -929,8 +928,8 @@ mod tests {
     #[test]
     fn single_process_comm_set_grid() {
         let mut comm = SingleProcessComm::new();
-        let decomp = Vector3::new(1, 1, 1);
-        let pos = Vector3::new(0, 0, 0);
+        let decomp = [1, 1, 1];
+        let pos = [0, 0, 0];
         comm.set_processor_grid(decomp, pos);
         assert_eq!(comm.processor_decomposition(), decomp);
         assert_eq!(comm.processor_position(), pos);
@@ -938,28 +937,28 @@ mod tests {
 
     #[test]
     fn pos_to_rank_basic() {
-        let decomp = Vector3::new(2, 2, 1);
-        assert_eq!(pos_to_rank(Vector3::new(0, 0, 0), decomp), 0);
-        assert_eq!(pos_to_rank(Vector3::new(0, 1, 0), decomp), 1);
-        assert_eq!(pos_to_rank(Vector3::new(1, 0, 0), decomp), 2);
-        assert_eq!(pos_to_rank(Vector3::new(1, 1, 0), decomp), 3);
+        let decomp = [2, 2, 1];
+        assert_eq!(pos_to_rank([0, 0, 0], decomp), 0);
+        assert_eq!(pos_to_rank([0, 1, 0], decomp), 1);
+        assert_eq!(pos_to_rank([1, 0, 0], decomp), 2);
+        assert_eq!(pos_to_rank([1, 1, 0], decomp), 3);
     }
 
     #[test]
     fn pos_to_rank_3d() {
-        let decomp = Vector3::new(2, 2, 2);
-        assert_eq!(pos_to_rank(Vector3::new(0, 0, 0), decomp), 0);
-        assert_eq!(pos_to_rank(Vector3::new(0, 0, 1), decomp), 1);
-        assert_eq!(pos_to_rank(Vector3::new(0, 1, 0), decomp), 2);
-        assert_eq!(pos_to_rank(Vector3::new(1, 0, 0), decomp), 4);
-        assert_eq!(pos_to_rank(Vector3::new(1, 1, 1), decomp), 7);
+        let decomp = [2, 2, 2];
+        assert_eq!(pos_to_rank([0, 0, 0], decomp), 0);
+        assert_eq!(pos_to_rank([0, 0, 1], decomp), 1);
+        assert_eq!(pos_to_rank([0, 1, 0], decomp), 2);
+        assert_eq!(pos_to_rank([1, 0, 0], decomp), 4);
+        assert_eq!(pos_to_rank([1, 1, 1], decomp), 7);
     }
 
     #[test]
     fn compute_per_atom_offset_lower_half() {
-        let boundaries_low = Vector3::new(0.0, 0.0, 0.0);
-        let boundaries_high = Vector3::new(10.0, 10.0, 10.0);
-        let size = Vector3::new(10.0, 10.0, 10.0);
+        let boundaries_low = [0.0, 0.0, 0.0];
+        let boundaries_high = [10.0, 10.0, 10.0];
+        let size = [10.0, 10.0, 10.0];
         let stored = [1.0, 0.0, -1.0]; // periodic in x and z
         let pos = [2.0, 5.0, 3.0]; // x below mid, z below mid
 
@@ -971,9 +970,9 @@ mod tests {
 
     #[test]
     fn compute_per_atom_offset_upper_half() {
-        let boundaries_low = Vector3::new(0.0, 0.0, 0.0);
-        let boundaries_high = Vector3::new(10.0, 10.0, 10.0);
-        let size = Vector3::new(10.0, 10.0, 10.0);
+        let boundaries_low = [0.0, 0.0, 0.0];
+        let boundaries_high = [10.0, 10.0, 10.0];
+        let size = [10.0, 10.0, 10.0];
         let stored = [1.0, 0.0, -1.0];
         let pos = [8.0, 5.0, 8.0]; // x above mid, z above mid
 

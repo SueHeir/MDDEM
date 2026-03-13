@@ -63,12 +63,11 @@ pub fn final_integration(mut atoms: ResMut<Atom>) {
 mod tests {
     use super::*;
     use mddem_core::Atom;
-    use nalgebra::Vector3;
 
     fn make_atom() -> Atom {
         let mut atom = Atom::new();
         atom.dt = 0.01;
-        atom.push_test_atom(0, Vector3::zeros(), 0.001, 1.0);
+        atom.push_test_atom(0, [0.0; 3], 0.001, 1.0);
         atom.vel[0][0] = 1.0;
         atom.force[0][0] = 2.0;
         atom.nlocal = 1;

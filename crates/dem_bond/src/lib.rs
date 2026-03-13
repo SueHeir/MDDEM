@@ -282,13 +282,12 @@ mod tests {
     use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry, BondEntry, BondStore, CommResource, SingleProcessComm};
     use mddem_print::Thermo;
-    use nalgebra::Vector3;
 
     fn push_test_atom(
         atom: &mut Atom,
         dem: &mut DemAtom,
         tag: u32,
-        pos: Vector3<f64>,
+        pos: [f64; 3],
         radius: f64,
     ) {
         let mass = 2500.0 * 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3);
@@ -307,12 +306,12 @@ mod tests {
         let radius = 0.001;
 
         // Two touching particles along x-axis (distance = 2*radius = 0.002)
-        push_test_atom(&mut atom, &mut dem, 1, Vector3::new(0.0, 0.0, 0.0), radius);
+        push_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
         push_test_atom(
             &mut atom,
             &mut dem,
             2,
-            Vector3::new(0.002, 0.0, 0.0),
+            [0.002, 0.0, 0.0],
             radius,
         );
         atom.nlocal = 2;
@@ -355,12 +354,12 @@ mod tests {
         let radius = 0.001;
 
         // Two far-apart particles
-        push_test_atom(&mut atom, &mut dem, 1, Vector3::new(0.0, 0.0, 0.0), radius);
+        push_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
         push_test_atom(
             &mut atom,
             &mut dem,
             2,
-            Vector3::new(0.01, 0.0, 0.0),
+            [0.01, 0.0, 0.0],
             radius,
         );
         atom.nlocal = 2;
@@ -399,12 +398,12 @@ mod tests {
         let radius = 0.001;
 
         // Two particles at distance 0.0025, bonded with r0 = 0.002 (stretched)
-        push_test_atom(&mut atom, &mut dem, 1, Vector3::new(0.0, 0.0, 0.0), radius);
+        push_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
         push_test_atom(
             &mut atom,
             &mut dem,
             2,
-            Vector3::new(0.0025, 0.0, 0.0),
+            [0.0025, 0.0, 0.0],
             radius,
         );
         atom.nlocal = 2;
@@ -470,12 +469,12 @@ mod tests {
         let radius = 0.001;
 
         // Two particles at distance 0.0015, bonded with r0 = 0.002 (compressed)
-        push_test_atom(&mut atom, &mut dem, 1, Vector3::new(0.0, 0.0, 0.0), radius);
+        push_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
         push_test_atom(
             &mut atom,
             &mut dem,
             2,
-            Vector3::new(0.0015, 0.0, 0.0),
+            [0.0015, 0.0, 0.0],
             radius,
         );
         atom.nlocal = 2;
@@ -536,12 +535,12 @@ mod tests {
         let radius = 0.001;
 
         // Two particles exactly at r0
-        push_test_atom(&mut atom, &mut dem, 1, Vector3::new(0.0, 0.0, 0.0), radius);
+        push_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
         push_test_atom(
             &mut atom,
             &mut dem,
             2,
-            Vector3::new(0.002, 0.0, 0.0),
+            [0.002, 0.0, 0.0],
             radius,
         );
         atom.nlocal = 2;

@@ -250,12 +250,11 @@ pub fn rebuild_groups(atoms: Res<Atom>, mut groups: ResMut<GroupRegistry>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nalgebra::Vector3;
 
     fn make_atom(positions: &[(f64, f64, f64)], types: &[u32]) -> Atom {
         let mut atom = Atom::new();
         for (i, (px, py, pz)) in positions.iter().enumerate() {
-            atom.push_test_atom(i as u32, Vector3::new(*px, *py, *pz), 0.5, 1.0);
+            atom.push_test_atom(i as u32, [*px, *py, *pz], 0.5, 1.0);
             atom.atom_type[i] = types[i];
         }
         atom.nlocal = positions.len() as u32;

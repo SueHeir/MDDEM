@@ -18,9 +18,19 @@ Configuration follows a two-tier approach. **Tier 1** is declarative TOML config
 
 At first, I wanted to learn about LAMMPS communication more through rewriting it into Rust.  I also have had many pain points with editing LAMMPS code, and working with LAMMPS scripts, and wanted to see if a scheduler with dependency injection would work for something like this (big fan of bevy).
 
-Now that Claude code is good enough to debug MPI communication neighbor list problems (it still struggles a lot with these, don't we all), I have expanded the scope to hopefully be a nice starting place for anyone wanting to try and vibe code a MD or DEM simulation in rust. **I would not trust this code for anything you want to publish.** I also would not contribute to this code in a serious manual fashion. View it as a playground to test out AI agents for whatever work you're doing. That being said, it's producing reasonable physics results, within 2-3% of the performance of LAMMPS with single-core and 10% performance on MPI.
+Now that Claude code is good enough to debug MPI communication neighbor list problems (it still struggles a lot with these, don't we all), I have expanded the scope to hopefully be a nice starting place for anyone wanting to try and code a MD or DEM simulation in rust. **I would not trust this code for anything you want to publish.**  View it as a playground to test out whatever work you're doing. That being said, it's producing reasonable physics results, within 2-3% of the performance of LAMMPS with single-core and 10% performance on MPI for a lj 12-6 fluid.
 
-If you're unsure about why this is even a repo (I kinda agree with you), I would look at the [hopper](examples/hopper/) example first. It's very simple, but shows how easy it is to add your own code into the mix. 
+If you're unsure about why this is even a repo, I would look at the [hopper](examples/hopper/) example first. It's very simple, but shows how easy it is to add your own code into the mix. 
+
+## Where is MDDEM?
+
+I am still unsure about the toml input for this. I think having real examples to test the balance between compiling a new executable, and having it be in a setting in a toml file will be a constant battle. Maybe Json files? Python wrapper is interesting, but I think that can be an external crate as we want to avoid dependency hell. There is a real opportunity here to come up with a solution that works way better than lammps scripts. I also think parameter sweeps should be an option that is easily supported, but that toml idea/replacement needs thought out more.
+
+I gave up on having every system (function handled by scheduler) be very readable (orginally for educational purposes), hotpaths are full of unsafe code and many complex optimizations have lead to this no longer being a goal of MDDEM, see the performance section. I have also removed nalgerbra from the dependeices so we only optionally depend on rust mpi wrapper. The rust mpi wrapper is not feature complete with MPI, but I don't think this is a huge deal right now. I think its missing some features that might speed things up a litle bit (non blocking send recieve of arbitrary vec sizes).  
+
+I would be interested if there are any procmacros that could be used to help with readability or ergonomics. We have one for adding per-atom data that will fully communicate it. Thats wild, but in practice the dem_atom which could use it is too complex for it -> we need a better procmacro or we need a simpler dem_atom struct. I'm not sure where else these could be used but it's something to stay thinking about.
+
+
 
 ## Installation
 

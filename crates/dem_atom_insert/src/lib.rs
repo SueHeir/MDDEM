@@ -4,7 +4,6 @@ use std::f64::consts::PI;
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
-use nalgebra::UnitQuaternion;
 use rand::Rng;
 use rand_distr::{Distribution, Normal};
 use serde::Deserialize;
@@ -165,7 +164,7 @@ pub fn dem_insert_atoms(
                         dem_data.radius.push(radius);
                         dem_data.density.push(density);
                         dem_data.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
-                        dem_data.quaternion.push(UnitQuaternion::identity());
+                        dem_data.quaternion.push([1.0, 0.0, 0.0, 0.0]);
                         dem_data.omega.push([0.0; 3]);
                         dem_data.ang_mom.push([0.0; 3]);
                         dem_data.torque.push([0.0; 3]);

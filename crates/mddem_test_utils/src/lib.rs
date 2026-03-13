@@ -2,13 +2,12 @@
 
 use mddem_core::group::{Group, GroupDef};
 use mddem_core::{Atom, CommResource, GroupRegistry, SingleProcessComm};
-use nalgebra::Vector3;
 
 /// Create an `Atom` with `n` test atoms at positions (i, 0, 0), mass 1.0, radius 0.5.
 pub fn make_atoms(n: usize) -> Atom {
     let mut atom = Atom::new();
     for i in 0..n {
-        atom.push_test_atom(i as u32, Vector3::new(i as f64, 0.0, 0.0), 0.5, 1.0);
+        atom.push_test_atom(i as u32, [i as f64, 0.0, 0.0], 0.5, 1.0);
     }
     atom.nlocal = n as u32;
     atom.natoms = n as u64;

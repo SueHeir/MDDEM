@@ -1,9 +1,27 @@
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
-use nalgebra::{UnitVector3, Vector3};
 
 use dem_atom::DemAtom;
 use mddem_core::{Atom, AtomDataRegistry};
+
+/// Construct a unit quaternion [w, x, y, z] from an axis (must be unit length) and angle.
+#[inline]
+fn quat_from_axis_angle(axis: [f64; 3], angle: f64) -> [f64; 4] {
+    let half = angle * 0.5;
+    let s = half.sin();
+    [half.cos(), axis[0] * s, axis[1] * s, axis[2] * s]
+}
+
+/// Multiply two quaternions [w, x, y, z].
+#[inline]
+fn quat_mul(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+    [
+        a[0]*b[0] - a[1]*b[1] - a[2]*b[2] - a[3]*b[3],
+        a[0]*b[1] + a[1]*b[0] + a[2]*b[3] - a[3]*b[2],
+        a[0]*b[2] - a[1]*b[3] + a[2]*b[0] + a[3]*b[1],
+        a[0]*b[3] + a[1]*b[2] - a[2]*b[1] + a[3]*b[0],
+    ]
+}
 
 /// Quaternion-based Velocity Verlet for angular degrees of freedom (I = 2/5 mr²).
 pub struct RotationalDynamicsPlugin;
@@ -27,12 +45,16 @@ pub fn initial_rotation(atoms: Res<Atom>, registry: Res<AtomDataRegistry>) {
         dem.omega[i][1] += 0.5 * dt * dem.torque[i][1] * inv_inertia;
         dem.omega[i][2] += 0.5 * dt * dem.torque[i][2] * inv_inertia;
 
-        let omega = Vector3::new(dem.omega[i][0], dem.omega[i][1], dem.omega[i][2]);
-        let angle = omega.norm() * dt;
+        let ox = dem.omega[i][0];
+        let oy = dem.omega[i][1];
+        let oz = dem.omega[i][2];
+        let omega_mag = (ox*ox + oy*oy + oz*oz).sqrt();
+        let angle = omega_mag * dt;
         if angle > 1e-14 {
-            let axis = UnitVector3::new_normalize(omega);
-            let dq = nalgebra::UnitQuaternion::from_axis_angle(&axis, angle);
-            dem.quaternion[i] = dq * dem.quaternion[i];
+            let inv = 1.0 / omega_mag;
+            let axis = [ox * inv, oy * inv, oz * inv];
+            let dq = quat_from_axis_angle(axis, angle);
+            dem.quaternion[i] = quat_mul(dq, dem.quaternion[i]);
         }
     }
 }
@@ -56,17 +78,16 @@ mod tests {
     use super::*;
     use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry};
-    use nalgebra::{UnitQuaternion, Vector3};
     use std::f64::consts::PI;
 
     fn push_test_atom(atom: &mut Atom, dem: &mut DemAtom, tag: u32, radius: f64) {
         let density = 2500.0;
         let mass = density * 4.0 / 3.0 * PI * radius.powi(3);
-        atom.push_test_atom(tag, Vector3::zeros(), radius, mass);
+        atom.push_test_atom(tag, [0.0; 3], radius, mass);
         dem.radius.push(radius);
         dem.density.push(density);
         dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
-        dem.quaternion.push(UnitQuaternion::identity());
+        dem.quaternion.push([1.0, 0.0, 0.0, 0.0]);
         dem.omega.push([0.0; 3]);
         dem.ang_mom.push([0.0; 3]);
         dem.torque.push([0.0; 3]);
@@ -135,8 +156,9 @@ mod tests {
         let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
         let dem = registry.expect::<DemAtom>("test");
         let q = dem.quaternion[0];
-        let identity = UnitQuaternion::identity();
-        let angle = q.angle_to(&identity);
+        // Check quaternion is no longer identity [1,0,0,0]
+        let dot = q[0]; // dot with identity = w component
+        let angle = 2.0 * dot.clamp(-1.0, 1.0).acos();
         assert!(
             angle > 1e-10,
             "quaternion should have rotated, angle = {}",

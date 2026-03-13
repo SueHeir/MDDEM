@@ -263,8 +263,7 @@ pub fn lj_force(
 mod tests {
     use super::*;
     fn push_atom(atom: &mut Atom, tag: u32, x: f64, y: f64, z: f64, mass: f64) {
-        use nalgebra::Vector3;
-        atom.push_test_atom(tag, Vector3::new(x, y, z), 0.5, mass);
+        atom.push_test_atom(tag, [x, y, z], 0.5, mass);
     }
 
     fn make_two_atom_app(distance: f64) -> App {

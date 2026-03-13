@@ -2,7 +2,6 @@ use std::any::{Any, TypeId};
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
-use nalgebra::Vector3;
 
 use dem_atom::{DemAtom, MaterialTable};
 use mddem_core::{Atom, AtomData, AtomDataRegistry};
@@ -17,7 +16,7 @@ pub struct ContactHistoryStore {
     /// Per-atom list of (partner_tag, spring_displacement, active_flag).
     /// The spring displacement is stored in canonical form (lower tag's perspective).
     /// The bool flag is transient — set to false at start of step, true when contact is touched.
-    pub contacts: Vec<Vec<(u32, Vector3<f64>, bool)>>,
+    pub contacts: Vec<Vec<(u32, [f64; 3], bool)>>,
 }
 
 impl ContactHistoryStore {
@@ -49,7 +48,7 @@ impl AtomData for ContactHistoryStore {
     }
 
     fn apply_permutation(&mut self, perm: &[usize], n: usize) {
-        let new_contacts: Vec<Vec<(u32, Vector3<f64>, bool)>> =
+        let new_contacts: Vec<Vec<(u32, [f64; 3], bool)>> =
             perm.iter().map(|&p| self.contacts[p].clone()).collect();
         self.contacts[..n].clone_from_slice(&new_contacts);
     }
@@ -60,9 +59,9 @@ impl AtomData for ContactHistoryStore {
             buf.push(list.len() as f64);
             for &(tag, ref s, _) in list {
                 buf.push(tag as f64);
-                buf.push(s.x);
-                buf.push(s.y);
-                buf.push(s.z);
+                buf.push(s[0]);
+                buf.push(s[1]);
+                buf.push(s[2]);
             }
         } else {
             buf.push(0.0); // no contacts
@@ -75,7 +74,7 @@ impl AtomData for ContactHistoryStore {
         let mut pos = 1;
         for _ in 0..count {
             let tag = buf[pos] as u32;
-            let s = Vector3::new(buf[pos + 1], buf[pos + 2], buf[pos + 3]);
+            let s = [buf[pos + 1], buf[pos + 2], buf[pos + 3]];
             list.push((tag, s, false));
             pos += 4;
         }
@@ -138,12 +137,10 @@ pub fn mindlin_tangential_force(
             let r1 = dem.radius[i];
             let r2 = dem.radius[j];
 
-            let diff = Vector3::new(
-                atoms.pos[j][0] - atoms.pos[i][0],
-                atoms.pos[j][1] - atoms.pos[i][1],
-                atoms.pos[j][2] - atoms.pos[i][2],
-            );
-            let distance = diff.norm();
+            let dx = atoms.pos[j][0] - atoms.pos[i][0];
+            let dy = atoms.pos[j][1] - atoms.pos[i][1];
+            let dz = atoms.pos[j][2] - atoms.pos[i][2];
+            let distance = (dx*dx + dy*dy + dz*dz).sqrt();
 
             if distance >= r1 + r2 || distance == 0.0 {
                 continue;
@@ -154,7 +151,10 @@ pub fn mindlin_tangential_force(
             let mu = material_table.friction_ij[mat_i][mat_j];
             let beta = material_table.beta_ij[mat_i][mat_j];
 
-            let n = diff / distance;
+            let inv_dist = 1.0 / distance;
+            let nx = dx * inv_dist;
+            let ny = dy * inv_dist;
+            let nz = dz * inv_dist;
             let delta = (r1 + r2) - distance;
 
             let r_eff = (r1 * r2) / (r1 + r2);
@@ -168,16 +168,27 @@ pub fn mindlin_tangential_force(
 
             let m_r = 1.0 / (atoms.inv_mass[i] + atoms.inv_mass[j]);
 
-            let vel_i = Vector3::new(atoms.vel[i][0], atoms.vel[i][1], atoms.vel[i][2]);
-            let vel_j = Vector3::new(atoms.vel[j][0], atoms.vel[j][1], atoms.vel[j][2]);
-            let omega_i = Vector3::new(dem.omega[i][0], dem.omega[i][1], dem.omega[i][2]);
-            let omega_j = Vector3::new(dem.omega[j][0], dem.omega[j][1], dem.omega[j][2]);
+            // v_contact_i = vel_i + omega_i × (r1 * n)
+            let r1nx = r1 * nx; let r1ny = r1 * ny; let r1nz = r1 * nz;
+            let oix = dem.omega[i][0]; let oiy = dem.omega[i][1]; let oiz = dem.omega[i][2];
+            let vc_ix = atoms.vel[i][0] + (oiy*r1nz - oiz*r1ny);
+            let vc_iy = atoms.vel[i][1] + (oiz*r1nx - oix*r1nz);
+            let vc_iz = atoms.vel[i][2] + (oix*r1ny - oiy*r1nx);
 
-            let v_contact_i = vel_i + omega_i.cross(&(r1 * n));
-            let v_contact_j = vel_j + omega_j.cross(&(-r2 * n));
-            let v_rel = v_contact_j - v_contact_i;
-            let v_n_scalar = v_rel.dot(&n);
-            let v_t = v_rel - v_n_scalar * n;
+            // v_contact_j = vel_j + omega_j × (-r2 * n)
+            let r2nx = r2 * nx; let r2ny = r2 * ny; let r2nz = r2 * nz;
+            let ojx = dem.omega[j][0]; let ojy = dem.omega[j][1]; let ojz = dem.omega[j][2];
+            let vc_jx = atoms.vel[j][0] + (-ojy*r2nz + ojz*r2ny);
+            let vc_jy = atoms.vel[j][1] + (-ojz*r2nx + ojx*r2nz);
+            let vc_jz = atoms.vel[j][2] + (-ojx*r2ny + ojy*r2nx);
+
+            let vr_x = vc_jx - vc_ix;
+            let vr_y = vc_jy - vc_iy;
+            let vr_z = vc_jz - vc_iz;
+            let v_n_scalar = vr_x*nx + vr_y*ny + vr_z*nz;
+            let vt_x = vr_x - v_n_scalar * nx;
+            let vt_y = vr_y - v_n_scalar * ny;
+            let vt_z = vr_z - v_n_scalar * nz;
 
             let f_diss_n = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n_scalar;
             let f_n_mag = (k_n * delta - f_diss_n).max(0.0);
@@ -190,47 +201,60 @@ pub fn mindlin_tangential_force(
             let entry_idx = history.contacts[i]
                 .iter()
                 .position(|(t, _, _)| *t == tag_j);
-            let stored_spring = match entry_idx {
+            let stored = match entry_idx {
                 Some(idx) => history.contacts[i][idx].1,
-                None => Vector3::zeros(),
+                None => [0.0; 3],
             };
 
-            let mut s = sign * stored_spring;
+            let mut sx = sign * stored[0];
+            let mut sy = sign * stored[1];
+            let mut sz = sign * stored[2];
 
-            s -= s.dot(&n) * n;
-            s += v_t * dt;
+            let s_dot_n = sx*nx + sy*ny + sz*nz;
+            sx -= s_dot_n * nx; sy -= s_dot_n * ny; sz -= s_dot_n * nz;
+            sx += vt_x * dt; sy += vt_y * dt; sz += vt_z * dt;
 
-            let f_t_spring_mag = k_t * s.norm();
+            let s_mag = (sx*sx + sy*sy + sz*sz).sqrt();
+            let f_t_spring_mag = k_t * s_mag;
             let f_t_max = mu * f_n_mag;
             if f_t_spring_mag > f_t_max && f_t_spring_mag > TANGENTIAL_EPSILON {
-                s *= f_t_max / f_t_spring_mag;
+                let scale = f_t_max / f_t_spring_mag;
+                sx *= scale; sy *= scale; sz *= scale;
             }
 
             let gamma_t = 2.0 * SQRT_5_3 * beta * (k_t * m_r).sqrt();
-            let mut f_t = k_t * s - gamma_t * v_t;
-            let f_t_mag = f_t.norm();
+            let mut ft_x = k_t * sx - gamma_t * vt_x;
+            let mut ft_y = k_t * sy - gamma_t * vt_y;
+            let mut ft_z = k_t * sz - gamma_t * vt_z;
+            let f_t_mag = (ft_x*ft_x + ft_y*ft_y + ft_z*ft_z).sqrt();
             if f_t_mag > f_t_max && f_t_mag > TANGENTIAL_EPSILON {
-                f_t *= f_t_max / f_t_mag;
+                let scale = f_t_max / f_t_mag;
+                ft_x *= scale; ft_y *= scale; ft_z *= scale;
             }
 
-            let torque_i = (r1 * n).cross(&f_t);
-            let torque_j = (-r2 * n).cross(&(-f_t));
+            // Torques: τ_i = (r1 * n) × f_t, τ_j = (-r2 * n) × (-f_t) = (r2 * n) × f_t
+            let ti_x = r1ny * ft_z - r1nz * ft_y;
+            let ti_y = r1nz * ft_x - r1nx * ft_z;
+            let ti_z = r1nx * ft_y - r1ny * ft_x;
+            let tj_x = r2ny * ft_z - r2nz * ft_y;
+            let tj_y = r2nz * ft_x - r2nx * ft_z;
+            let tj_z = r2nx * ft_y - r2ny * ft_x;
 
-            atoms.force[i][0] += f_t.x;
-            atoms.force[i][1] += f_t.y;
-            atoms.force[i][2] += f_t.z;
-            atoms.force[j][0] -= f_t.x;
-            atoms.force[j][1] -= f_t.y;
-            atoms.force[j][2] -= f_t.z;
-            dem.torque[i][0] += torque_i.x;
-            dem.torque[i][1] += torque_i.y;
-            dem.torque[i][2] += torque_i.z;
-            dem.torque[j][0] += torque_j.x;
-            dem.torque[j][1] += torque_j.y;
-            dem.torque[j][2] += torque_j.z;
+            atoms.force[i][0] += ft_x;
+            atoms.force[i][1] += ft_y;
+            atoms.force[i][2] += ft_z;
+            atoms.force[j][0] -= ft_x;
+            atoms.force[j][1] -= ft_y;
+            atoms.force[j][2] -= ft_z;
+            dem.torque[i][0] += ti_x;
+            dem.torque[i][1] += ti_y;
+            dem.torque[i][2] += ti_z;
+            dem.torque[j][0] += tj_x;
+            dem.torque[j][1] += tj_y;
+            dem.torque[j][2] += tj_z;
 
             // Store updated spring back (canonical form) and mark active
-            let new_spring = sign * s;
+            let new_spring = [sign * sx, sign * sy, sign * sz];
             match entry_idx {
                 Some(idx) => {
                     history.contacts[i][idx].1 = new_spring;
@@ -252,7 +276,6 @@ mod tests {
     use dem_atom::{DemAtom, MaterialTable};
     use mddem_core::{Atom, AtomDataRegistry};
     use mddem_neighbor::Neighbor;
-    use nalgebra::Vector3;
     use std::f64::consts::PI;
 
     fn make_material_table() -> MaterialTable {
@@ -267,7 +290,7 @@ mod tests {
         dem: &mut DemAtom,
         history: &mut ContactHistoryStore,
         tag: u32,
-        pos: Vector3<f64>,
+        pos: [f64; 3],
         radius: f64,
     ) {
         let density = 2500.0;
@@ -276,7 +299,7 @@ mod tests {
         dem.radius.push(radius);
         dem.density.push(density);
         dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
-        dem.quaternion.push(nalgebra::UnitQuaternion::identity());
+        dem.quaternion.push([1.0, 0.0, 0.0, 0.0]);
         dem.omega.push([0.0; 3]);
         dem.ang_mom.push([0.0; 3]);
         dem.torque.push([0.0; 3]);
@@ -292,13 +315,13 @@ mod tests {
         let mut hist = ContactHistoryStore::new();
         atom.dt = 1e-7;
 
-        push_test_atom(&mut atom, &mut dem, &mut hist, 0, Vector3::new(0.0, 0.0, 0.0), radius);
+        push_test_atom(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
         push_test_atom(
             &mut atom,
             &mut dem,
             &mut hist,
             1,
-            Vector3::new(0.0019, 0.0, 0.0),
+            [0.0019, 0.0, 0.0],
             radius,
         );
         atom.vel[1][1] = 0.1;
@@ -350,13 +373,13 @@ mod tests {
         let mut hist = ContactHistoryStore::new();
         atom.dt = 1e-7;
 
-        push_test_atom(&mut atom, &mut dem, &mut hist, 0, Vector3::new(0.0, 0.0, 0.0), radius);
+        push_test_atom(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
         push_test_atom(
             &mut atom,
             &mut dem,
             &mut hist,
             1,
-            Vector3::new(0.0019, 0.0, 0.0),
+            [0.0019, 0.0, 0.0],
             radius,
         );
         atom.vel[1][1] = 1000.0;
@@ -399,13 +422,13 @@ mod tests {
         let mut hist = ContactHistoryStore::new();
         atom.dt = 1e-7;
 
-        push_test_atom(&mut atom, &mut dem, &mut hist, 0, Vector3::new(0.0, 0.0, 0.0), radius);
+        push_test_atom(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
         push_test_atom(
             &mut atom,
             &mut dem,
             &mut hist,
             1,
-            Vector3::new(0.003, 0.0, 0.0),
+            [0.003, 0.0, 0.0],
             radius,
         );
         atom.vel[1][1] = 0.1;

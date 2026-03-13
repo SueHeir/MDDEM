@@ -1,6 +1,5 @@
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
-use nalgebra::Vector3;
 
 use dem_atom::{DemAtom, MaterialTable};
 use mddem_core::{Atom, AtomDataRegistry, BondStore};
@@ -36,14 +35,13 @@ pub fn hertz_normal_force(
         }
 
 
-        let p1 = Vector3::new(atoms.pos[i][0], atoms.pos[i][1], atoms.pos[i][2]);
-        let p2 = Vector3::new(atoms.pos[j][0], atoms.pos[j][1], atoms.pos[j][2]);
-
         let r1 = dem.radius[i];
         let r2 = dem.radius[j];
 
-        let diff = p2 - p1;
-        let distance = diff.norm();
+        let dx = atoms.pos[j][0] - atoms.pos[i][0];
+        let dy = atoms.pos[j][1] - atoms.pos[i][1];
+        let dz = atoms.pos[j][2] - atoms.pos[i][2];
+        let distance = (dx*dx + dy*dy + dz*dz).sqrt();
 
         if distance >= r1 + r2 {
             continue;
@@ -80,7 +78,10 @@ pub fn hertz_normal_force(
         atoms.is_collision[i] = true;
         atoms.is_collision[j] = true;
 
-        let n = diff / distance;
+        let inv_dist = 1.0 / distance;
+        let nx = dx * inv_dist;
+        let ny = dy * inv_dist;
+        let nz = dz * inv_dist;
         let delta = (r1 + r2) - distance;
 
         let mat_i = atoms.atom_type[i] as usize;
@@ -95,12 +96,10 @@ pub fn hertz_normal_force(
 
         let m_r = 1.0 / (atoms.inv_mass[i] + atoms.inv_mass[j]);
 
-        let v_rel = Vector3::new(
-            atoms.vel[j][0] - atoms.vel[i][0],
-            atoms.vel[j][1] - atoms.vel[i][1],
-            atoms.vel[j][2] - atoms.vel[i][2],
-        );
-        let v_n = v_rel.dot(&n);
+        let vrx = atoms.vel[j][0] - atoms.vel[i][0];
+        let vry = atoms.vel[j][1] - atoms.vel[i][1];
+        let vrz = atoms.vel[j][2] - atoms.vel[i][2];
+        let v_n = vrx*nx + vry*ny + vrz*nz;
 
         let beta = material_table.beta_ij[mat_i][mat_j];
 
@@ -108,14 +107,16 @@ pub fn hertz_normal_force(
         let f_diss = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
         let f_net = (f_spring - f_diss).max(0.0);
 
-        let force = f_net * n;
+        let fx = f_net * nx;
+        let fy = f_net * ny;
+        let fz = f_net * nz;
 
-        atoms.force[i][0] -= force.x;
-        atoms.force[i][1] -= force.y;
-        atoms.force[i][2] -= force.z;
-        atoms.force[j][0] += force.x;
-        atoms.force[j][1] += force.y;
-        atoms.force[j][2] += force.z;
+        atoms.force[i][0] -= fx;
+        atoms.force[i][1] -= fy;
+        atoms.force[i][2] -= fz;
+        atoms.force[j][0] += fx;
+        atoms.force[j][1] += fy;
+        atoms.force[j][2] += fz;
 
     }
 
@@ -127,13 +128,12 @@ mod tests {
     use dem_atom::{DemAtom, MaterialTable};
     use mddem_core::{Atom, AtomDataRegistry};
     use mddem_neighbor::Neighbor;
-    use nalgebra::Vector3;
 
     fn push_test_atom(
         atom: &mut Atom,
         dem: &mut DemAtom,
         tag: u32,
-        pos: Vector3<f64>,
+        pos: [f64; 3],
         radius: f64,
     ) {
         let mass = 2500.0 * 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3);
@@ -158,12 +158,12 @@ mod tests {
         let mut dem = DemAtom::new();
 
         let radius = 0.001;
-        push_test_atom(&mut atom, &mut dem, 0, Vector3::new(0.0, 0.0, 0.0), radius);
+        push_test_atom(&mut atom, &mut dem, 0, [0.0, 0.0, 0.0], radius);
         push_test_atom(
             &mut atom,
             &mut dem,
             1,
-            Vector3::new(0.0019, 0.0, 0.0),
+            [0.0019, 0.0, 0.0],
             radius,
         );
         atom.nlocal = 2;
@@ -204,12 +204,12 @@ mod tests {
         let mut dem = DemAtom::new();
 
         let radius = 0.001;
-        push_test_atom(&mut atom, &mut dem, 0, Vector3::new(0.0, 0.0, 0.0), radius);
+        push_test_atom(&mut atom, &mut dem, 0, [0.0, 0.0, 0.0], radius);
         push_test_atom(
             &mut atom,
             &mut dem,
             1,
-            Vector3::new(0.003, 0.0, 0.0),
+            [0.003, 0.0, 0.0],
             radius,
         );
         atom.nlocal = 2;

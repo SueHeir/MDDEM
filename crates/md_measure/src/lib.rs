@@ -211,9 +211,9 @@ pub fn accumulate_rdf(
     let mut local_hist = vec![0.0f64; n_bins];
 
     // Brute-force pair counting with minimum-image convention
-    let lx = domain.size.x;
-    let ly = domain.size.y;
-    let lz = domain.size.z;
+    let lx = domain.size[0];
+    let ly = domain.size[1];
+    let lz = domain.size[2];
     let half_lx = lx * 0.5;
     let half_ly = ly * 0.5;
     let half_lz = lz * 0.5;
@@ -226,13 +226,13 @@ pub fn accumulate_rdf(
             let mut dy = atoms.pos[j][1] - atoms.pos[i][1];
             let mut dz = atoms.pos[j][2] - atoms.pos[i][2];
 
-            if domain.is_periodic.x {
+            if domain.is_periodic[0] {
                 if dx > half_lx { dx -= lx; } else if dx < -half_lx { dx += lx; }
             }
-            if domain.is_periodic.y {
+            if domain.is_periodic[1] {
                 if dy > half_ly { dy -= ly; } else if dy < -half_ly { dy += ly; }
             }
-            if domain.is_periodic.z {
+            if domain.is_periodic[2] {
                 if dz > half_lz { dz -= lz; } else if dz < -half_lz { dz += lz; }
             }
 
@@ -335,9 +335,9 @@ pub fn track_msd(
     }
 
     // Update unwrapped positions by detecting PBC jumps
-    let lx = domain.size.x;
-    let ly = domain.size.y;
-    let lz = domain.size.z;
+    let lx = domain.size[0];
+    let ly = domain.size[1];
+    let lz = domain.size[2];
     let half_lx = lx * 0.5;
     let half_ly = ly * 0.5;
     let half_lz = lz * 0.5;

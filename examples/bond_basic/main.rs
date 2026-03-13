@@ -11,7 +11,6 @@ use std::f64::consts::PI;
 
 use mddem::dem_atom::DemAtom;
 use mddem::prelude::*;
-use nalgebra::UnitQuaternion;
 
 fn main() {
     let mut app = App::new();
@@ -67,7 +66,7 @@ fn setup_chain(
         dem.radius.push(radius);
         dem.density.push(density);
         dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
-        dem.quaternion.push(UnitQuaternion::identity());
+        dem.quaternion.push([1.0, 0.0, 0.0, 0.0]);
         dem.omega.push([0.0; 3]);
         dem.ang_mom.push([0.0; 3]);
         dem.torque.push([0.0; 3]);

@@ -6,7 +6,6 @@ use std::any::TypeId;
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
-use nalgebra::Vector3;
 
 use dem_atom::{DemAtom, MaterialTable};
 use mddem_core::{Atom, AtomDataRegistry, BondStore, VirialStress, VirialStressPlugin};
@@ -204,28 +203,32 @@ pub fn hertz_mindlin_contact_force(
             .position(|(t, _, _)| *t == tag_j);
         let stored_spring = match entry_idx {
             Some(idx) => history.contacts[i][idx].1,
-            None => Vector3::zeros(),
+            None => [0.0; 3],
         };
 
-        let n_vec = Vector3::new(nx, ny, nz);
-        let mut s = sign * stored_spring;
-        s -= s.dot(&n_vec) * n_vec;
-        s.x += vt_x * dt;
-        s.y += vt_y * dt;
-        s.z += vt_z * dt;
+        let mut sx = sign * stored_spring[0];
+        let mut sy = sign * stored_spring[1];
+        let mut sz = sign * stored_spring[2];
+        let s_dot_n = sx*nx + sy*ny + sz*nz;
+        sx -= s_dot_n * nx; sy -= s_dot_n * ny; sz -= s_dot_n * nz;
+        sx += vt_x * dt;
+        sy += vt_y * dt;
+        sz += vt_z * dt;
 
         // Coulomb cap on spring
-        let f_t_spring_mag = k_t * s.norm();
+        let s_mag = (sx*sx + sy*sy + sz*sz).sqrt();
+        let f_t_spring_mag = k_t * s_mag;
         let f_t_max = mu * f_n_mag;
         if f_t_spring_mag > f_t_max && f_t_spring_mag > TANGENTIAL_EPSILON {
-            s *= f_t_max / f_t_spring_mag;
+            let scale = f_t_max / f_t_spring_mag;
+            sx *= scale; sy *= scale; sz *= scale;
         }
 
         // Tangential force with damping (gamma_t > 0, opposes sliding velocity)
         let gamma_t = 2.0 * SQRT_5_3 * beta * (k_t * m_r).sqrt();
-        let mut ft_x = k_t * s.x - gamma_t * vt_x;
-        let mut ft_y = k_t * s.y - gamma_t * vt_y;
-        let mut ft_z = k_t * s.z - gamma_t * vt_z;
+        let mut ft_x = k_t * sx - gamma_t * vt_x;
+        let mut ft_y = k_t * sy - gamma_t * vt_y;
+        let mut ft_z = k_t * sz - gamma_t * vt_z;
 
         // Coulomb cap on total tangential force
         let f_t_mag = (ft_x * ft_x + ft_y * ft_y + ft_z * ft_z).sqrt();
@@ -265,7 +268,7 @@ pub fn hertz_mindlin_contact_force(
         }
 
         // Store updated spring back (canonical form) and mark active
-        let new_spring = sign * s;
+        let new_spring = [sign * sx, sign * sy, sign * sz];
         match entry_idx {
             Some(idx) => {
                 history.contacts[i][idx].1 = new_spring;
@@ -311,7 +314,6 @@ mod tests {
     use dem_atom::{DemAtom, MaterialTable};
     use mddem_core::{Atom, AtomDataRegistry};
     use mddem_neighbor::Neighbor;
-    use nalgebra::Vector3;
     use std::f64::consts::PI;
 
     fn push_test_atom(
@@ -319,7 +321,7 @@ mod tests {
         dem: &mut DemAtom,
         history: &mut ContactHistoryStore,
         tag: u32,
-        pos: Vector3<f64>,
+        pos: [f64; 3],
         radius: f64,
     ) {
         let density = 2500.0;
@@ -328,7 +330,7 @@ mod tests {
         dem.radius.push(radius);
         dem.density.push(density);
         dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
-        dem.quaternion.push(nalgebra::UnitQuaternion::identity());
+        dem.quaternion.push([1.0, 0.0, 0.0, 0.0]);
         dem.omega.push([0.0; 3]);
         dem.ang_mom.push([0.0; 3]);
         dem.torque.push([0.0; 3]);
@@ -353,11 +355,11 @@ mod tests {
 
         push_test_atom(
             &mut atom, &mut dem, &mut hist, 0,
-            Vector3::new(0.0, 0.0, 0.0), radius,
+            [0.0, 0.0, 0.0], radius,
         );
         push_test_atom(
             &mut atom, &mut dem, &mut hist, 1,
-            Vector3::new(0.0019, 0.0, 0.0), radius,
+            [0.0019, 0.0, 0.0], radius,
         );
         atom.nlocal = 2;
         atom.natoms = 2;
@@ -395,11 +397,11 @@ mod tests {
 
         push_test_atom(
             &mut atom, &mut dem, &mut hist, 0,
-            Vector3::new(0.0, 0.0, 0.0), radius,
+            [0.0, 0.0, 0.0], radius,
         );
         push_test_atom(
             &mut atom, &mut dem, &mut hist, 1,
-            Vector3::new(0.0019, 0.0, 0.0), radius,
+            [0.0019, 0.0, 0.0], radius,
         );
         atom.vel[1][1] = 0.1;
         atom.nlocal = 2;
@@ -449,11 +451,11 @@ mod tests {
 
         push_test_atom(
             &mut atom, &mut dem, &mut hist, 0,
-            Vector3::new(0.0, 0.0, 0.0), radius,
+            [0.0, 0.0, 0.0], radius,
         );
         push_test_atom(
             &mut atom, &mut dem, &mut hist, 1,
-            Vector3::new(0.003, 0.0, 0.0), radius,
+            [0.003, 0.0, 0.0], radius,
         );
         atom.nlocal = 2;
         atom.natoms = 2;

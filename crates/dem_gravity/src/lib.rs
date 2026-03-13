@@ -67,12 +67,11 @@ pub fn apply_gravity(mut atoms: ResMut<Atom>, gravity: Res<GravityConfig>) {
 mod tests {
     use super::*;
     use mddem_core::Atom;
-    use nalgebra::Vector3;
 
     fn make_atom(mass: f64) -> Atom {
         let mut atom = Atom::new();
         atom.dt = 1e-6;
-        atom.push_test_atom(0, Vector3::zeros(), 0.001, mass);
+        atom.push_test_atom(0, [0.0; 3], 0.001, mass);
         atom.nlocal = 1;
         atom.natoms = 1;
         atom
@@ -107,7 +106,7 @@ mod tests {
 
         let mut atom = make_atom(mass);
         // Add a ghost atom
-        atom.push_test_atom(1, Vector3::zeros(), 0.001, mass);
+        atom.push_test_atom(1, [0.0; 3], 0.001, mass);
         atom.is_ghost[1] = true;
         // nlocal stays 1, ghost is index 1
 

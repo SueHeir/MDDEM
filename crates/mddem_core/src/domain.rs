@@ -1,6 +1,5 @@
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
-use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
 
 use crate::{Atom, AtomDataRegistry, CommBackend, CommResource, Config};
@@ -55,14 +54,14 @@ impl Default for DomainConfig {
 
 /// Simulation box geometry: global boundaries, sub-domain bounds, and periodicity.
 pub struct Domain {
-    pub boundaries_low: Vector3<f64>,
-    pub boundaries_high: Vector3<f64>,
-    pub sub_domain_low: Vector3<f64>,
-    pub sub_domain_high: Vector3<f64>,
-    pub sub_length: Vector3<f64>,
+    pub boundaries_low: [f64; 3],
+    pub boundaries_high: [f64; 3],
+    pub sub_domain_low: [f64; 3],
+    pub sub_domain_high: [f64; 3],
+    pub sub_length: [f64; 3],
     pub volume: f64,
-    pub size: Vector3<f64>,
-    pub is_periodic: Vector3<bool>,
+    pub size: [f64; 3],
+    pub is_periodic: [bool; 3],
     /// Ghost atom communication cutoff. 0 = use per-atom skin * 4.0 (DEM default).
     pub ghost_cutoff: f64,
     /// When true, PBC boundary crossings force a full ghost + neighbor rebuild.
@@ -80,13 +79,13 @@ impl Default for Domain {
 impl Domain {
     pub fn new() -> Self {
         Domain {
-            boundaries_high: Vector3::new(1.0, 1.0, 1.0),
-            boundaries_low: Vector3::new(0.0, 0.0, 0.0),
-            sub_domain_low: Vector3::new(0.0, 0.0, 0.0),
-            sub_domain_high: Vector3::new(1.0, 1.0, 1.0),
-            sub_length: Vector3::new(1.0, 1.0, 1.0),
-            size: Vector3::new(1.0, 1.0, 1.0),
-            is_periodic: Vector3::new(false, false, false),
+            boundaries_high: [1.0; 3],
+            boundaries_low: [0.0; 3],
+            sub_domain_low: [0.0; 3],
+            sub_domain_high: [1.0; 3],
+            sub_length: [1.0; 3],
+            size: [1.0; 3],
+            is_periodic: [false; 3],
             volume: 1.0,
             ghost_cutoff: 0.0,
             pbc_strict: false,
@@ -106,29 +105,33 @@ pub struct CartesianDecomposition;
 
 impl DomainDecomposition for CartesianDecomposition {
     fn decompose(&self, config: &DomainConfig, comm: &dyn CommBackend) -> Domain {
-        let boundaries_low = Vector3::new(config.x_low, config.y_low, config.z_low);
-        let boundaries_high = Vector3::new(config.x_high, config.y_high, config.z_high);
-        let size = boundaries_high - boundaries_low;
-        let is_periodic = Vector3::new(config.periodic_x, config.periodic_y, config.periodic_z);
+        let boundaries_low = [config.x_low, config.y_low, config.z_low];
+        let boundaries_high = [config.x_high, config.y_high, config.z_high];
+        let size = [
+            boundaries_high[0] - boundaries_low[0],
+            boundaries_high[1] - boundaries_low[1],
+            boundaries_high[2] - boundaries_low[2],
+        ];
+        let is_periodic = [config.periodic_x, config.periodic_y, config.periodic_z];
 
         let proc_decomp = comm.processor_decomposition();
         let proc_pos = comm.processor_position();
 
-        let delta_x = size.x / proc_decomp[0] as f64;
-        let delta_y = size.y / proc_decomp[1] as f64;
-        let delta_z = size.z / proc_decomp[2] as f64;
+        let delta_x = size[0] / proc_decomp[0] as f64;
+        let delta_y = size[1] / proc_decomp[1] as f64;
+        let delta_z = size[2] / proc_decomp[2] as f64;
 
-        let sub_domain_low = Vector3::new(
-            boundaries_low.x + delta_x * proc_pos.x as f64,
-            boundaries_low.y + delta_y * proc_pos.y as f64,
-            boundaries_low.z + delta_z * proc_pos.z as f64,
-        );
-        let sub_domain_high = Vector3::new(
-            boundaries_low.x + delta_x * (1 + proc_pos.x) as f64,
-            boundaries_low.y + delta_y * (1 + proc_pos.y) as f64,
-            boundaries_low.z + delta_z * (1 + proc_pos.z) as f64,
-        );
-        let sub_length = Vector3::new(delta_x, delta_y, delta_z);
+        let sub_domain_low = [
+            boundaries_low[0] + delta_x * proc_pos[0] as f64,
+            boundaries_low[1] + delta_y * proc_pos[1] as f64,
+            boundaries_low[2] + delta_z * proc_pos[2] as f64,
+        ];
+        let sub_domain_high = [
+            boundaries_low[0] + delta_x * (1 + proc_pos[0]) as f64,
+            boundaries_low[1] + delta_y * (1 + proc_pos[1]) as f64,
+            boundaries_low[2] + delta_z * (1 + proc_pos[2]) as f64,
+        ];
+        let sub_length = [delta_x, delta_y, delta_z];
 
         Domain {
             boundaries_low,
@@ -138,7 +141,7 @@ impl DomainDecomposition for CartesianDecomposition {
             sub_length,
             size,
             is_periodic,
-            volume: size.x * size.y * size.z,
+            volume: size[0] * size[1] * size[2],
             ghost_cutoff: 0.0,
             pbc_strict: false,
         }
@@ -250,12 +253,12 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
     let size = domain.size;
     let periodic = domain.is_periodic;
 
-    if periodic.x && periodic.y && periodic.z {
+    if periodic[0] && periodic[1] && periodic[2] {
         // Fast path: fully periodic, no removals possible (local atoms only, ghosts live outside box)
         for i in 0..atoms.nlocal as usize {
-            atoms.pos[i][0] = wrap_periodic(atoms.pos[i][0], low.x, size.x);
-            atoms.pos[i][1] = wrap_periodic(atoms.pos[i][1], low.y, size.y);
-            atoms.pos[i][2] = wrap_periodic(atoms.pos[i][2], low.z, size.z);
+            atoms.pos[i][0] = wrap_periodic(atoms.pos[i][0], low[0], size[0]);
+            atoms.pos[i][1] = wrap_periodic(atoms.pos[i][1], low[1], size[1]);
+            atoms.pos[i][2] = wrap_periodic(atoms.pos[i][2], low[2], size[2]);
         }
     } else {
         // Slow path: non-periodic axes may require removal (local atoms only)
@@ -271,9 +274,9 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
                     }
                 };
             }
-            handle_dim!(atoms.pos[i][0], periodic.x, low.x, high.x, size.x);
-            handle_dim!(atoms.pos[i][1], periodic.y, low.y, high.y, size.y);
-            handle_dim!(atoms.pos[i][2], periodic.z, low.z, high.z, size.z);
+            handle_dim!(atoms.pos[i][0], periodic[0], low[0], high[0], size[0]);
+            handle_dim!(atoms.pos[i][1], periodic[1], low[1], high[1], size[1]);
+            handle_dim!(atoms.pos[i][2], periodic[2], low[2], high[2], size[2]);
         }
     }
 }
@@ -283,7 +286,7 @@ mod tests {
     use super::*;
     use crate::SingleProcessComm;
 
-    fn make_comm(decomp: Vector3<i32>, pos: Vector3<i32>) -> SingleProcessComm {
+    fn make_comm(decomp: [i32; 3], pos: [i32; 3]) -> SingleProcessComm {
         let mut c = SingleProcessComm::new();
         c.set_processor_grid(decomp, pos);
         c
@@ -302,14 +305,14 @@ mod tests {
             periodic_y: false,
             periodic_z: true,
         };
-        let comm = make_comm(Vector3::new(1, 1, 1), Vector3::new(0, 0, 0));
+        let comm = make_comm([1, 1, 1], [0, 0, 0]);
         let domain = CartesianDecomposition.decompose(&config, &comm);
 
-        assert_eq!(domain.boundaries_low, Vector3::new(0.0, 0.0, 0.0));
-        assert_eq!(domain.boundaries_high, Vector3::new(10.0, 5.0, 2.0));
-        assert_eq!(domain.sub_domain_low, Vector3::new(0.0, 0.0, 0.0));
-        assert_eq!(domain.sub_domain_high, Vector3::new(10.0, 5.0, 2.0));
-        assert_eq!(domain.is_periodic, Vector3::new(true, false, true));
+        assert_eq!(domain.boundaries_low, [0.0, 0.0, 0.0]);
+        assert_eq!(domain.boundaries_high, [10.0, 5.0, 2.0]);
+        assert_eq!(domain.sub_domain_low, [0.0, 0.0, 0.0]);
+        assert_eq!(domain.sub_domain_high, [10.0, 5.0, 2.0]);
+        assert_eq!(domain.is_periodic, [true, false, true]);
         assert!((domain.volume - 100.0).abs() < 1e-10);
     }
 
@@ -327,11 +330,11 @@ mod tests {
             periodic_z: true,
         };
         // Simulate proc at position (1,0,0) in a 2x1x1 decomposition
-        let comm = make_comm(Vector3::new(2, 1, 1), Vector3::new(1, 0, 0));
+        let comm = make_comm([2, 1, 1], [1, 0, 0]);
         let domain = CartesianDecomposition.decompose(&config, &comm);
 
-        assert!((domain.sub_domain_low.x - 5.0).abs() < 1e-10);
-        assert!((domain.sub_domain_high.x - 10.0).abs() < 1e-10);
-        assert!((domain.sub_length.x - 5.0).abs() < 1e-10);
+        assert!((domain.sub_domain_low[0] - 5.0).abs() < 1e-10);
+        assert!((domain.sub_domain_high[0] - 10.0).abs() < 1e-10);
+        assert!((domain.sub_length[0] - 5.0).abs() < 1e-10);
     }
 }
