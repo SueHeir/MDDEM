@@ -2,13 +2,12 @@
 //! pair loop, eliminating redundant shared computation (distance, material lookups, Hertz
 //! stiffness, normal force magnitude).
 
-use std::any::TypeId;
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 
 use dem_atom::{DemAtom, MaterialTable};
-use mddem_core::{Atom, AtomDataRegistry, BondStore, VirialStress, VirialStressPlugin};
+use mddem_core::{register_atom_data, Atom, AtomDataRegistry, BondStore, VirialStress, VirialStressPlugin};
 use mddem_neighbor::Neighbor;
 
 use crate::tangential::ContactHistoryStore;
@@ -23,14 +22,8 @@ pub struct HertzMindlinContactPlugin;
 impl Plugin for HertzMindlinContactPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(VirialStressPlugin);
-        // Register ContactHistoryStore if not already registered
-        if let Some(registry_option) = app.get_mut_resource(TypeId::of::<AtomDataRegistry>()) {
-            let mut registry_binder = registry_option.borrow_mut();
-            let registry = registry_binder.downcast_mut::<AtomDataRegistry>().unwrap();
-            registry.register(ContactHistoryStore::new());
-        } else {
-            panic!("AtomDataRegistry not found — AtomPlugin must be added first");
-        }
+        // Register ContactHistoryStore
+        register_atom_data!(app, ContactHistoryStore::new());
         app.add_update_system(
             hertz_mindlin_contact_force.label("hertz_mindlin_contact"),
             ScheduleSet::Force,
@@ -311,9 +304,10 @@ pub fn hertz_mindlin_contact_force(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dem_atom::{DemAtom, MaterialTable};
+    use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry};
     use mddem_neighbor::Neighbor;
+    use mddem_test_utils::make_material_table;
     use std::f64::consts::PI;
 
     fn push_test_atom(
@@ -335,13 +329,6 @@ mod tests {
         dem.ang_mom.push([0.0; 3]);
         dem.torque.push([0.0; 3]);
         history.contacts.push(Vec::new());
-    }
-
-    fn make_material_table() -> MaterialTable {
-        let mut mt = MaterialTable::new();
-        mt.add_material("glass", 8.7e9, 0.3, 0.95, 0.4);
-        mt.build_pair_tables();
-        mt
     }
 
     #[test]

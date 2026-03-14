@@ -125,9 +125,10 @@ pub fn hertz_normal_force(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dem_atom::{DemAtom, MaterialTable};
+    use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry};
     use mddem_neighbor::Neighbor;
+    use mddem_test_utils::make_material_table;
 
     fn push_test_atom(
         atom: &mut Atom,
@@ -141,13 +142,6 @@ mod tests {
         dem.radius.push(radius);
         dem.density.push(2500.0);
         dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
-    }
-
-    fn make_material_table() -> MaterialTable {
-        let mut mt = MaterialTable::new();
-        mt.add_material("glass", 8.7e9, 0.3, 0.95, 0.4);
-        mt.build_pair_tables();
-        mt
     }
 
     #[test]

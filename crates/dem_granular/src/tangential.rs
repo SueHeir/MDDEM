@@ -1,10 +1,10 @@
-use std::any::{Any, TypeId};
+use std::any::Any;
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 
 use dem_atom::{DemAtom, MaterialTable};
-use mddem_core::{Atom, AtomData, AtomDataRegistry};
+use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry};
 use mddem_neighbor::Neighbor;
 
 use crate::{SQRT_5_3, TANGENTIAL_EPSILON};
@@ -90,13 +90,7 @@ pub struct MindlinTangentialForcePlugin;
 
 impl Plugin for MindlinTangentialForcePlugin {
     fn build(&self, app: &mut App) {
-        if let Some(registry_option) = app.get_mut_resource(TypeId::of::<AtomDataRegistry>()) {
-            let mut registry_binder = registry_option.borrow_mut();
-            let registry = registry_binder.downcast_mut::<AtomDataRegistry>().unwrap();
-            registry.register(ContactHistoryStore::new());
-        } else {
-            panic!("AtomDataRegistry not found — AtomPlugin must be added first");
-        }
+        register_atom_data!(app, ContactHistoryStore::new());
         app.add_update_system(
             mindlin_tangential_force
                 .label("mindlin_tangential")
@@ -273,17 +267,11 @@ pub fn mindlin_tangential_force(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dem_atom::{DemAtom, MaterialTable};
+    use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry};
     use mddem_neighbor::Neighbor;
+    use mddem_test_utils::make_material_table;
     use std::f64::consts::PI;
-
-    fn make_material_table() -> MaterialTable {
-        let mut mt = MaterialTable::new();
-        mt.add_material("glass", 8.7e9, 0.3, 0.95, 0.4);
-        mt.build_pair_tables();
-        mt
-    }
 
     fn push_test_atom(
         atom: &mut Atom,

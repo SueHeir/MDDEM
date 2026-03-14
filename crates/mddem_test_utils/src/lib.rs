@@ -41,3 +41,11 @@ pub fn make_group_registry(name: &str, mask: Vec<bool>) -> GroupRegistry {
 pub fn make_single_comm() -> CommResource {
     CommResource(Box::new(SingleProcessComm::new()))
 }
+
+/// Create a single-material "glass" [`MaterialTable`] for testing.
+pub fn make_material_table() -> dem_atom::MaterialTable {
+    let mut mt = dem_atom::MaterialTable::new();
+    mt.add_material("glass", 8.7e9, 0.3, 0.95, 0.4);
+    mt.build_pair_tables();
+    mt
+}

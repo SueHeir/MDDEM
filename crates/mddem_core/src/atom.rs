@@ -11,6 +11,26 @@ pub const ATOM_PACK_SIZE: usize = 15;
 
 // ── AtomData trait ───────────────────────────────────────────────────────────
 
+/// Register an [`AtomData`] extension with the [`AtomDataRegistry`] stored in `app`.
+///
+/// Panics if `AtomPlugin` has not been added (i.e. `AtomDataRegistry` is missing).
+///
+/// # Example
+/// ```ignore
+/// register_atom_data!(app, DemAtom::new());
+/// ```
+#[macro_export]
+macro_rules! register_atom_data {
+    ($app:expr, $value:expr) => {
+        if let Some(cell) = $app.get_mut_resource(::std::any::TypeId::of::<$crate::AtomDataRegistry>()) {
+            let mut binder = cell.borrow_mut();
+            binder.downcast_mut::<$crate::AtomDataRegistry>().unwrap().register($value);
+        } else {
+            panic!("AtomDataRegistry not found — AtomPlugin must be added first");
+        }
+    };
+}
+
 /// Per-atom extension data (e.g. radius, density). Supports pack/unpack for MPI communication.
 pub trait AtomData: Any {
     fn as_any(&self) -> &dyn Any;

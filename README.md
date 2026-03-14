@@ -28,7 +28,7 @@ I am still unsure about the TOML input for this. I think having real examples to
 
 I gave up on having every system (function handled by scheduler) be very readable (originally for educational purposes). Hot paths are full of unsafe code and many complex optimizations have led to this no longer being a goal of MDDEM; see the performance section. I have also removed nalgebra from the dependencies, so we only optionally depend on the Rust MPI wrapper. The Rust MPI wrapper is not feature-complete with MPI, but I don't think this is a huge deal right now. I think it's missing some features that might speed things up a little bit (non-blocking send/receive of arbitrary vec sizes).
 
-I would be interested if there are any proc macros that could be used to help with readability or ergonomics. We have one for adding per-atom data that will fully communicate it. That's wild, but in practice the dem_atom, which could use it, is too complex for it — we need a better proc macro or a simpler dem_atom struct. I'm not sure where else these could be used, but it's something to keep thinking about.
+We have a `#[derive(AtomData)]` proc macro for per-atom extension data — it generates pack/unpack, communication, and permutation code. It now supports `Vec<f64>`, `Vec<[f64; 3]>`, and `Vec<[f64; 4]>` fields, plus `#[forward]`, `#[reverse]`, and `#[zero]` attributes for comm and accumulator behavior. DemAtom uses it successfully. I'd be interested if there are other places where proc or declarative macros could improve ergonomics.
 
 ## Installation
 
@@ -238,6 +238,38 @@ MPI benchmark (4 processes, 2x2x1 decomposition) on the same hardware:
 | 100,920 |           98.5 |             108 |         3.47x | 1.10x |
 
 MDDEM MPI achieves 2.2-3.5x speedup over single-core at scale, with the ratio to LAMMPS narrowing to 1.10x at 32k+ atoms. Spatial sorting of atoms by bin is enabled in both single-core and MPI modes, improving cache locality for force and neighbor list computations. Communication uses per-dimension exchange with non-blocking sends, multi-hop ghost forwarding when needed, and lightweight ghost position updates between neighbor rebuilds.
+
+## Code Size
+
+One design goal of MDDEM is keeping the core code small, and unrelated code out of the way. The dependency-injection scheduler is key to this — physics systems are plain functions that declare their inputs, so there's no base-class boilerplate, virtual dispatch plumbing, or manual resource wiring. A new force model is just a function and a plugin registration. 
+
+Here's a rough comparison of the code needed to run a simple LJ fluid simulation:
+
+| | **MDDEM** | **LAMMPS** |
+|---|---|---|
+| LJ fluid core | ~9,200 lines (Rust) | ~30,000–40,000 lines (C++) |
+| Full codebase | ~13,500 lines | ~190,000 lines (core `src/`, no packages) |
+
+**Caveats:** This is an approximate comparison, not a rigorous benchmark. LAMMPS has 30+ years of development, supports far more features, and its core files include infrastructure (e.g., `variable.cpp` at ~5,000 lines for a full expression parser) that MDDEM sidesteps by using TOML config with `serde`. LAMMPS also has deep class hierarchies with virtual dispatch that add lines but provide extensibility MDDEM handles differently via plugins. The MDDEM line count includes tests (~20% of crate code); LAMMPS tests live in a separate directory. Lines of code is a crude metric — it doesn't capture complexity, correctness, or capability.
+
+The MDDEM breakdown for an LJ fluid:
+
+| Crate | Lines | Role |
+|---|---|---|
+| `mddem_scheduler` | 1,750 | DI scheduler, `Res`/`ResMut`, ordering |
+| `mddem_core` | 3,120 | Atom, domain, comm, config, groups |
+| `mddem_neighbor` | 1,100 | Bin-based neighbor lists |
+| `mddem_print` | 870 | Thermo, dump, restart, VTP output |
+| `md_thermostat` | 590 | Nose-Hoover NVT |
+| `mddem_app` | 460 | App container, plugin trait |
+| `md_lj` | 385 | LJ 12-6 pair force |
+| `md_lattice` | 380 | FCC lattice init |
+| `mddem_derive` | 340 | `#[derive(AtomData)]` proc macro |
+| `mddem_verlet` | 106 | Velocity Verlet integrator |
+| `mddem` | 106 | Plugin group definitions |
+| **Total** | **~9,200** | |
+
+The scheduler (`mddem_scheduler`) is the largest single piece, but it's pure infrastructure shared by every simulation type. The actual LJ physics is 385 lines. Adding a new force model doesn't require touching any of the infrastructure code — you write a function, register it in a plugin, and the scheduler handles the rest.
 
 ## Roadmap
 

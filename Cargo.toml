@@ -62,6 +62,10 @@ path = "examples/poiseuille_flow/main.rs"
 name = "bond_basic"
 path = "examples/bond_basic/main.rs"
 
+[[example]]
+name = "lj_per_atom_energy"
+path = "examples/lj_per_atom_energy/main.rs"
+
 
 [profile.release]
 opt-level = 3
@@ -71,6 +75,7 @@ panic = "abort"
 
 [dependencies]
 mddem = { path = "./crates/mddem", default-features = false }
+mddem_derive = { path = "./crates/mddem_derive" }
 # Force libffi-sys to use system libffi (via pkg-config) instead of building
 # from source. libffi-sys 2.3.0 has a broken aarch64 macOS assembler; Homebrew
 # libffi is set in .cargo/config.toml via PKG_CONFIG_PATH.

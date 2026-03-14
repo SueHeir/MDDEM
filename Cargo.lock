@@ -121,6 +121,7 @@ version = "0.1.3"
 dependencies = [
  "mddem_app",
  "mddem_core",
+ "mddem_derive",
  "serde",
 ]
 
@@ -160,6 +161,7 @@ dependencies = [
  "mddem_core",
  "mddem_neighbor",
  "mddem_scheduler",
+ "mddem_test_utils",
  "mddem_verlet",
 ]
 
@@ -181,6 +183,7 @@ dependencies = [
  "mddem_app",
  "mddem_core",
  "mddem_scheduler",
+ "mddem_test_utils",
  "serde",
  "toml",
 ]
@@ -436,6 +439,7 @@ version = "0.1.3"
 dependencies = [
  "libffi-sys",
  "mddem",
+ "mddem_derive",
 ]
 
 [[package]]
@@ -509,6 +513,7 @@ version = "0.1.3"
 name = "mddem_test_utils"
 version = "0.1.3"
 dependencies = [
+ "dem_atom",
  "mddem_core",
 ]
 

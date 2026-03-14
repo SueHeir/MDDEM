@@ -4,14 +4,68 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput, Fields, Type};
 
+/// Classification of supported field types.
+enum FieldKind {
+    /// `Vec<f64>` — 1 f64 per element
+    Scalar,
+    /// `Vec<[f64; N]>` — N f64s per element
+    Array(usize),
+}
+
+/// Classify a field type as Scalar, Array(N), or None if unsupported.
+fn classify_field(ty: &Type) -> Option<FieldKind> {
+    let Type::Path(type_path) = ty else { return None };
+    let segments = &type_path.path.segments;
+    if segments.len() != 1 || segments[0].ident != "Vec" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segments[0].arguments else { return None };
+    if args.args.len() != 1 {
+        return None;
+    }
+    let syn::GenericArgument::Type(inner) = &args.args[0] else { return None };
+
+    // Check for plain f64
+    if let Type::Path(inner_path) = inner {
+        if inner_path.path.is_ident("f64") {
+            return Some(FieldKind::Scalar);
+        }
+    }
+
+    // Check for [f64; N]
+    if let Type::Array(arr) = inner {
+        if let Type::Path(elem_path) = arr.elem.as_ref() {
+            if elem_path.path.is_ident("f64") {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Int(lit_int),
+                    ..
+                }) = &arr.len
+                {
+                    if let Ok(n) = lit_int.base10_parse::<usize>() {
+                        return Some(FieldKind::Array(n));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Check if a field has a given attribute (e.g. `#[forward]`).
+fn has_attr(field: &syn::Field, name: &str) -> bool {
+    field.attrs.iter().any(|a| a.path().is_ident(name))
+}
+
 /// Derive macro for `AtomData` trait.
 ///
-/// All fields must be `Vec<f64>`. Generates implementations of:
-/// - `as_any` / `as_any_mut`
-/// - `truncate` / `swap_remove`
-/// - `pack` / `unpack`
-/// - `apply_permutation`
-#[proc_macro_derive(AtomData)]
+/// Supported field types: `Vec<f64>`, `Vec<[f64; 3]>`, `Vec<[f64; 4]>`.
+///
+/// Field attributes:
+/// - `#[forward]` — include in `pack_forward`/`unpack_forward` (overwrite on unpack)
+/// - `#[reverse]` — include in `pack_reverse`/`unpack_reverse` (additive `+=` on unpack)
+/// - `#[zero]` — include in `zero()` (fill with zeros)
+#[proc_macro_derive(AtomData, attributes(forward, reverse, zero))]
 pub fn derive_atom_data(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
@@ -32,41 +86,228 @@ pub fn derive_atom_data(input: TokenStream) -> TokenStream {
         }
     };
 
-    // Validate all fields are Vec<f64>
+    // Classify all fields
+    struct FieldInfo {
+        ident: syn::Ident,
+        kind: FieldKind,
+        is_forward: bool,
+        is_reverse: bool,
+        is_zero: bool,
+    }
+
+    let mut field_infos = Vec::new();
     for field in fields.iter() {
-        if !is_vec_f64(&field.ty) {
-            let field_name = field.ident.as_ref().unwrap();
+        let ident = field.ident.as_ref().unwrap().clone();
+        let Some(kind) = classify_field(&field.ty) else {
             return syn::Error::new_spanned(
                 field,
                 format!(
-                    "AtomData derive: field `{}` must be `Vec<f64>`, got `{}`",
-                    field_name,
-                    quote!(#field).to_string()
+                    "AtomData derive: field `{}` must be `Vec<f64>` or `Vec<[f64; N]>`",
+                    ident
                 ),
             )
             .to_compile_error()
             .into();
+        };
+        field_infos.push(FieldInfo {
+            ident,
+            kind,
+            is_forward: has_attr(field, "forward"),
+            is_reverse: has_attr(field, "reverse"),
+            is_zero: has_attr(field, "zero"),
+        });
+    }
+
+    // --- truncate / swap_remove ---
+    let truncate_stmts: Vec<_> = field_infos
+        .iter()
+        .map(|f| {
+            let id = &f.ident;
+            quote! { self.#id.truncate(n); }
+        })
+        .collect();
+
+    let swap_remove_stmts: Vec<_> = field_infos
+        .iter()
+        .map(|f| {
+            let id = &f.ident;
+            quote! { self.#id.swap_remove(i); }
+        })
+        .collect();
+
+    // --- pack ---
+    let pack_stmts: Vec<_> = field_infos
+        .iter()
+        .map(|f| {
+            let id = &f.ident;
+            match &f.kind {
+                FieldKind::Scalar => quote! { buf.push(self.#id[i]); },
+                FieldKind::Array(_) => quote! { buf.extend_from_slice(&self.#id[i]); },
+            }
+        })
+        .collect();
+
+    // --- unpack ---
+    // Need cumulative offset tracking
+    let mut unpack_stmts = Vec::new();
+    let mut total_size: usize = 0;
+    for f in &field_infos {
+        let id = &f.ident;
+        let off = total_size;
+        match &f.kind {
+            FieldKind::Scalar => {
+                unpack_stmts.push(quote! { self.#id.push(buf[#off]); });
+                total_size += 1;
+            }
+            FieldKind::Array(n) => {
+                let indices: Vec<_> = (0..*n).map(|j| off + j).collect();
+                unpack_stmts.push(quote! { self.#id.push([#(buf[#indices]),*]); });
+                total_size += n;
+            }
         }
     }
 
-    let field_names: Vec<_> = fields.iter().map(|f| f.ident.as_ref().unwrap()).collect();
-    let field_count = field_names.len();
-
-    let truncate_stmts = field_names.iter().map(|f| quote! { self.#f.truncate(n); });
-    let swap_remove_stmts = field_names.iter().map(|f| quote! { self.#f.swap_remove(i); });
-    let pack_stmts = field_names.iter().map(|f| quote! { buf.push(self.#f[i]); });
-    let unpack_stmts = field_names
+    // --- apply_permutation ---
+    let perm_stmts: Vec<_> = field_infos
         .iter()
-        .enumerate()
-        .map(|(idx, f)| quote! { self.#f.push(buf[#idx]); });
-    let perm_stmts = field_names.iter().map(|f| {
-        quote! {
-            {
-                let scratch: Vec<f64> = perm.iter().map(|&p| self.#f[p]).collect();
-                self.#f[..n].copy_from_slice(&scratch);
+        .map(|f| {
+            let id = &f.ident;
+            match &f.kind {
+                FieldKind::Scalar => quote! {
+                    {
+                        let scratch: Vec<f64> = perm.iter().map(|&p| self.#id[p]).collect();
+                        self.#id[..n].copy_from_slice(&scratch);
+                    }
+                },
+                FieldKind::Array(n_val) => {
+                    let n_lit = *n_val;
+                    quote! {
+                        {
+                            let scratch: Vec<[f64; #n_lit]> = perm.iter().map(|&p| self.#id[p]).collect();
+                            self.#id[..n].copy_from_slice(&scratch);
+                        }
+                    }
+                }
+            }
+        })
+        .collect();
+
+    // --- forward comm ---
+    let has_forward = field_infos.iter().any(|f| f.is_forward);
+    let forward_methods = if has_forward {
+        let mut fwd_size: usize = 0;
+        let mut pack_fwd_stmts = Vec::new();
+        let mut unpack_fwd_stmts = Vec::new();
+        for f in &field_infos {
+            if !f.is_forward {
+                continue;
+            }
+            let id = &f.ident;
+            let off = fwd_size;
+            match &f.kind {
+                FieldKind::Scalar => {
+                    pack_fwd_stmts.push(quote! { buf.push(self.#id[i]); });
+                    unpack_fwd_stmts.push(quote! { self.#id[i] = buf[#off]; });
+                    fwd_size += 1;
+                }
+                FieldKind::Array(n) => {
+                    pack_fwd_stmts.push(quote! { buf.extend_from_slice(&self.#id[i]); });
+                    let indices: Vec<_> = (0..*n).map(|j| off + j).collect();
+                    unpack_fwd_stmts.push(quote! { self.#id[i] = [#(buf[#indices]),*]; });
+                    fwd_size += n;
+                }
             }
         }
-    });
+        quote! {
+            fn pack_forward(&self, i: usize, buf: &mut Vec<f64>) {
+                #(#pack_fwd_stmts)*
+            }
+            fn unpack_forward(&mut self, i: usize, buf: &[f64]) -> usize {
+                #(#unpack_fwd_stmts)*
+                #fwd_size
+            }
+            fn forward_comm_size(&self) -> usize { #fwd_size }
+        }
+    } else {
+        quote! {}
+    };
+
+    // --- reverse comm ---
+    let has_reverse = field_infos.iter().any(|f| f.is_reverse);
+    let reverse_methods = if has_reverse {
+        let mut rev_size: usize = 0;
+        let mut pack_rev_stmts = Vec::new();
+        let mut unpack_rev_stmts = Vec::new();
+        for f in &field_infos {
+            if !f.is_reverse {
+                continue;
+            }
+            let id = &f.ident;
+            let off = rev_size;
+            match &f.kind {
+                FieldKind::Scalar => {
+                    pack_rev_stmts.push(quote! { buf.push(self.#id[i]); });
+                    unpack_rev_stmts.push(quote! { self.#id[i] += buf[#off]; });
+                    rev_size += 1;
+                }
+                FieldKind::Array(n) => {
+                    pack_rev_stmts.push(quote! { buf.extend_from_slice(&self.#id[i]); });
+                    let elem_stmts: Vec<_> = (0..*n)
+                        .map(|j| {
+                            let idx = off + j;
+                            quote! { self.#id[i][#j] += buf[#idx]; }
+                        })
+                        .collect();
+                    unpack_rev_stmts.push(quote! { #(#elem_stmts)* });
+                    rev_size += n;
+                }
+            }
+        }
+        quote! {
+            fn pack_reverse(&self, i: usize, buf: &mut Vec<f64>) {
+                #(#pack_rev_stmts)*
+            }
+            fn unpack_reverse(&mut self, i: usize, buf: &[f64]) -> usize {
+                #(#unpack_rev_stmts)*
+                #rev_size
+            }
+            fn reverse_comm_size(&self) -> usize { #rev_size }
+        }
+    } else {
+        quote! {}
+    };
+
+    // --- zero ---
+    let has_zero = field_infos.iter().any(|f| f.is_zero);
+    let zero_method = if has_zero {
+        let zero_stmts: Vec<_> = field_infos
+            .iter()
+            .filter(|f| f.is_zero)
+            .map(|f| {
+                let id = &f.ident;
+                match &f.kind {
+                    FieldKind::Scalar => quote! {
+                        self.#id.resize(n, 0.0);
+                        self.#id[..n].fill(0.0);
+                    },
+                    FieldKind::Array(n_val) => {
+                        let n_lit = *n_val;
+                        quote! {
+                            self.#id.resize(n, [0.0; #n_lit]);
+                            self.#id[..n].fill([0.0; #n_lit]);
+                        }
+                    }
+                }
+            })
+            .collect();
+        quote! {
+            fn zero(&mut self, n: usize) {
+                #(#zero_stmts)*
+            }
+        }
+    } else {
+        quote! {}
+    };
 
     let expanded = quote! {
         impl AtomData for #name {
@@ -91,30 +332,18 @@ pub fn derive_atom_data(input: TokenStream) -> TokenStream {
 
             fn unpack(&mut self, buf: &[f64]) -> usize {
                 #(#unpack_stmts)*
-                #field_count
+                #total_size
             }
 
             fn apply_permutation(&mut self, perm: &[usize], n: usize) {
                 #(#perm_stmts)*
             }
+
+            #forward_methods
+            #reverse_methods
+            #zero_method
         }
     };
 
     expanded.into()
-}
-
-fn is_vec_f64(ty: &Type) -> bool {
-    if let Type::Path(type_path) = ty {
-        let segments = &type_path.path.segments;
-        if segments.len() == 1 && segments[0].ident == "Vec" {
-            if let syn::PathArguments::AngleBracketed(args) = &segments[0].arguments {
-                if args.args.len() == 1 {
-                    if let syn::GenericArgument::Type(Type::Path(inner)) = &args.args[0] {
-                        return inner.path.is_ident("f64");
-                    }
-                }
-            }
-        }
-    }
-    false
 }

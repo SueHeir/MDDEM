@@ -1,8 +1,8 @@
-use std::any::{Any, TypeId};
+use std::any::Any;
 
 use mddem_app::prelude::*;
 
-use crate::{AtomData, AtomDataRegistry};
+use crate::AtomData;
 
 // ── BondEntry & BondStore ────────────────────────────────────────────────────
 
@@ -144,13 +144,7 @@ pub struct BondPlugin;
 
 impl Plugin for BondPlugin {
     fn build(&self, app: &mut App) {
-        if let Some(registry_option) = app.get_mut_resource(TypeId::of::<AtomDataRegistry>()) {
-            let mut registry_binder = registry_option.borrow_mut();
-            let registry = registry_binder.downcast_mut::<AtomDataRegistry>().unwrap();
-            registry.register(BondStore::new());
-        } else {
-            panic!("AtomDataRegistry not found — AtomPlugin must be added first");
-        }
+        crate::register_atom_data!(app, BondStore::new());
     }
 }
 
