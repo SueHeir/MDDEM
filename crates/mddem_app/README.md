@@ -163,7 +163,14 @@ dump_interval = 500
 vtp_interval = 1000
 ```
 
-The scheduler executes stages sequentially, running `Setup -> Run -> Setup -> Run -> ... -> End`. Each stage transition increments `SchedulerManager.index`, and setup systems re-run to pick up the new stage's configuration. Systems that should only run once (e.g., particle insertion) guard with `if scheduler_manager.index != 0 { return; }`.
+The scheduler executes stages sequentially, running `Setup -> Run -> Setup -> Run -> ... -> End`. Each stage transition increments `SchedulerManager.index`, and setup systems re-run to pick up the new stage's configuration. Systems that should only run once (e.g., lattice initialization) can use the `first_stage_only()` run condition:
+
+```rust
+app.add_setup_system(
+    fcc_insert.run_if(first_stage_only()),
+    ScheduleSetupSet::Setup,
+);
+```
 
 Single-stage `[run]` (table syntax) is still supported for backwards compatibility.
 
