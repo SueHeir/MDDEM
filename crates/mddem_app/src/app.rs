@@ -169,6 +169,11 @@ impl App {
         self.sub_apps.main.enable_schedule_print();
         self
     }
+
+    pub fn set_stage_names(&mut self, names: &[&str]) -> &mut Self {
+        self.sub_apps.main.set_stage_names(names);
+        self
+    }
 }
 
 #[derive(Debug)]

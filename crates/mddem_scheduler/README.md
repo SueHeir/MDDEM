@@ -110,7 +110,7 @@ app.add_update_system(
 
 // Only run during the first [[run]] stage (index 0)
 app.add_update_system(
-    insert_particles.run_if(first_stage_only()),
+    initialize_velocities.run_if(first_stage_only()),
     ScheduleSet::PreInitialIntegration,
 );
 ```

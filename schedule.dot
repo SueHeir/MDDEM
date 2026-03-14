@@ -1,129 +1,434 @@
 digraph schedule {
     rankdir=TB;
+    newrank=true;
     node [shape=box, style=filled, fillcolor=lightyellow];
 
-    subgraph cluster_setup_PreSetup {
-        label="Setup: PreSetup";
-        style=filled; fillcolor=lightblue;
-        setup_0 [label="comm::comm_read_input"];
+    subgraph cluster_stage_0 {
+        label="Stage: insert";
+        style=filled; fillcolor="#E8F5E9";
+        color=darkgreen; penwidth=2;
+        subgraph cluster_PreSetup_setup_0 {
+            label="Setup: PreSetup";
+            style=filled; fillcolor=lightblue;
+            s0setup_0 [label="comm::comm_read_input", style=filled];
+            s0setup_1 [label="run::set_stage_name", style=filled];
+        }
+        subgraph cluster_Setup_setup_0 {
+            label="Setup: Setup";
+            style=filled; fillcolor=lightblue;
+            s0setup_2 [label="domain::domain_read_input", style=filled];
+            s0setup_3 [label="mddem_neighbor::neighbor_read_input", style=filled];
+            s0setup_4 [label="run::run_read_input", style=filled];
+            s0setup_5 [label="dem_atom_insert::dem_insert_atoms", style=filled];
+        }
+        subgraph cluster_PostSetup_setup_0 {
+            label="Setup: PostSetup";
+            style=filled; fillcolor=lightblue;
+            s0setup_6 [label="comm::comm_setup", style=filled];
+            s0setup_7 [label="mddem_neighbor::neighbor_setup", style=filled];
+            s0setup_8 [label="group::setup_groups", style=filled];
+            s0setup_9 [label="mddem_print::setup_thermo", style=filled];
+            s0setup_10 [label="mddem_print::read_restart", style=filled];
+            s0setup_11 [label="dem_atom_insert::calculate_delta_time", style=filled];
+        }
+        subgraph cluster_InitialIntegration_s0 {
+            label="InitialIntegration";
+            style=filled; fillcolor=lightyellow;
+            s0_0 [label="mddem_verlet::initial_integration", style=filled];
+            s0_1 [label="rotational::initial_rotation", style=filled];
+        }
+        subgraph cluster_PostInitialIntegration_s0 {
+            label="PostInitialIntegration";
+            style=filled; fillcolor=lightyellow;
+            s0_2 [label="mddem_neighbor::decide_rebuild\n[decide_rebuild]", style=filled];
+            s0_3 [label="atom::zero_all_forces", style=filled];
+            s0_4 [label="atom::remove_ghost_atoms", style=filled];
+        }
+        subgraph cluster_PreExchange_s0 {
+            label="PreExchange";
+            style=filled; fillcolor=lightyellow;
+            s0_5 [label="domain::pbc", style=filled];
+            s0_6 [label="granular_temp::print_granular_temperature", style=filled];
+        }
+        subgraph cluster_Exchange_s0 {
+            label="Exchange";
+            style=filled; fillcolor=lightyellow;
+            s0_7 [label="comm::exchange", style=filled];
+        }
+        subgraph cluster_PreNeighbor_s0 {
+            label="PreNeighbor";
+            style=filled; fillcolor=lightyellow;
+            s0_8 [label="mddem_neighbor::sort_atoms_by_bin\n[sort_atoms]", style=filled];
+            s0_9 [label="comm::borders", style=filled];
+        }
+        subgraph cluster_Neighbor_s0 {
+            label="Neighbor";
+            style=filled; fillcolor=lightyellow;
+            s0_10 [label="mddem_neighbor::bin_neighbor_list", style=filled];
+        }
+        subgraph cluster_PreForce_s0 {
+            label="PreForce";
+            style=filled; fillcolor=lightyellow;
+            s0_11 [label="group::rebuild_groups", style=filled];
+            s0_12 [label="virial::zero_virial_stress", style=filled];
+        }
+        subgraph cluster_Force_s0 {
+            label="Force";
+            style=filled; fillcolor=lightyellow;
+            s0_13 [label="contact::hertz_mindlin_contact_force\n[hertz_mindlin_contact]", style=filled];
+            s0_14 [label="dem_gravity::apply_gravity", style=filled];
+            s0_15 [label="dem_wall::wall_contact_force\n[wall_contact]", style=filled];
+        }
+        subgraph cluster_PostForce_s0 {
+            label="PostForce";
+            style=filled; fillcolor=lightyellow;
+            s0_16 [label="comm::reverse_send_force", style=filled];
+            s0_17 [label="mddem_print::output_virial_to_thermo", style=filled];
+        }
+        subgraph cluster_FinalIntegration_s0 {
+            label="FinalIntegration";
+            style=filled; fillcolor=lightyellow;
+            s0_18 [label="mddem_verlet::final_integration", style=filled];
+            s0_19 [label="rotational::final_rotation", style=filled];
+        }
+        subgraph cluster_PostFinalIntegration_s0 {
+            label="PostFinalIntegration";
+            style=filled; fillcolor=lightyellow;
+            s0_20 [label="run::update_cycle", style=filled];
+            s0_21 [label="mddem_print::print_vtp", style=filled];
+            s0_22 [label="mddem_print::print_thermo", style=filled];
+            s0_23 [label="mddem_print::dump_atoms", style=filled];
+            s0_24 [label="mddem_print::write_restart", style=filled];
+            s0_25 [label="apply_state_transitions<dem_compression::Phase>", style=filled];
+            s0_26 [label="check_stage_advance<dem_compression::Phase>", style=filled];
+            s0_27 [label="dem_compression::check_insert_settled", style=filled];
+        }
     }
 
-    subgraph cluster_setup_Setup {
-        label="Setup: Setup";
-        style=filled; fillcolor=lightblue;
-        setup_1 [label="domain::domain_read_input"];
-        setup_2 [label="mddem_neighbor::neighbor_read_input"];
-        setup_3 [label="run::run_read_input"];
-        setup_4 [label="dem_atom_insert::dem_insert_atoms"];
+    s0setup_0 -> s0setup_1 [color=blue, style=bold];
+    s0setup_2 -> s0setup_3 [color=blue, style=bold];
+    s0setup_3 -> s0setup_4 [color=blue, style=bold];
+    s0setup_4 -> s0setup_5 [color=blue, style=bold];
+    s0setup_6 -> s0setup_7 [color=blue, style=bold];
+    s0setup_7 -> s0setup_8 [color=blue, style=bold];
+    s0setup_8 -> s0setup_9 [color=blue, style=bold];
+    s0setup_9 -> s0setup_10 [color=blue, style=bold];
+    s0setup_10 -> s0setup_11 [color=blue, style=bold];
+    s0setup_1 -> s0setup_2 [color=blue, style=bold];
+    s0setup_5 -> s0setup_6 [color=blue, style=bold];
+    s0setup_11 -> s0_0 [color=blue, style=bold, label="start run"];
+    s0_0 -> s0_1 [color=blue, style=bold];
+    s0_2 -> s0_3 [color=blue, style=bold];
+    s0_3 -> s0_4 [color=blue, style=bold];
+    s0_5 -> s0_6 [color=blue, style=bold];
+    s0_8 -> s0_9 [color=blue, style=bold];
+    s0_11 -> s0_12 [color=blue, style=bold];
+    s0_13 -> s0_14 [color=blue, style=bold];
+    s0_14 -> s0_15 [color=blue, style=bold];
+    s0_16 -> s0_17 [color=blue, style=bold];
+    s0_18 -> s0_19 [color=blue, style=bold];
+    s0_20 -> s0_21 [color=blue, style=bold];
+    s0_21 -> s0_22 [color=blue, style=bold];
+    s0_22 -> s0_23 [color=blue, style=bold];
+    s0_23 -> s0_24 [color=blue, style=bold];
+    s0_24 -> s0_25 [color=blue, style=bold];
+    s0_25 -> s0_26 [color=blue, style=bold];
+    s0_26 -> s0_27 [color=blue, style=bold];
+    s0_1 -> s0_2 [color=blue, style=bold];
+    s0_4 -> s0_5 [color=blue, style=bold];
+    s0_6 -> s0_7 [color=blue, style=bold];
+    s0_7 -> s0_8 [color=blue, style=bold];
+    s0_9 -> s0_10 [color=blue, style=bold];
+    s0_10 -> s0_11 [color=blue, style=bold];
+    s0_12 -> s0_13 [color=blue, style=bold];
+    s0_15 -> s0_16 [color=blue, style=bold];
+    s0_17 -> s0_18 [color=blue, style=bold];
+    s0_19 -> s0_20 [color=blue, style=bold];
+    s0_27 -> s0_0 [color=green, style=bold, label="run loop", constraint=false];
+    subgraph cluster_stage_1 {
+        label="Stage: relax";
+        style=filled; fillcolor="#E3F2FD";
+        color=darkgreen; penwidth=2;
+        subgraph cluster_PreSetup_setup_1 {
+            label="Setup: PreSetup";
+            style=filled; fillcolor=lightblue;
+            s1setup_1 [label="run::set_stage_name", style=filled];
+        }
+        subgraph cluster_Setup_setup_1 {
+            label="Setup: Setup";
+            style=filled; fillcolor=lightblue;
+            s1setup_2 [label="domain::domain_read_input", style=filled];
+            s1setup_3 [label="mddem_neighbor::neighbor_read_input", style=filled];
+            s1setup_4 [label="run::run_read_input", style=filled];
+            s1setup_5 [label="dem_atom_insert::dem_insert_atoms", style=filled];
+        }
+        subgraph cluster_PostSetup_setup_1 {
+            label="Setup: PostSetup";
+            style=filled; fillcolor=lightblue;
+            s1setup_7 [label="mddem_neighbor::neighbor_setup", style=filled];
+            s1setup_8 [label="group::setup_groups", style=filled];
+            s1setup_9 [label="mddem_print::setup_thermo", style=filled];
+            s1setup_11 [label="dem_atom_insert::calculate_delta_time", style=filled];
+        }
+        subgraph cluster_InitialIntegration_s1 {
+            label="InitialIntegration";
+            style=filled; fillcolor=lightyellow;
+            s1_0 [label="mddem_verlet::initial_integration", style=filled];
+            s1_1 [label="rotational::initial_rotation", style=filled];
+        }
+        subgraph cluster_PostInitialIntegration_s1 {
+            label="PostInitialIntegration";
+            style=filled; fillcolor=lightyellow;
+            s1_2 [label="mddem_neighbor::decide_rebuild\n[decide_rebuild]", style=filled];
+            s1_3 [label="atom::zero_all_forces", style=filled];
+            s1_4 [label="atom::remove_ghost_atoms", style=filled];
+        }
+        subgraph cluster_PreExchange_s1 {
+            label="PreExchange";
+            style=filled; fillcolor=lightyellow;
+            s1_5 [label="domain::pbc", style=filled];
+            s1_6 [label="granular_temp::print_granular_temperature", style=filled];
+        }
+        subgraph cluster_Exchange_s1 {
+            label="Exchange";
+            style=filled; fillcolor=lightyellow;
+            s1_7 [label="comm::exchange", style=filled];
+        }
+        subgraph cluster_PreNeighbor_s1 {
+            label="PreNeighbor";
+            style=filled; fillcolor=lightyellow;
+            s1_8 [label="mddem_neighbor::sort_atoms_by_bin\n[sort_atoms]", style=filled];
+            s1_9 [label="comm::borders", style=filled];
+        }
+        subgraph cluster_Neighbor_s1 {
+            label="Neighbor";
+            style=filled; fillcolor=lightyellow;
+            s1_10 [label="mddem_neighbor::bin_neighbor_list", style=filled];
+        }
+        subgraph cluster_PreForce_s1 {
+            label="PreForce";
+            style=filled; fillcolor=lightyellow;
+            s1_11 [label="group::rebuild_groups", style=filled];
+            s1_12 [label="virial::zero_virial_stress", style=filled];
+        }
+        subgraph cluster_Force_s1 {
+            label="Force";
+            style=filled; fillcolor=lightyellow;
+            s1_13 [label="contact::hertz_mindlin_contact_force\n[hertz_mindlin_contact]", style=filled];
+            s1_14 [label="dem_gravity::apply_gravity", style=filled];
+            s1_15 [label="dem_wall::wall_contact_force\n[wall_contact]", style=filled];
+        }
+        subgraph cluster_PostForce_s1 {
+            label="PostForce";
+            style=filled; fillcolor=lightyellow;
+            s1_16 [label="comm::reverse_send_force", style=filled];
+            s1_17 [label="mddem_print::output_virial_to_thermo", style=filled];
+        }
+        subgraph cluster_FinalIntegration_s1 {
+            label="FinalIntegration";
+            style=filled; fillcolor=lightyellow;
+            s1_18 [label="mddem_verlet::final_integration", style=filled];
+            s1_19 [label="rotational::final_rotation", style=filled];
+        }
+        subgraph cluster_PostFinalIntegration_s1 {
+            label="PostFinalIntegration";
+            style=filled; fillcolor=lightyellow;
+            s1_20 [label="run::update_cycle", style=filled];
+            s1_21 [label="mddem_print::print_vtp", style=filled];
+            s1_22 [label="mddem_print::print_thermo", style=filled];
+            s1_23 [label="mddem_print::dump_atoms", style=filled];
+            s1_24 [label="mddem_print::write_restart", style=filled];
+            s1_25 [label="apply_state_transitions<dem_compression::Phase>", style=filled];
+            s1_26 [label="check_stage_advance<dem_compression::Phase>", style=filled];
+            s1_28 [label="dem_compression::check_relaxed", style=filled];
+        }
     }
 
-    subgraph cluster_setup_PostSetup {
-        label="Setup: PostSetup";
-        style=filled; fillcolor=lightblue;
-        setup_5 [label="comm::comm_setup"];
-        setup_6 [label="mddem_neighbor::neighbor_setup"];
-        setup_7 [label="mddem_print::setup_thermo"];
-        setup_8 [label="mddem_print::read_restart"];
-        setup_9 [label="dem_atom_insert::calculate_delta_time"];
+    s1setup_2 -> s1setup_3 [color=blue, style=bold];
+    s1setup_3 -> s1setup_4 [color=blue, style=bold];
+    s1setup_4 -> s1setup_5 [color=blue, style=bold];
+    s1setup_7 -> s1setup_8 [color=blue, style=bold];
+    s1setup_8 -> s1setup_9 [color=blue, style=bold];
+    s1setup_9 -> s1setup_11 [color=blue, style=bold];
+    s1setup_1 -> s1setup_2 [color=blue, style=bold];
+    s1setup_5 -> s1setup_7 [color=blue, style=bold];
+    s1setup_11 -> s1_0 [color=blue, style=bold, label="start run"];
+    s1_0 -> s1_1 [color=blue, style=bold];
+    s1_2 -> s1_3 [color=blue, style=bold];
+    s1_3 -> s1_4 [color=blue, style=bold];
+    s1_5 -> s1_6 [color=blue, style=bold];
+    s1_8 -> s1_9 [color=blue, style=bold];
+    s1_11 -> s1_12 [color=blue, style=bold];
+    s1_13 -> s1_14 [color=blue, style=bold];
+    s1_14 -> s1_15 [color=blue, style=bold];
+    s1_16 -> s1_17 [color=blue, style=bold];
+    s1_18 -> s1_19 [color=blue, style=bold];
+    s1_20 -> s1_21 [color=blue, style=bold];
+    s1_21 -> s1_22 [color=blue, style=bold];
+    s1_22 -> s1_23 [color=blue, style=bold];
+    s1_23 -> s1_24 [color=blue, style=bold];
+    s1_24 -> s1_25 [color=blue, style=bold];
+    s1_25 -> s1_26 [color=blue, style=bold];
+    s1_26 -> s1_28 [color=blue, style=bold];
+    s1_1 -> s1_2 [color=blue, style=bold];
+    s1_4 -> s1_5 [color=blue, style=bold];
+    s1_6 -> s1_7 [color=blue, style=bold];
+    s1_7 -> s1_8 [color=blue, style=bold];
+    s1_9 -> s1_10 [color=blue, style=bold];
+    s1_10 -> s1_11 [color=blue, style=bold];
+    s1_12 -> s1_13 [color=blue, style=bold];
+    s1_15 -> s1_16 [color=blue, style=bold];
+    s1_17 -> s1_18 [color=blue, style=bold];
+    s1_19 -> s1_20 [color=blue, style=bold];
+    s1_28 -> s1_0 [color=green, style=bold, label="run loop", constraint=false];
+    subgraph cluster_stage_2 {
+        label="Stage: compress";
+        style=filled; fillcolor="#FFF3E0";
+        color=darkgreen; penwidth=2;
+        subgraph cluster_PreSetup_setup_2 {
+            label="Setup: PreSetup";
+            style=filled; fillcolor=lightblue;
+            s2setup_1 [label="run::set_stage_name", style=filled];
+        }
+        subgraph cluster_Setup_setup_2 {
+            label="Setup: Setup";
+            style=filled; fillcolor=lightblue;
+            s2setup_2 [label="domain::domain_read_input", style=filled];
+            s2setup_3 [label="mddem_neighbor::neighbor_read_input", style=filled];
+            s2setup_4 [label="run::run_read_input", style=filled];
+            s2setup_5 [label="dem_atom_insert::dem_insert_atoms", style=filled];
+        }
+        subgraph cluster_PostSetup_setup_2 {
+            label="Setup: PostSetup";
+            style=filled; fillcolor=lightblue;
+            s2setup_7 [label="mddem_neighbor::neighbor_setup", style=filled];
+            s2setup_8 [label="group::setup_groups", style=filled];
+            s2setup_9 [label="mddem_print::setup_thermo", style=filled];
+            s2setup_11 [label="dem_atom_insert::calculate_delta_time", style=filled];
+        }
+        subgraph cluster_InitialIntegration_s2 {
+            label="InitialIntegration";
+            style=filled; fillcolor=lightyellow;
+            s2_0 [label="mddem_verlet::initial_integration", style=filled];
+            s2_1 [label="rotational::initial_rotation", style=filled];
+        }
+        subgraph cluster_PostInitialIntegration_s2 {
+            label="PostInitialIntegration";
+            style=filled; fillcolor=lightyellow;
+            s2_2 [label="mddem_neighbor::decide_rebuild\n[decide_rebuild]", style=filled];
+            s2_3 [label="atom::zero_all_forces", style=filled];
+            s2_4 [label="atom::remove_ghost_atoms", style=filled];
+        }
+        subgraph cluster_PreExchange_s2 {
+            label="PreExchange";
+            style=filled; fillcolor=lightyellow;
+            s2_5 [label="domain::pbc", style=filled];
+            s2_6 [label="granular_temp::print_granular_temperature", style=filled];
+        }
+        subgraph cluster_Exchange_s2 {
+            label="Exchange";
+            style=filled; fillcolor=lightyellow;
+            s2_7 [label="comm::exchange", style=filled];
+        }
+        subgraph cluster_PreNeighbor_s2 {
+            label="PreNeighbor";
+            style=filled; fillcolor=lightyellow;
+            s2_8 [label="mddem_neighbor::sort_atoms_by_bin\n[sort_atoms]", style=filled];
+            s2_9 [label="comm::borders", style=filled];
+        }
+        subgraph cluster_Neighbor_s2 {
+            label="Neighbor";
+            style=filled; fillcolor=lightyellow;
+            s2_10 [label="mddem_neighbor::bin_neighbor_list", style=filled];
+        }
+        subgraph cluster_PreForce_s2 {
+            label="PreForce";
+            style=filled; fillcolor=lightyellow;
+            s2_11 [label="group::rebuild_groups", style=filled];
+            s2_12 [label="virial::zero_virial_stress", style=filled];
+        }
+        subgraph cluster_Force_s2 {
+            label="Force";
+            style=filled; fillcolor=lightyellow;
+            s2_13 [label="contact::hertz_mindlin_contact_force\n[hertz_mindlin_contact]", style=filled];
+            s2_14 [label="dem_gravity::apply_gravity", style=filled];
+            s2_15 [label="dem_wall::wall_contact_force\n[wall_contact]", style=filled];
+        }
+        subgraph cluster_PostForce_s2 {
+            label="PostForce";
+            style=filled; fillcolor=lightyellow;
+            s2_16 [label="comm::reverse_send_force", style=filled];
+            s2_17 [label="mddem_print::output_virial_to_thermo", style=filled];
+        }
+        subgraph cluster_FinalIntegration_s2 {
+            label="FinalIntegration";
+            style=filled; fillcolor=lightyellow;
+            s2_18 [label="mddem_verlet::final_integration", style=filled];
+            s2_19 [label="rotational::final_rotation", style=filled];
+        }
+        subgraph cluster_PostFinalIntegration_s2 {
+            label="PostFinalIntegration";
+            style=filled; fillcolor=lightyellow;
+            s2_20 [label="run::update_cycle", style=filled];
+            s2_21 [label="mddem_print::print_vtp", style=filled];
+            s2_22 [label="mddem_print::print_thermo", style=filled];
+            s2_23 [label="mddem_print::dump_atoms", style=filled];
+            s2_24 [label="mddem_print::write_restart", style=filled];
+            s2_25 [label="apply_state_transitions<dem_compression::Phase>", style=filled];
+            s2_26 [label="check_stage_advance<dem_compression::Phase>", style=filled];
+        }
     }
 
-    setup_0 -> setup_1 [color=blue, style=bold];
-    setup_4 -> setup_5 [color=blue, style=bold];
-    setup_1 -> setup_2 [color=blue, style=bold];
-    setup_2 -> setup_3 [color=blue, style=bold];
-    setup_3 -> setup_4 [color=blue, style=bold];
-    setup_5 -> setup_6 [color=blue, style=bold];
-    setup_6 -> setup_7 [color=blue, style=bold];
-    setup_7 -> setup_8 [color=blue, style=bold];
-    setup_8 -> setup_9 [color=blue, style=bold];
-    subgraph cluster_InitialIntegration {
-        label="InitialIntegration";
-        style=filled; fillcolor=lightyellow;
-        update_0 [label="mddem_verlet::initial_integration"];
-        update_1 [label="rotational::initial_rotation"];
+    s2setup_2 -> s2setup_3 [color=blue, style=bold];
+    s2setup_3 -> s2setup_4 [color=blue, style=bold];
+    s2setup_4 -> s2setup_5 [color=blue, style=bold];
+    s2setup_7 -> s2setup_8 [color=blue, style=bold];
+    s2setup_8 -> s2setup_9 [color=blue, style=bold];
+    s2setup_9 -> s2setup_11 [color=blue, style=bold];
+    s2setup_1 -> s2setup_2 [color=blue, style=bold];
+    s2setup_5 -> s2setup_7 [color=blue, style=bold];
+    s2setup_11 -> s2_0 [color=blue, style=bold, label="start run"];
+    s2_0 -> s2_1 [color=blue, style=bold];
+    s2_2 -> s2_3 [color=blue, style=bold];
+    s2_3 -> s2_4 [color=blue, style=bold];
+    s2_5 -> s2_6 [color=blue, style=bold];
+    s2_8 -> s2_9 [color=blue, style=bold];
+    s2_11 -> s2_12 [color=blue, style=bold];
+    s2_13 -> s2_14 [color=blue, style=bold];
+    s2_14 -> s2_15 [color=blue, style=bold];
+    s2_16 -> s2_17 [color=blue, style=bold];
+    s2_18 -> s2_19 [color=blue, style=bold];
+    s2_20 -> s2_21 [color=blue, style=bold];
+    s2_21 -> s2_22 [color=blue, style=bold];
+    s2_22 -> s2_23 [color=blue, style=bold];
+    s2_23 -> s2_24 [color=blue, style=bold];
+    s2_24 -> s2_25 [color=blue, style=bold];
+    s2_25 -> s2_26 [color=blue, style=bold];
+    s2_1 -> s2_2 [color=blue, style=bold];
+    s2_4 -> s2_5 [color=blue, style=bold];
+    s2_6 -> s2_7 [color=blue, style=bold];
+    s2_7 -> s2_8 [color=blue, style=bold];
+    s2_9 -> s2_10 [color=blue, style=bold];
+    s2_10 -> s2_11 [color=blue, style=bold];
+    s2_12 -> s2_13 [color=blue, style=bold];
+    s2_15 -> s2_16 [color=blue, style=bold];
+    s2_17 -> s2_18 [color=blue, style=bold];
+    s2_19 -> s2_20 [color=blue, style=bold];
+    s2_26 -> s2_0 [color=green, style=bold, label="run loop", constraint=false];
+    s0_27 -> s1setup_1 [color=darkgreen, style=bold, penwidth=3, label="next stage", constraint=false];
+    s1_28 -> s2setup_1 [color=darkgreen, style=bold, penwidth=3, label="next stage", constraint=false];
+    { rank=same; s0setup_0; s1setup_1; s2setup_1 }
+
+    subgraph cluster_legend {
+        label="Legend";
+        style=filled; fillcolor=white;
+        node [shape=plaintext, style="", fillcolor=white];
+        legend_1 [label="Blue bold = execution order"];
+        legend_2 [label="Red dashed = before/after constraint"];
+        legend_3 [label="Purple dotted = requires constraint"];
+        legend_4 [label="Green bold = run loop"];
+        legend_5 [label="Dashed border = conditional (run_if)"];
+        legend_1 -> legend_2 -> legend_3 -> legend_4 -> legend_5 [style=invis];
     }
 
-    subgraph cluster_PostInitialIntegration {
-        label="PostInitialIntegration";
-        style=filled; fillcolor=lightyellow;
-        update_2 [label="atom::remove_ghost_atoms"];
-        update_3 [label="atom::zero_all_forces"];
-    }
-
-    subgraph cluster_PreExchange {
-        label="PreExchange";
-        style=filled; fillcolor=lightyellow;
-        update_4 [label="domain::pbc"];
-        update_5 [label="mddem_print::print_granular_temperature"];
-    }
-
-    subgraph cluster_Exchange {
-        label="Exchange";
-        style=filled; fillcolor=lightyellow;
-        update_6 [label="comm::exchange"];
-    }
-
-    subgraph cluster_PreNeighbor {
-        label="PreNeighbor";
-        style=filled; fillcolor=lightyellow;
-        update_7 [label="comm::borders"];
-    }
-
-    subgraph cluster_Neighbor {
-        label="Neighbor";
-        style=filled; fillcolor=lightyellow;
-        update_8 [label="mddem_neighbor::sweep_and_prune_neighbor_list"];
-    }
-
-    subgraph cluster_Force {
-        label="Force";
-        style=filled; fillcolor=lightyellow;
-        update_9 [label="normal::hertz_normal_force\n[hertz_normal]"];
-        update_10 [label="tangential::mindlin_tangential_force\n[mindlin_tangential]"];
-    }
-
-    subgraph cluster_PostForce {
-        label="PostForce";
-        style=filled; fillcolor=lightyellow;
-        update_11 [label="comm::reverse_send_force"];
-    }
-
-    subgraph cluster_FinalIntegration {
-        label="FinalIntegration";
-        style=filled; fillcolor=lightyellow;
-        update_12 [label="mddem_verlet::final_integration"];
-        update_13 [label="rotational::final_rotation"];
-    }
-
-    subgraph cluster_PostFinalIntegration {
-        label="PostFinalIntegration";
-        style=filled; fillcolor=lightyellow;
-        update_14 [label="run::update_cycle"];
-        update_15 [label="mddem_print::print_vtp"];
-        update_16 [label="mddem_print::print_thermo"];
-        update_17 [label="mddem_print::dump_atoms"];
-        update_18 [label="mddem_print::write_restart"];
-    }
-
-    update_0 -> update_1 [color=blue, style=bold];
-    update_2 -> update_3 [color=blue, style=bold];
-    update_4 -> update_5 [color=blue, style=bold];
-    update_9 -> update_10 [color=blue, style=bold];
-    update_12 -> update_13 [color=blue, style=bold];
-    update_14 -> update_15 [color=blue, style=bold];
-    update_15 -> update_16 [color=blue, style=bold];
-    update_16 -> update_17 [color=blue, style=bold];
-    update_17 -> update_18 [color=blue, style=bold];
-    update_9 -> update_10 [color=red, style=dashed, label="after"];
-    update_1 -> update_2 [color=blue, style=bold];
-    update_3 -> update_4 [color=blue, style=bold];
-    update_5 -> update_6 [color=blue, style=bold];
-    update_6 -> update_7 [color=blue, style=bold];
-    update_7 -> update_8 [color=blue, style=bold];
-    update_8 -> update_9 [color=blue, style=bold];
-    update_10 -> update_11 [color=blue, style=bold];
-    update_11 -> update_12 [color=blue, style=bold];
-    update_13 -> update_14 [color=blue, style=bold];
-    update_18 -> update_0 [color=green, style=bold, label="run loop", constraint=false];
-    setup_9 -> update_0 [color=blue, style=bold, label="start run"];
 }

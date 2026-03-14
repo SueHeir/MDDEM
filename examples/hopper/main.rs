@@ -1,6 +1,6 @@
 use mddem::prelude::*;
 
-#[derive(Clone, PartialEq, Default, StageEnum)]
+#[derive(Clone, Debug, PartialEq, Default, StageEnum)]
 enum Phase {
     #[default]
     #[stage("filling")]

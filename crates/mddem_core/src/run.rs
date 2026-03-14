@@ -234,9 +234,21 @@ pub fn deep_merge(base: &mut toml::Table, overrides: &toml::Table) {
 
 /// Setup system: copies stage name from RunConfig into SchedulerManager, and
 /// applies stage config overrides by merging with global config.
+/// Config sections that are only read during the first stage.
+/// If a later `[[run]]` block overrides these, the override is silently ignored,
+/// so we warn the user.
+const FIRST_STAGE_ONLY_CONFIGS: &[(&str, &str)] = &[
+    ("lattice", "lattice insertion (fcc_insert)"),
+    ("lj", "LJ tail corrections (setup_lj_tails)"),
+    ("bond", "auto-bonding (auto_bond_touching)"),
+    ("comm", "communicator setup (comm_read_input)"),
+    ("restart", "restart file reading (read_restart)"),
+];
+
 pub fn set_stage_name(
     run_config: Res<RunConfig>,
     config: Res<Config>,
+    comm: Res<CommResource>,
     mut scheduler_manager: ResMut<SchedulerManager>,
     mut stage_overrides: ResMut<StageOverrides>,
 ) {
@@ -246,6 +258,20 @@ pub fn set_stage_name(
     }
     let stage = run_config.current_stage(index);
     scheduler_manager.stage_name = stage.name.clone();
+
+    // Warn if later stages override config sections that are only read in the first stage
+    if index > 0 && comm.rank() == 0 {
+        for &(section, description) in FIRST_STAGE_ONLY_CONFIGS {
+            if stage.overrides.contains_key(section) {
+                let stage_label = stage.name.as_deref().unwrap_or("unnamed");
+                eprintln!(
+                    "WARNING: Stage {} [{}] overrides [{}], but {} only runs in the first stage. \
+                     This override will be ignored.",
+                    index, stage_label, section, description
+                );
+            }
+        }
+    }
 
     // Build merged config: global defaults + stage overrides
     let mut merged = config.table.clone();

@@ -119,6 +119,10 @@ macro_rules! impl_condition {
                 )*
                 _missing
             }
+
+            fn name(&self) -> &str {
+                std::any::type_name::<F>()
+            }
         }
     }
 }
@@ -348,6 +352,9 @@ pub trait System {
     fn name(&self) -> &str {
         "unknown"
     }
+    fn condition_name(&self) -> Option<&str> {
+        None
+    }
 }
 // ANCHOR_END: System
 
@@ -451,6 +458,9 @@ pub trait Condition {
     fn prepare(&mut self, _index: &HashMap<TypeId, usize>) -> Vec<String> {
         Vec::new()
     }
+    fn name(&self) -> &str {
+        ""
+    }
 }
 
 pub struct FunctionCondition<Input, F> {
@@ -500,6 +510,10 @@ impl<S: System, C: Condition> System for ConditionalSystem<S, C> {
     }
     fn name(&self) -> &str {
         self.system.name()
+    }
+    fn condition_name(&self) -> Option<&str> {
+        let n = self.condition.name();
+        if n.is_empty() { None } else { Some(n) }
     }
 }
 
@@ -628,6 +642,7 @@ where
     fn into_stored(self) -> StoredSystemEntry {
         let sys = self.into_system();
         let name = sys.name().to_string();
+        let condition_name = sys.condition_name().map(|s| s.to_string());
         StoredSystemEntry {
             system: Box::new(sys),
             name,
@@ -635,6 +650,7 @@ where
             befores: vec![],
             afters: vec![],
             requires: vec![],
+            condition_name,
         }
     }
 }
@@ -645,6 +661,7 @@ impl<S: System + 'static, C: Condition + 'static> IntoScheduledSystem<CondMarker
 {
     fn into_stored(self) -> StoredSystemEntry {
         let name = self.name().to_string();
+        let condition_name = self.condition_name().map(|s| s.to_string());
         StoredSystemEntry {
             system: Box::new(self),
             name,
@@ -652,6 +669,7 @@ impl<S: System + 'static, C: Condition + 'static> IntoScheduledSystem<CondMarker
             befores: vec![],
             afters: vec![],
             requires: vec![],
+            condition_name,
         }
     }
 }
@@ -660,6 +678,7 @@ impl<S: System + 'static, C: Condition + 'static> IntoScheduledSystem<CondMarker
 impl<S: System + 'static> IntoScheduledSystem<DescMarker> for SystemDescriptor<S> {
     fn into_stored(self) -> StoredSystemEntry {
         let name = self.system.name().to_string();
+        let condition_name = self.system.condition_name().map(|s| s.to_string());
         StoredSystemEntry {
             system: Box::new(self.system),
             name,
@@ -667,6 +686,7 @@ impl<S: System + 'static> IntoScheduledSystem<DescMarker> for SystemDescriptor<S
             befores: self.befores,
             afters: self.afters,
             requires: self.requires,
+            condition_name,
         }
     }
 }
@@ -680,6 +700,7 @@ pub struct StoredSystemEntry {
     pub befores: Vec<String>,
     pub afters: Vec<String>,
     pub requires: Vec<String>,
+    pub condition_name: Option<String>,
 }
 
 // ─── Schedule sets ────────────────────────────────────────────────────────────
@@ -755,11 +776,44 @@ impl<S: Clone + PartialEq + 'static> NextState<S> {
     }
 }
 
-/// Run condition: returns true when the current state equals `target`.
-pub fn in_state<S: Clone + PartialEq + 'static>(
+/// Named condition struct for `in_state()`.
+pub struct InStateCondition<S: Clone + PartialEq + 'static> {
     target: S,
-) -> impl Fn(Res<CurrentState<S>>) -> bool {
-    move |current: Res<CurrentState<S>>| current.0 == target
+    cond_name: String,
+    index: usize,
+}
+
+pub struct InStateMarker;
+
+impl<S: Clone + PartialEq + 'static> Condition for InStateCondition<S> {
+    fn evaluate(&mut self, resources: &[RefCell<Box<dyn Any>>]) -> bool {
+        let borrow = resources[self.index].borrow();
+        let current = borrow.downcast_ref::<CurrentState<S>>().unwrap();
+        current.0 == self.target
+    }
+    fn prepare(&mut self, index: &HashMap<TypeId, usize>) -> Vec<String> {
+        let tid = TypeId::of::<CurrentState<S>>();
+        match index.get(&tid) {
+            Some(&idx) => { self.index = idx; vec![] }
+            None => vec![std::any::type_name::<CurrentState<S>>().to_string()]
+        }
+    }
+    fn name(&self) -> &str {
+        &self.cond_name
+    }
+}
+
+impl<S: Clone + PartialEq + 'static> IntoCondition<InStateMarker> for InStateCondition<S> {
+    type Condition = Self;
+    fn into_condition(self) -> Self { self }
+}
+
+/// Run condition: returns true when the current state equals `target`.
+pub fn in_state<S: Clone + PartialEq + std::fmt::Debug + 'static>(
+    target: S,
+) -> InStateCondition<S> {
+    let cond_name = format!("in_state({:?})", target);
+    InStateCondition { target, cond_name, index: usize::MAX }
 }
 
 /// System that applies pending state transitions at end of step.
@@ -785,15 +839,77 @@ pub trait StageName {
     fn num_stages() -> usize;
 }
 
+/// Named condition struct for `in_stage()`.
+pub struct InStageCondition {
+    stage: String,
+    cond_name: String,
+    index: usize,
+}
+
+pub struct InStageMarker;
+
+impl Condition for InStageCondition {
+    fn evaluate(&mut self, resources: &[RefCell<Box<dyn Any>>]) -> bool {
+        let borrow = resources[self.index].borrow();
+        let sm = borrow.downcast_ref::<SchedulerManager>().unwrap();
+        sm.stage_name.as_deref() == Some(self.stage.as_str())
+    }
+    fn prepare(&mut self, index: &HashMap<TypeId, usize>) -> Vec<String> {
+        let tid = TypeId::of::<SchedulerManager>();
+        match index.get(&tid) {
+            Some(&idx) => { self.index = idx; vec![] }
+            None => vec![std::any::type_name::<SchedulerManager>().to_string()]
+        }
+    }
+    fn name(&self) -> &str {
+        &self.cond_name
+    }
+}
+
+impl IntoCondition<InStageMarker> for InStageCondition {
+    type Condition = Self;
+    fn into_condition(self) -> Self { self }
+}
+
 /// Run condition: returns true when the current stage name matches.
-pub fn in_stage(name: &str) -> impl Fn(Res<SchedulerManager>) -> bool {
-    let name = name.to_string();
-    move |sm: Res<SchedulerManager>| sm.stage_name.as_deref() == Some(name.as_str())
+pub fn in_stage(name: &str) -> InStageCondition {
+    let cond_name = format!("in_stage({})", name);
+    InStageCondition { stage: name.to_string(), cond_name, index: usize::MAX }
+}
+
+/// Named condition struct for `first_stage_only()`.
+pub struct FirstStageOnlyCondition {
+    index: usize,
+}
+
+pub struct FirstStageOnlyMarker;
+
+impl Condition for FirstStageOnlyCondition {
+    fn evaluate(&mut self, resources: &[RefCell<Box<dyn Any>>]) -> bool {
+        let borrow = resources[self.index].borrow();
+        let sm = borrow.downcast_ref::<SchedulerManager>().unwrap();
+        sm.index == 0
+    }
+    fn prepare(&mut self, index: &HashMap<TypeId, usize>) -> Vec<String> {
+        let tid = TypeId::of::<SchedulerManager>();
+        match index.get(&tid) {
+            Some(&idx) => { self.index = idx; vec![] }
+            None => vec![std::any::type_name::<SchedulerManager>().to_string()]
+        }
+    }
+    fn name(&self) -> &str {
+        "first_stage_only()"
+    }
+}
+
+impl IntoCondition<FirstStageOnlyMarker> for FirstStageOnlyCondition {
+    type Condition = Self;
+    fn into_condition(self) -> Self { self }
 }
 
 /// Run condition: returns true only during the first stage (index == 0).
-pub fn first_stage_only() -> impl Fn(Res<SchedulerManager>) -> bool {
-    move |sm: Res<SchedulerManager>| sm.index == 0
+pub fn first_stage_only() -> FirstStageOnlyCondition {
+    FirstStageOnlyCondition { index: usize::MAX }
 }
 
 /// System that detects state transitions and requests stage advancement.
@@ -888,6 +1004,7 @@ pub struct Scheduler {
     timing_steps: usize,
     trace: bool,
     suppress_warnings: bool,
+    stage_names: Vec<String>,
 }
 // ANCHOR_END: Scheduler
 
@@ -905,6 +1022,7 @@ impl Default for Scheduler {
             timing_steps: 0,
             trace: std::env::var("MDDEM_TRACE").is_ok(),
             suppress_warnings: std::env::var("MDDEM_SUPPRESS_WARNINGS").is_ok(),
+            stage_names: Vec::new(),
         }
     }
 }
@@ -1193,6 +1311,10 @@ impl Scheduler {
         self.print_schedule = true;
     }
 
+    pub fn set_stage_names(&mut self, names: &[&str]) {
+        self.stage_names = names.iter().map(|s| s.to_string()).collect();
+    }
+
     fn short_name(full: &str) -> String {
         let parts: Vec<&str> = full.rsplitn(3, "::").collect();
         match parts.len() {
@@ -1200,6 +1322,33 @@ impl Scheduler {
             1 => parts[0].to_string(),
             _ => format!("{}::{}", parts[1], parts[0]),
         }
+    }
+
+    fn condition_short_name(full: &str) -> String {
+        // in_state closure: "mddem_scheduler::in_state::{{closure}}" → "in_state(..)"
+        if full.contains("in_state") && full.contains("{{closure}}") {
+            return "in_state(..)".to_string();
+        }
+        // first_stage_only closure: "mddem_scheduler::first_stage_only::{{closure}}" → "first_stage_only()"
+        if full.contains("first_stage_only") && full.contains("{{closure}}") {
+            return "first_stage_only()".to_string();
+        }
+        // in_stage closure
+        if full.contains("in_stage") && full.contains("{{closure}}") {
+            return "in_stage(..)".to_string();
+        }
+        // Generic closure fallback
+        if full.contains("{{closure}}") {
+            // Try to extract the function name before ::{{closure}}
+            if let Some(pos) = full.rfind("::{{closure}}") {
+                let prefix = &full[..pos];
+                if let Some(last_sep) = prefix.rfind("::") {
+                    return format!("{}(..)", &prefix[last_sep + 2..]);
+                }
+                return format!("{}(..)", prefix);
+            }
+        }
+        Self::short_name(full)
     }
 
     pub fn print_schedule(&self) {
@@ -1222,6 +1371,9 @@ impl Scheduler {
             }
             if !entry.befores.is_empty() {
                 print!("  before: {}", entry.befores.join(", "));
+            }
+            if let Some(cond) = &entry.condition_name {
+                print!("  run_if: {}", Self::condition_short_name(cond));
             }
             println!();
         }
@@ -1246,22 +1398,115 @@ impl Scheduler {
             if !entry.befores.is_empty() {
                 print!("  before: {}", entry.befores.join(", "));
             }
+            if let Some(cond) = &entry.condition_name {
+                print!("  run_if: {}", Self::condition_short_name(cond));
+            }
             println!();
         }
         println!();
+    }
+
+    /// Returns the stage index a condition belongs to, or `None` (= show in all stages).
+    fn condition_stage_index(&self, cond_name: &str) -> Option<usize> {
+        Self::condition_stage_index_static(cond_name, &self.stage_names)
+    }
+
+    fn condition_stage_index_static(cond_name: &str, stage_names: &[String]) -> Option<usize> {
+        if stage_names.is_empty() {
+            return None;
+        }
+        // "in_state(Insert)" → match variant name to stage name (case-insensitive)
+        if let Some(variant) = cond_name.strip_prefix("in_state(").and_then(|s| s.strip_suffix(')')) {
+            let variant_lower = variant.to_lowercase();
+            return stage_names.iter().position(|s| s.to_lowercase() == variant_lower);
+        }
+        // "in_stage(relax)" → exact match
+        if let Some(name) = cond_name.strip_prefix("in_stage(").and_then(|s| s.strip_suffix(')')) {
+            return stage_names.iter().position(|s| s == name);
+        }
+        // "first_stage_only()" → first stage
+        if cond_name == "first_stage_only()" {
+            return Some(0);
+        }
+        None
+    }
+
+    /// Returns true if an update system should appear in the given stage.
+    fn system_visible_in_stage(&self, entry: &StoredSystemEntry, stage_idx: usize) -> bool {
+        match &entry.condition_name {
+            None => true, // unconditional → visible in all stages
+            Some(cond) => {
+                match self.condition_stage_index(cond) {
+                    Some(idx) => idx == stage_idx, // stage-specific → only in matching stage
+                    None => true, // unknown condition → show in all stages
+                }
+            }
+        }
+    }
+
+    /// Returns true if a setup system should appear in the given stage.
+    /// Setup runs every stage, so unconditional setup systems are visible in all stages.
+    fn setup_visible_in_stage(&self, entry: &StoredSystemEntry, stage_idx: usize) -> bool {
+        self.system_visible_in_stage(entry, stage_idx)
     }
 
     pub fn write_dot(&self, path: &str) {
         use std::io::Write;
         let mut out = String::new();
         out.push_str("digraph schedule {\n");
-        out.push_str("    rankdir=TB;\n");
         out.push_str("    node [shape=box, style=filled, fillcolor=lightyellow];\n\n");
 
         // Helper to make valid DOT node IDs
         let node_id = |prefix: &str, idx: usize| -> String { format!("{}_{}", prefix, idx) };
 
-        // Setup systems
+        // Capture stage_names for use in closures
+        let stage_names = &self.stage_names;
+
+        // Check if a condition matches a specific stage index
+        let cond_matches_stage = |cond: &str, si: usize| -> bool {
+            Self::condition_stage_index_static(cond, stage_names) == Some(si)
+        };
+
+        // Helper to build a node label with optional condition annotation.
+        // When `current_stage` is Some, conditions that match that stage are suppressed
+        // (e.g. first_stage_only() in stage 0 is redundant).
+        let make_label = |entry: &StoredSystemEntry, current_stage: Option<usize>| -> String {
+            let short = Self::short_name(&entry.name);
+            let mut label = if let Some(lbl) = &entry.label {
+                format!("{}\\n[{}]", short, lbl)
+            } else {
+                short.to_string()
+            };
+            if let Some(cond) = &entry.condition_name {
+                let show_cond = match current_stage {
+                    Some(si) => !cond_matches_stage(cond, si),
+                    None => true,
+                };
+                if show_cond {
+                    label.push_str(&format!("\\nrun_if: {}", Self::condition_short_name(cond)));
+                }
+            }
+            label
+        };
+
+        // Helper to build node style (dashed border for conditional systems).
+        // Suppresses dashed border when the condition matches the current stage.
+        let node_style = |entry: &StoredSystemEntry, current_stage: Option<usize>| -> String {
+            let is_conditional = match &entry.condition_name {
+                Some(cond) => match current_stage {
+                    Some(si) => !cond_matches_stage(cond, si),
+                    None => true,
+                },
+                None => false,
+            };
+            if is_conditional {
+                "style=\"filled,dashed\"".to_string()
+            } else {
+                "style=filled".to_string()
+            }
+        };
+
+        // Build setup groups once
         let mut setup_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
         for (i, (entry, set)) in self.setup_systems.iter().enumerate() {
             let set_name = format!("{:?}", set);
@@ -1274,50 +1519,69 @@ impl Scheduler {
             setup_groups.push((set_name, vec![(i, entry)]));
         }
 
-        for (set_name, entries) in &setup_groups {
+        if self.stage_names.is_empty() {
+            // No stages — single-loop layout with TB
+            out.insert_str("digraph schedule {\n".len(), "    rankdir=TB;\n");
+            self.write_dot_flat(&mut out, &node_id, &make_label, &node_style, &setup_groups);
+        } else {
+            // Per-stage layout: stages left-to-right, pipelines top-to-bottom
+            out.insert_str("digraph schedule {\n".len(), "    rankdir=TB;\n    newrank=true;\n");
+            self.write_dot_per_stage(&mut out, &node_id, &make_label, &node_style, &setup_groups);
+        }
+
+        // Legend
+        out.push_str("    subgraph cluster_legend {\n");
+        out.push_str("        label=\"Legend\";\n");
+        out.push_str("        style=filled; fillcolor=white;\n");
+        out.push_str("        node [shape=plaintext, style=\"\", fillcolor=white];\n");
+        out.push_str("        legend_1 [label=\"Blue bold = execution order\"];\n");
+        out.push_str("        legend_2 [label=\"Red dashed = before/after constraint\"];\n");
+        out.push_str("        legend_3 [label=\"Purple dotted = requires constraint\"];\n");
+        out.push_str("        legend_4 [label=\"Green bold = run loop\"];\n");
+        out.push_str("        legend_5 [label=\"Dashed border = conditional (run_if)\"];\n");
+        out.push_str("        legend_1 -> legend_2 -> legend_3 -> legend_4 -> legend_5 [style=invis];\n");
+        out.push_str("    }\n\n");
+
+        out.push_str("}\n");
+
+        let mut file = std::fs::File::create(path).expect("Failed to create DOT file");
+        file.write_all(out.as_bytes())
+            .expect("Failed to write DOT file");
+        println!("Schedule DOT file written to: {}", path);
+    }
+
+    /// Flat single-loop DOT layout (no stages). Setup shown once, then one run loop.
+    fn write_dot_flat(
+        &self,
+        out: &mut String,
+        node_id: &dyn Fn(&str, usize) -> String,
+        make_label: &dyn Fn(&StoredSystemEntry, Option<usize>) -> String,
+        node_style: &dyn Fn(&StoredSystemEntry, Option<usize>) -> String,
+        setup_groups: &[(String, Vec<(usize, &StoredSystemEntry)>)],
+    ) {
+        // Setup systems
+        for (set_name, entries) in setup_groups {
             out.push_str(&format!("    subgraph cluster_setup_{} {{\n", set_name));
             out.push_str(&format!("        label=\"Setup: {}\";\n", set_name));
             out.push_str("        style=filled; fillcolor=lightblue;\n");
             for &(i, entry) in entries {
-                let short = Self::short_name(&entry.name);
-                let label = if let Some(lbl) = &entry.label {
-                    format!("{}\\n[{}]", short, lbl)
-                } else {
-                    short.to_string()
-                };
                 out.push_str(&format!(
-                    "        {} [label=\"{}\"];\n",
-                    node_id("setup", i),
-                    label
+                    "        {} [label=\"{}\", {}];\n",
+                    node_id("setup", i), make_label(entry, None), node_style(entry, None)
                 ));
             }
             out.push_str("    }\n\n");
         }
-
-        // Edges between consecutive setup clusters (vertical layout)
-        let setup_cluster_tails: Vec<String> = setup_groups
-            .iter()
-            .map(|(_, entries)| node_id("setup", entries.last().unwrap().0))
-            .collect();
-        let setup_cluster_heads: Vec<String> = setup_groups
-            .iter()
-            .map(|(_, entries)| node_id("setup", entries.first().unwrap().0))
-            .collect();
-        for i in 0..setup_cluster_tails.len().saturating_sub(1) {
-            out.push_str(&format!(
-                "    {} -> {} [color=blue, style=bold];\n",
-                setup_cluster_tails[i],
-                setup_cluster_heads[i + 1]
-            ));
+        for i in 0..setup_groups.len().saturating_sub(1) {
+            let tail = node_id("setup", setup_groups[i].1.last().unwrap().0);
+            let head = node_id("setup", setup_groups[i + 1].1.first().unwrap().0);
+            out.push_str(&format!("    {} -> {} [color=blue, style=bold];\n", tail, head));
         }
-
-        // Edges between systems within each setup cluster (vertical ordering)
-        for (_set_name, entries) in &setup_groups {
+        for (_set_name, entries) in setup_groups {
             for w in entries.windows(2) {
                 out.push_str(&format!(
                     "    {} -> {} [color=blue, style=bold];\n",
-                    node_id("setup", w[0].0),
-                    node_id("setup", w[1].0)
+                    node_id("setup", w[0].0), node_id("setup", w[1].0)
                 ));
             }
         }
@@ -1340,102 +1604,311 @@ impl Scheduler {
             out.push_str(&format!("        label=\"{}\";\n", set_name));
             out.push_str("        style=filled; fillcolor=lightyellow;\n");
             for &(i, entry) in entries {
-                let short = Self::short_name(&entry.name);
-                let label = if let Some(lbl) = &entry.label {
-                    format!("{}\\n[{}]", short, lbl)
-                } else {
-                    short.to_string()
-                };
                 out.push_str(&format!(
-                    "        {} [label=\"{}\"];\n",
-                    node_id("update", i),
-                    label
+                    "        {} [label=\"{}\", {}];\n",
+                    node_id("update", i), make_label(entry, None), node_style(entry, None)
                 ));
             }
             out.push_str("    }\n\n");
         }
 
-        // Edges between systems within each update cluster (vertical ordering)
         for (_set_name, entries) in &update_groups {
             for w in entries.windows(2) {
                 out.push_str(&format!(
                     "    {} -> {} [color=blue, style=bold];\n",
-                    node_id("update", w[0].0),
-                    node_id("update", w[1].0)
+                    node_id("update", w[0].0), node_id("update", w[1].0)
                 ));
             }
         }
 
-        // Before/after constraint edges (red dashed)
-        let mut label_to_update_node: HashMap<String, String> = HashMap::new();
+        // Before/after constraint edges
+        let mut label_to_node: HashMap<String, String> = HashMap::new();
         for (i, (entry, _)) in self.update_systems.iter().enumerate() {
             if let Some(lbl) = &entry.label {
-                label_to_update_node.insert(lbl.clone(), node_id("update", i));
+                label_to_node.insert(lbl.clone(), node_id("update", i));
             }
         }
-
         for (i, (entry, _)) in self.update_systems.iter().enumerate() {
             let from = node_id("update", i);
             for b in &entry.befores {
-                if let Some(target) = label_to_update_node.get(b) {
+                if let Some(target) = label_to_node.get(b) {
                     out.push_str(&format!(
-                        "    {} -> {} [color=red, style=dashed, label=\"before\"];\n",
-                        from, target
+                        "    {} -> {} [color=red, style=dashed, label=\"before\"];\n", from, target
                     ));
                 }
             }
             for a in &entry.afters {
-                if let Some(source) = label_to_update_node.get(a) {
+                if let Some(source) = label_to_node.get(a) {
                     out.push_str(&format!(
-                        "    {} -> {} [color=red, style=dashed, label=\"after\"];\n",
-                        source, from
+                        "    {} -> {} [color=red, style=dashed, label=\"after\"];\n", source, from
+                    ));
+                }
+            }
+        }
+        for (i, (entry, _)) in self.update_systems.iter().enumerate() {
+            let from = node_id("update", i);
+            for req in &entry.requires {
+                if let Some(target) = label_to_node.get(req) {
+                    out.push_str(&format!(
+                        "    {} -> {} [color=purple, style=dotted, label=\"requires\", constraint=false];\n",
+                        from, target
                     ));
                 }
             }
         }
 
-        // Blue edges between consecutive ScheduleSet clusters
-        let cluster_tails: Vec<String> = update_groups
-            .iter()
-            .map(|(_, entries)| node_id("update", entries.last().unwrap().0))
-            .collect();
-        let cluster_heads: Vec<String> = update_groups
-            .iter()
-            .map(|(_, entries)| node_id("update", entries.first().unwrap().0))
-            .collect();
-        for i in 0..cluster_tails.len().saturating_sub(1) {
+        // Cluster-to-cluster edges
+        let tails: Vec<String> = update_groups.iter()
+            .map(|(_, e)| node_id("update", e.last().unwrap().0)).collect();
+        let heads: Vec<String> = update_groups.iter()
+            .map(|(_, e)| node_id("update", e.first().unwrap().0)).collect();
+        for i in 0..tails.len().saturating_sub(1) {
             out.push_str(&format!(
-                "    {} -> {} [color=blue, style=bold];\n",
-                cluster_tails[i],
-                cluster_heads[i + 1]
+                "    {} -> {} [color=blue, style=bold];\n", tails[i], heads[i + 1]
             ));
         }
-
-        // Loop-back edge from last update cluster to first (run loop)
-        if cluster_tails.len() >= 2 {
+        if tails.len() >= 2 {
             out.push_str(&format!(
                 "    {} -> {} [color=green, style=bold, label=\"run loop\", constraint=false];\n",
-                cluster_tails.last().unwrap(),
-                cluster_heads.first().unwrap()
+                tails.last().unwrap(), heads.first().unwrap()
             ));
         }
-
-        // Setup -> first update cluster edge
-        if !setup_groups.is_empty() && !cluster_heads.is_empty() {
-            let last_setup_group = setup_groups.last().unwrap();
-            let last_setup_node = node_id("setup", last_setup_group.1.last().unwrap().0);
+        if !setup_groups.is_empty() && !heads.is_empty() {
+            let last_setup = setup_groups.last().unwrap();
+            let last_setup_node = node_id("setup", last_setup.1.last().unwrap().0);
             out.push_str(&format!(
                 "    {} -> {} [color=blue, style=bold, label=\"start run\"];\n",
-                last_setup_node, cluster_heads[0]
+                last_setup_node, heads[0]
             ));
         }
+    }
 
-        out.push_str("}\n");
+    /// Per-stage DOT layout: stages left-to-right, each with Setup → Run pipeline top-to-bottom.
+    fn write_dot_per_stage(
+        &self,
+        out: &mut String,
+        node_id: &dyn Fn(&str, usize) -> String,
+        make_label: &dyn Fn(&StoredSystemEntry, Option<usize>) -> String,
+        node_style: &dyn Fn(&StoredSystemEntry, Option<usize>) -> String,
+        _setup_groups: &[(String, Vec<(usize, &StoredSystemEntry)>)],
+    ) {
+        let stage_colors = ["#E8F5E9", "#E3F2FD", "#FFF3E0", "#F3E5F5", "#FFFDE7", "#FCE4EC"];
 
-        let mut file = std::fs::File::create(path).expect("Failed to create DOT file");
-        file.write_all(out.as_bytes())
-            .expect("Failed to write DOT file");
-        println!("Schedule DOT file written to: {}", path);
+        // Collect first-node IDs from each stage for rank=same alignment
+        let mut stage_first_nodes: Vec<String> = Vec::new();
+
+        for (si, stage_name) in self.stage_names.iter().enumerate() {
+            let prefix = format!("s{}", si);
+            let fill = stage_colors[si % stage_colors.len()];
+
+            out.push_str(&format!("    subgraph cluster_stage_{} {{\n", si));
+            out.push_str(&format!("        label=\"Stage: {}\";\n", stage_name));
+            out.push_str(&format!("        style=filled; fillcolor=\"{}\";\n", fill));
+            out.push_str("        color=darkgreen; penwidth=2;\n");
+
+            // ── Setup systems within this stage ──────────────────────────
+            let mut stage_setup_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
+            for (i, (entry, set)) in self.setup_systems.iter().enumerate() {
+                if !self.setup_visible_in_stage(entry, si) {
+                    continue;
+                }
+                let set_name = format!("{:?}", set);
+                if let Some(last) = stage_setup_groups.last_mut() {
+                    if last.0 == set_name {
+                        last.1.push((i, entry));
+                        continue;
+                    }
+                }
+                stage_setup_groups.push((set_name, vec![(i, entry)]));
+            }
+
+            for (set_name, entries) in &stage_setup_groups {
+                let setup_prefix = format!("{}setup", prefix);
+                out.push_str(&format!("        subgraph cluster_{}_setup_{} {{\n", set_name, si));
+                out.push_str(&format!("            label=\"Setup: {}\";\n", set_name));
+                out.push_str("            style=filled; fillcolor=lightblue;\n");
+                for &(i, entry) in entries {
+                    out.push_str(&format!(
+                        "            {} [label=\"{}\", {}];\n",
+                        node_id(&setup_prefix, i), make_label(entry, Some(si)), node_style(entry, Some(si))
+                    ));
+                }
+                out.push_str("        }\n");
+            }
+
+            // ── Update systems within this stage ─────────────────────────
+            let mut stage_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
+            for (i, (entry, set)) in self.update_systems.iter().enumerate() {
+                if !self.system_visible_in_stage(entry, si) {
+                    continue;
+                }
+                let set_name = format!("{:?}", set);
+                if let Some(last) = stage_groups.last_mut() {
+                    if last.0 == set_name {
+                        last.1.push((i, entry));
+                        continue;
+                    }
+                }
+                stage_groups.push((set_name, vec![(i, entry)]));
+            }
+
+            for (set_name, entries) in &stage_groups {
+                out.push_str(&format!("        subgraph cluster_{}_s{} {{\n", set_name, si));
+                out.push_str(&format!("            label=\"{}\";\n", set_name));
+                out.push_str("            style=filled; fillcolor=lightyellow;\n");
+                for &(i, entry) in entries {
+                    out.push_str(&format!(
+                        "            {} [label=\"{}\", {}];\n",
+                        node_id(&prefix, i), make_label(entry, Some(si)), node_style(entry, Some(si))
+                    ));
+                }
+                out.push_str("        }\n");
+            }
+
+            out.push_str("    }\n\n");
+
+            // Track first node for rank=same alignment
+            let setup_prefix = format!("{}setup", prefix);
+            let first_node_id = if let Some(first_sg) = stage_setup_groups.first() {
+                node_id(&setup_prefix, first_sg.1.first().unwrap().0)
+            } else if let Some(first_ug) = stage_groups.first() {
+                node_id(&prefix, first_ug.1.first().unwrap().0)
+            } else {
+                continue; // empty stage
+            };
+            stage_first_nodes.push(first_node_id.clone());
+
+            // ── Intra-stage edges ────────────────────────────────────────
+
+            // Setup intra-group edges
+            for (_set_name, entries) in &stage_setup_groups {
+                for w in entries.windows(2) {
+                    out.push_str(&format!(
+                        "    {} -> {} [color=blue, style=bold];\n",
+                        node_id(&setup_prefix, w[0].0), node_id(&setup_prefix, w[1].0)
+                    ));
+                }
+            }
+            // Setup inter-group edges
+            for g in 0..stage_setup_groups.len().saturating_sub(1) {
+                let tail = node_id(&setup_prefix, stage_setup_groups[g].1.last().unwrap().0);
+                let head = node_id(&setup_prefix, stage_setup_groups[g + 1].1.first().unwrap().0);
+                out.push_str(&format!("    {} -> {} [color=blue, style=bold];\n", tail, head));
+            }
+
+            // Setup → Run transition within this stage
+            if let (Some(last_sg), Some(first_ug)) = (stage_setup_groups.last(), stage_groups.first()) {
+                let tail = node_id(&setup_prefix, last_sg.1.last().unwrap().0);
+                let head = node_id(&prefix, first_ug.1.first().unwrap().0);
+                out.push_str(&format!(
+                    "    {} -> {} [color=blue, style=bold, label=\"start run\"];\n", tail, head
+                ));
+            }
+
+            // Update intra-group edges
+            for (_set_name, entries) in &stage_groups {
+                for w in entries.windows(2) {
+                    out.push_str(&format!(
+                        "    {} -> {} [color=blue, style=bold];\n",
+                        node_id(&prefix, w[0].0), node_id(&prefix, w[1].0)
+                    ));
+                }
+            }
+            // Update inter-group edges
+            for g in 0..stage_groups.len().saturating_sub(1) {
+                let tail = node_id(&prefix, stage_groups[g].1.last().unwrap().0);
+                let head = node_id(&prefix, stage_groups[g + 1].1.first().unwrap().0);
+                out.push_str(&format!("    {} -> {} [color=blue, style=bold];\n", tail, head));
+            }
+
+            // Before/after constraint edges
+            let mut label_to_node: HashMap<String, String> = HashMap::new();
+            for (i, (entry, _)) in self.update_systems.iter().enumerate() {
+                if !self.system_visible_in_stage(entry, si) { continue; }
+                if let Some(lbl) = &entry.label {
+                    label_to_node.insert(lbl.clone(), node_id(&prefix, i));
+                }
+            }
+            for (i, (entry, _)) in self.update_systems.iter().enumerate() {
+                if !self.system_visible_in_stage(entry, si) { continue; }
+                let from = node_id(&prefix, i);
+                for b in &entry.befores {
+                    if let Some(target) = label_to_node.get(b) {
+                        out.push_str(&format!(
+                            "    {} -> {} [color=red, style=dashed, label=\"before\"];\n", from, target
+                        ));
+                    }
+                }
+                for a in &entry.afters {
+                    if let Some(source) = label_to_node.get(a) {
+                        out.push_str(&format!(
+                            "    {} -> {} [color=red, style=dashed, label=\"after\"];\n", source, from
+                        ));
+                    }
+                }
+            }
+            for (i, (entry, _)) in self.update_systems.iter().enumerate() {
+                if !self.system_visible_in_stage(entry, si) { continue; }
+                let from = node_id(&prefix, i);
+                for req in &entry.requires {
+                    if let Some(target) = label_to_node.get(req) {
+                        out.push_str(&format!(
+                            "    {} -> {} [color=purple, style=dotted, label=\"requires\", constraint=false];\n",
+                            from, target
+                        ));
+                    }
+                }
+            }
+
+            // Run loop: last update → first update
+            if let (Some(first_ug), Some(last_ug)) = (stage_groups.first(), stage_groups.last()) {
+                let first_run = node_id(&prefix, first_ug.1.first().unwrap().0);
+                let last_run = node_id(&prefix, last_ug.1.last().unwrap().0);
+
+                if stage_groups.len() >= 2 || first_ug.1.len() >= 2 {
+                    out.push_str(&format!(
+                        "    {} -> {} [color=green, style=bold, label=\"run loop\", constraint=false];\n",
+                        last_run, first_run
+                    ));
+                }
+            }
+        }
+
+        // Inter-stage "next stage" edges (constraint=false so they go sideways)
+        // We connect from the last run node of stage N to the first setup node of stage N+1.
+        for si in 0..self.stage_names.len().saturating_sub(1) {
+            let this_prefix = format!("s{}", si);
+            let next_prefix = format!("s{}", si + 1);
+            let next_setup_prefix = format!("{}setup", next_prefix);
+
+            // Find last update node of current stage
+            let last_node = self.update_systems.iter().enumerate().rev()
+                .find(|(_, (entry, _))| self.system_visible_in_stage(entry, si))
+                .map(|(i, _)| node_id(&this_prefix, i));
+
+            // Find first node of next stage (setup first, then update)
+            let first_node = self.setup_systems.iter().enumerate()
+                .find(|(_, (entry, _))| self.setup_visible_in_stage(entry, si + 1))
+                .map(|(i, _)| node_id(&next_setup_prefix, i))
+                .or_else(|| self.update_systems.iter().enumerate()
+                    .find(|(_, (entry, _))| self.system_visible_in_stage(entry, si + 1))
+                    .map(|(i, _)| node_id(&next_prefix, i)));
+
+            if let (Some(from), Some(to)) = (last_node, first_node) {
+                out.push_str(&format!(
+                    "    {} -> {} [color=darkgreen, style=bold, penwidth=3, label=\"next stage\", constraint=false];\n",
+                    from, to
+                ));
+            }
+        }
+
+        // Force stages side-by-side using rank=same on first nodes
+        if stage_first_nodes.len() >= 2 {
+            out.push_str(&format!(
+                "    {{ rank=same; {} }}\n\n",
+                stage_first_nodes.join("; ")
+            ));
+        }
     }
 }
 // ANCHOR_END: SchedulerImpl

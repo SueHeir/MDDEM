@@ -117,7 +117,9 @@ app.start();
 
 ### Combining with `StageEnum` and `StageAdvancePlugin`
 
-When using named `[[run]]` stages, derive `StageEnum` on the state enum and add `StageAdvancePlugin`. This automatically advances the `[[run]]` stage whenever a state transition occurs:
+`StatesPlugin` on its own knows nothing about `[[run]]` stages — it only manages `CurrentState<S>` / `NextState<S>` and provides `in_state()` run conditions. You can use it standalone for runtime logic (enabling/disabling systems based on state) without named `[[run]]` stages.
+
+`StageAdvancePlugin` is the bridge between the state machine and the `[[run]]` stage system. It watches `CurrentState<S>` for changes and triggers early `[[run]]` stage advancement when a state transition occurs. You need both plugins together when you want state transitions to also advance stages:
 
 ```rust
 #[derive(Clone, PartialEq, Default, StageEnum)]
@@ -129,6 +131,8 @@ enum Phase {
     Flowing,
 }
 
+// StatesPlugin: state machine (CurrentState, NextState, in_state())
+// StageAdvancePlugin: bridges state transitions to [[run]] stage advancement
 app.add_plugins(StatesPlugin { initial: Phase::Filling })
     .add_plugins(StageAdvancePlugin::<Phase>::new());
 ```
@@ -147,7 +151,7 @@ fn maybe_transition(run_state: Res<RunState>, mut next: ResMut<NextState<Phase>>
 
 ## Multi-Stage Simulations
 
-MDDEM supports multi-stage runs via `[[run]]` TOML arrays. Each stage runs sequentially with its own step count, thermo interval, and optional output interval overrides:
+MDDEM supports multi-stage runs via `[[run]]` TOML arrays. Each stage runs sequentially with its own step count, thermo interval, and optional config overrides. Any config section can be overridden per-stage using dotted-key syntax:
 
 ```toml
 [[run]]
@@ -161,7 +165,15 @@ steps = 100000
 thermo = 1000
 dump_interval = 500
 vtp_interval = 1000
+
+[[run]]
+name = "compress"
+steps = 500000
+thermo = 1000
+gravity.gz = -981.0        # override [gravity] gz for this stage only
 ```
+
+Per-stage overrides (like `gravity.gz` above) are applied on top of the base config when the stage begins. Setup systems re-run at each stage boundary, so they pick up the updated values automatically.
 
 The scheduler executes stages sequentially, running `Setup -> Run -> Setup -> Run -> ... -> End`. Each stage transition increments `SchedulerManager.index`, and setup systems re-run to pick up the new stage's configuration. Systems that should only run once (e.g., lattice initialization) can use the `first_stage_only()` run condition:
 

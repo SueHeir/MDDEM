@@ -341,8 +341,8 @@ processors_z = 1"#,
             maxneed: [0, 0, 0],
         });
 
-        app.add_setup_system(comm_read_input, ScheduleSetupSet::PreSetup)
-            .add_setup_system(comm_setup, ScheduleSetupSet::PostSetup)
+        app.add_setup_system(comm_read_input.run_if(first_stage_only()), ScheduleSetupSet::PreSetup)
+            .add_setup_system(comm_setup.run_if(first_stage_only()), ScheduleSetupSet::PostSetup)
             .add_update_system(borders, ScheduleSet::PreNeighbor)
             .add_update_system(reverse_send_force, ScheduleSet::PostForce);
 

@@ -150,8 +150,9 @@ impl<S: StageName + Clone + PartialEq + Default + Send + Sync + 'static> Plugin
     for StageAdvancePlugin<S>
 {
     fn build(&self, app: &mut App) {
-        // Store stage names for validation
+        // Store stage names for validation and DOT export
         app.add_resource(StageNames(S::stage_names()));
+        app.set_stage_names(S::stage_names());
         app.add_update_system(
             check_stage_advance::<S>,
             ScheduleSet::PostFinalIntegration,

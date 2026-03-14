@@ -260,7 +260,7 @@ interval = 0"#,
 
         app.add_resource(Thermo::new())
             .add_setup_system(setup_thermo, ScheduleSetupSet::PostSetup)
-            .add_setup_system(read_restart, ScheduleSetupSet::PostSetup)
+            .add_setup_system(read_restart.run_if(first_stage_only()), ScheduleSetupSet::PostSetup)
             .add_update_system(output_virial_to_thermo, ScheduleSet::PostForce)
             .add_update_system(print_vtp, ScheduleSet::PostFinalIntegration)
             .add_update_system(print_thermo, ScheduleSet::PostFinalIntegration)

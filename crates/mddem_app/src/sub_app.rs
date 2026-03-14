@@ -88,6 +88,10 @@ impl SubApp {
     pub fn enable_schedule_print(&mut self) {
         self.scheduler.enable_schedule_print();
     }
+
+    pub fn set_stage_names(&mut self, names: &[&str]) {
+        self.scheduler.set_stage_names(names);
+    }
 }
 
 /// The collection of sub-apps that belong to an [`App`].
