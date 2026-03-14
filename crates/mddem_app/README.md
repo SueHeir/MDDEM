@@ -133,7 +133,7 @@ app.add_plugins(StatesPlugin { initial: Phase::Filling })
     .add_plugins(StageAdvancePlugin::<Phase>::new());
 ```
 
-When `next_state.set(Phase::Flowing)` is called, `StageAdvancePlugin` detects the transition and advances the scheduler from the `"filling"` run stage to `"flowing"`. Each `[[run]]` stage can have its own step count, thermo interval, and config overrides.
+Stage advancement happens in two ways: a `[[run]]` stage can complete its full step count (the scheduler advances automatically), or a state transition via `next_state.set()` can trigger early advancement through `StageAdvancePlugin`. Each `[[run]]` stage can have its own step count, thermo interval, and config overrides.
 
 Transition states by writing to `ResMut<NextState<S>>`:
 
