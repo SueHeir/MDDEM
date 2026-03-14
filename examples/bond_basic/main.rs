@@ -18,7 +18,10 @@ fn main() {
         .add_plugins(GranularDefaultPlugins)
         .add_plugins(DemBondPlugin)
         .add_plugins(FixesPlugin);
-    app.add_setup_system(setup_chain, ScheduleSetupSet::Setup);
+    app.add_setup_system(
+        setup_chain.run_if(first_stage_only()),
+        ScheduleSetupSet::Setup,
+    );
     app.start();
 }
 
@@ -27,12 +30,7 @@ fn setup_chain(
     mut atom: ResMut<Atom>,
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
-    scheduler_manager: Res<SchedulerManager>,
 ) {
-    if scheduler_manager.index != 0 {
-        return;
-    }
-
     let n_particles: usize = 10;
     let radius: f64 = 0.001;
     let density: f64 = 2500.0;

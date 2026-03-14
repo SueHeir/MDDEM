@@ -98,6 +98,7 @@ pub mod prelude {
     pub use md_thermostat::{LangevinConfig, LangevinPlugin, LangevinState, NoseHooverPlugin, NoseHooverState, ThermostatConfig};
     pub use mddem_fixes::{AddForceDef, FixesPlugin, FixesRegistry, FreezeDef, MoveLinearDef, SetForceDef};
     pub use mddem_app::prelude::*;
+    pub use mddem_derive::StageEnum;
     pub use mddem_core::*;
     pub use mddem_neighbor::*;
     pub use mddem_print::*;

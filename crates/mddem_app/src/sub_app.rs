@@ -5,7 +5,7 @@ use std::{
 };
 
 use mddem_scheduler::{
-    IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetupSet, Scheduler, System,
+    IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetupSet, Scheduler,
 };
 
 /// Holds one [`Scheduler`] instance with its resource store and system lists.
@@ -46,9 +46,9 @@ impl SubApp {
         self.scheduler.run();
     }
 
-    pub fn add_setup_system<I, S: System + 'static>(
+    pub fn add_setup_system<M>(
         &mut self,
-        system: impl IntoSystem<I, System = S>,
+        system: impl IntoScheduledSystem<M>,
         schedule_set: ScheduleSetupSet,
     ) {
         self.scheduler.add_setup_system(system, schedule_set);

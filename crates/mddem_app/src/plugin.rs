@@ -1,5 +1,8 @@
 use downcast_rs::{impl_downcast, Downcast};
-use mddem_scheduler::{apply_state_transitions, CurrentState, NextState, ScheduleSet};
+use mddem_scheduler::{
+    apply_state_transitions, check_stage_advance, CurrentState, NextState, ScheduleSet, StageName,
+};
+use std::marker::PhantomData;
 
 use crate::App;
 use core::any::Any;
@@ -121,6 +124,43 @@ impl<S: Clone + PartialEq + Default + Send + Sync + 'static> Plugin for StatesPl
         );
     }
 }
+
+// ─── StageAdvancePlugin ──────────────────────────────────────────────────────
+
+/// Watches for `CurrentState<S>` changes and sets `SchedulerManager::advance_requested`.
+///
+/// Add alongside `StatesPlugin` when using `#[derive(StageEnum)]`:
+/// ```rust,ignore
+/// app.add_plugins(StatesPlugin { initial: Phase::Settle });
+/// app.add_plugins(StageAdvancePlugin::<Phase>::new());
+/// ```
+pub struct StageAdvancePlugin<S: StageName + Clone + PartialEq + Default + Send + Sync + 'static> {
+    _marker: PhantomData<S>,
+}
+
+impl<S: StageName + Clone + PartialEq + Default + Send + Sync + 'static> StageAdvancePlugin<S> {
+    pub fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S: StageName + Clone + PartialEq + Default + Send + Sync + 'static> Plugin
+    for StageAdvancePlugin<S>
+{
+    fn build(&self, app: &mut App) {
+        // Store stage names for validation
+        app.add_resource(StageNames(S::stage_names()));
+        app.add_update_system(
+            check_stage_advance::<S>,
+            ScheduleSet::PostFinalIntegration,
+        );
+    }
+}
+
+/// Resource storing stage name strings for validation.
+pub struct StageNames(pub &'static [&'static str]);
 
 // ─── Plugins sealed trait ─────────────────────────────────────────────────────
 

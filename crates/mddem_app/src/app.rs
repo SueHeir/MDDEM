@@ -3,7 +3,7 @@ use std::{
     cell::RefCell,
 };
 
-use mddem_scheduler::{IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetupSet, System};
+use mddem_scheduler::{IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetupSet};
 
 use crate::{Plugin, Plugins, SubApp, SubApps};
 
@@ -95,9 +95,9 @@ impl App {
         self
     }
 
-    pub fn add_setup_system<I, S: System + 'static>(
+    pub fn add_setup_system<M>(
         &mut self,
-        system: impl IntoSystem<I, System = S>,
+        system: impl IntoScheduledSystem<M>,
         schedule_set: ScheduleSetupSet,
     ) -> &mut Self {
         self.sub_apps.main.add_setup_system(system, schedule_set);

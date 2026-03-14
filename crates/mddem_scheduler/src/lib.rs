@@ -773,6 +773,47 @@ pub fn apply_state_transitions<S: Clone + PartialEq + 'static>(
     }
 }
 
+/// Trait for enums that map 1:1 to named `[[run]]` stages.
+///
+/// Derive with `#[derive(StageEnum)]` and `#[stage("name")]` attributes.
+pub trait StageName {
+    /// Returns the stage name string for this variant.
+    fn stage_name(&self) -> &'static str;
+    /// Returns all stage names in variant order.
+    fn stage_names() -> &'static [&'static str];
+    /// Returns the number of stages.
+    fn num_stages() -> usize;
+}
+
+/// Run condition: returns true when the current stage name matches.
+pub fn in_stage(name: &str) -> impl Fn(Res<SchedulerManager>) -> bool {
+    let name = name.to_string();
+    move |sm: Res<SchedulerManager>| sm.stage_name.as_deref() == Some(name.as_str())
+}
+
+/// Run condition: returns true only during the first stage (index == 0).
+pub fn first_stage_only() -> impl Fn(Res<SchedulerManager>) -> bool {
+    move |sm: Res<SchedulerManager>| sm.index == 0
+}
+
+/// System that detects state transitions and requests stage advancement.
+///
+/// Watches `CurrentState<S>` for changes; when a transition occurs, sets
+/// `SchedulerManager::advance_requested = true`.
+pub fn check_stage_advance<S: StageName + Clone + PartialEq + 'static>(
+    current: Res<CurrentState<S>>,
+    mut sm: ResMut<SchedulerManager>,
+    mut prev: Local<Option<S>>,
+) {
+    if prev.as_ref() != Some(&current.0) {
+        if prev.is_some() {
+            // State changed — request advance to next stage
+            sm.advance_requested = true;
+        }
+        *prev = Some(current.0.clone());
+    }
+}
+
 // ─── Topological sort within a ScheduleSet group ─────────────────────────────
 
 fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, ScheduleSet)>) {
@@ -1084,24 +1125,13 @@ impl Scheduler {
         }
     }
 
-    pub fn add_setup_system<I, S: System + 'static>(
+    pub fn add_setup_system<M>(
         &mut self,
-        system: impl IntoSystem<I, System = S>,
+        system: impl IntoScheduledSystem<M>,
         schedule_set: ScheduleSetupSet,
     ) {
-        let sys = system.into_system();
-        let name = sys.name().to_string();
-        self.setup_systems.push((
-            StoredSystemEntry {
-                system: Box::new(sys),
-                name,
-                label: None,
-                befores: vec![],
-                afters: vec![],
-                requires: vec![],
-            },
-            schedule_set,
-        ));
+        self.setup_systems
+            .push((system.into_stored(), schedule_set));
     }
 
     pub fn add_update_system<M>(
@@ -1424,6 +1454,10 @@ pub enum SchedulerState {
 pub struct SchedulerManager {
     pub state: SchedulerState,
     pub index: usize,
+    /// Name of the current stage from `[[run]]` config (if set).
+    pub stage_name: Option<String>,
+    /// When true, the scheduler will advance to the next stage at end of step.
+    pub advance_requested: bool,
 }
 
 impl Default for SchedulerManager {
@@ -1431,6 +1465,8 @@ impl Default for SchedulerManager {
         SchedulerManager {
             state: SchedulerState::Setup,
             index: 0,
+            stage_name: None,
+            advance_requested: false,
         }
     }
 }
@@ -1446,6 +1482,9 @@ impl SchedulerManager {
 pub mod prelude {
     pub use crate::{
         apply_state_transitions,
+        check_stage_advance,
+        first_stage_only,
+        in_stage,
         in_state,
         ConditionalSystem,
         // Simulation states
@@ -1464,6 +1503,8 @@ pub mod prelude {
         Scheduler,
         SchedulerManager,
         SchedulerState,
+        // Stage enum trait
+        StageName,
         // System ordering
         SystemDescriptor,
         // Run conditions

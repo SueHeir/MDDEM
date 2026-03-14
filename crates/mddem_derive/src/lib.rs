@@ -1,8 +1,8 @@
-//! Proc-macro crate providing `#[derive(AtomData)]` for per-atom extension structs.
+//! Proc-macro crate providing `#[derive(AtomData)]` and `#[derive(StageEnum)]`.
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Fields, Type};
+use syn::{parse_macro_input, Data, DeriveInput, Fields, Type};
 
 /// Classification of supported field types.
 enum FieldKind {
@@ -342,6 +342,107 @@ pub fn derive_atom_data(input: TokenStream) -> TokenStream {
             #forward_methods
             #reverse_methods
             #zero_method
+        }
+    };
+
+    expanded.into()
+}
+
+/// Derive macro for `StageName` trait.
+///
+/// Generates a `stage_name(&self) -> &'static str` method mapping each variant
+/// to its `#[stage("name")]` attribute value.
+///
+/// ```rust,ignore
+/// #[derive(Clone, PartialEq, Default, StageEnum)]
+/// enum Phase {
+///     #[default]
+///     #[stage("settle")]
+///     Settle,
+///     #[stage("compress")]
+///     Compress,
+/// }
+/// ```
+#[proc_macro_derive(StageEnum, attributes(stage))]
+pub fn derive_stage_enum(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    let variants = match &input.data {
+        Data::Enum(data) => &data.variants,
+        _ => {
+            return syn::Error::new_spanned(&input, "StageEnum can only be derived for enums")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let mut match_arms = Vec::new();
+    let mut stage_names = Vec::new();
+
+    for variant in variants {
+        let ident = &variant.ident;
+
+        // Find #[stage("name")] attribute
+        let stage_attr = variant.attrs.iter().find(|a| a.path().is_ident("stage"));
+        let Some(attr) = stage_attr else {
+            return syn::Error::new_spanned(
+                variant,
+                format!("StageEnum: variant `{}` is missing #[stage(\"name\")] attribute", ident),
+            )
+            .to_compile_error()
+            .into();
+        };
+
+        // Parse the string literal from #[stage("name")]
+        let stage_name: syn::LitStr = match attr.parse_args() {
+            Ok(lit) => lit,
+            Err(_) => {
+                return syn::Error::new_spanned(
+                    attr,
+                    "StageEnum: #[stage] attribute must contain a string literal, e.g. #[stage(\"name\")]",
+                )
+                .to_compile_error()
+                .into();
+            }
+        };
+
+        let name_str = stage_name.value();
+        stage_names.push(name_str.clone());
+        match_arms.push(quote! { #name::#ident => #name_str, });
+    }
+
+    // Check for duplicate stage names
+    for (i, a) in stage_names.iter().enumerate() {
+        for b in &stage_names[i + 1..] {
+            if a == b {
+                return syn::Error::new_spanned(
+                    &input,
+                    format!("StageEnum: duplicate stage name \"{}\"", a),
+                )
+                .to_compile_error()
+                .into();
+            }
+        }
+    }
+
+    let num_stages = stage_names.len();
+
+    let expanded = quote! {
+        impl mddem_scheduler::StageName for #name {
+            fn stage_name(&self) -> &'static str {
+                match self {
+                    #(#match_arms)*
+                }
+            }
+
+            fn stage_names() -> &'static [&'static str] {
+                &[#(#stage_names),*]
+            }
+
+            fn num_stages() -> usize {
+                #num_stages
+            }
         }
     };
 

@@ -77,7 +77,10 @@ impl Plugin for DemBondPlugin {
         app.add_plugins(VirialStressPlugin);
         Config::load::<BondConfig>(app, "bonds");
         app.add_resource(BondMetrics::default());
-        app.add_setup_system(auto_bond_touching, ScheduleSetupSet::PostSetup);
+        app.add_setup_system(
+            auto_bond_touching.run_if(first_stage_only()),
+            ScheduleSetupSet::PostSetup,
+        );
         app.add_update_system(zero_bond_metrics, ScheduleSet::PreForce);
         app.add_update_system(bond_normal_force.label("dem_bond_force"), ScheduleSet::Force);
         app.add_update_system(output_bond_metrics, ScheduleSet::PostForce);
@@ -93,11 +96,7 @@ pub fn auto_bond_touching(
     registry: Res<AtomDataRegistry>,
     bond_config: Res<BondConfig>,
     comm: Res<CommResource>,
-    scheduler_manager: Res<SchedulerManager>,
 ) {
-    if scheduler_manager.index != 0 {
-        return;
-    }
     if !bond_config.auto_bond {
         return;
     }

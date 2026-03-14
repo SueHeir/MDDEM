@@ -1,9 +1,11 @@
 use mddem::prelude::*;
 
-#[derive(Clone, PartialEq, Default)]
+#[derive(Clone, PartialEq, Default, StageEnum)]
 enum Phase {
     #[default]
+    #[stage("filling")]
     Filling,
+    #[stage("flowing")]
     Flowing,
 }
 
@@ -15,7 +17,8 @@ fn main() {
         .add_plugins(WallPlugin)
         .add_plugins(StatesPlugin {
             initial: Phase::Filling,
-        });
+        })
+        .add_plugins(StageAdvancePlugin::<Phase>::new());
 
     app.add_update_system(
         check_settled.run_if(in_state(Phase::Filling)),

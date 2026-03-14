@@ -3,6 +3,7 @@ use mddem_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{CommResource, Config};
+use mddem_app::StageNames;
 
 fn default_steps() -> u32 {
     1000
@@ -12,8 +13,7 @@ fn default_thermo() -> usize {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-/// Per-stage settings: step count, thermo/dump/restart intervals.
+/// Per-stage settings: step count, thermo/dump/restart intervals, plus arbitrary overrides.
 pub struct StageConfig {
     /// Optional human-readable stage name.
     #[serde(default)]
@@ -33,6 +33,10 @@ pub struct StageConfig {
     /// Override VTP interval for this stage (None = use global).
     #[serde(default)]
     pub vtp_interval: Option<usize>,
+    /// Arbitrary config overrides for this stage (e.g. `thermostat.temperature = 1.2`).
+    /// Captured via `#[serde(flatten)]` — any keys not matched above land here.
+    #[serde(flatten)]
+    pub overrides: toml::Table,
 }
 
 impl Default for StageConfig {
@@ -44,6 +48,7 @@ impl Default for StageConfig {
             dump_interval: None,
             restart_interval: None,
             vtp_interval: None,
+            overrides: toml::Table::new(),
         }
     }
 }
@@ -126,10 +131,25 @@ thermo = 100
     fn build(&self, app: &mut App) {
         let run_config = Config::load_run_config(app);
         app.add_resource(run_config);
+        app.add_resource(StageOverrides {
+            table: toml::Table::new(),
+        });
 
         app.add_resource(RunState::new())
+            .add_setup_system(set_stage_name, ScheduleSetupSet::PreSetup)
             .add_setup_system(run_read_input, ScheduleSetupSet::Setup)
             .add_update_system(update_cycle, ScheduleSet::PostFinalIntegration);
+
+        // If StageAdvancePlugin registered StageNames, add validation
+        if app
+            .get_resource_ref::<StageNames>()
+            .is_some()
+        {
+            app.add_setup_system(
+                validate_stages.run_if(first_stage_only()),
+                ScheduleSetupSet::PreSetup,
+            );
+        }
     }
 }
 
@@ -169,11 +189,120 @@ pub fn update_cycle(
     let index = scheduler_manager.index;
     run_state.cycle_count[index] += 1;
     run_state.total_cycle += 1;
-    if run_state.cycle_count[index] == run_state.cycle_remaining[index] {
+
+    let steps_done = run_state.cycle_count[index] == run_state.cycle_remaining[index];
+    let advance = scheduler_manager.advance_requested;
+
+    if steps_done || advance {
+        scheduler_manager.advance_requested = false;
         scheduler_manager.index += 1;
         scheduler_manager.state = SchedulerState::Setup;
         if scheduler_manager.index >= run_config.num_stages() {
             scheduler_manager.state = SchedulerState::End;
+        }
+    }
+}
+
+/// Merged config table: global defaults deep-merged with current stage overrides.
+pub struct StageOverrides {
+    pub table: toml::Table,
+}
+
+impl StageOverrides {
+    /// Deserialize a section from the merged config, falling back to `T::default()`.
+    pub fn section<T: serde::de::DeserializeOwned + Default>(&self, key: &str) -> T {
+        self.table
+            .get(key)
+            .and_then(|v| v.clone().try_into().ok())
+            .unwrap_or_default()
+    }
+}
+
+/// Deep-merge `overrides` into `base`, recursively merging sub-tables.
+pub fn deep_merge(base: &mut toml::Table, overrides: &toml::Table) {
+    for (key, value) in overrides {
+        match (base.get_mut(key), value) {
+            (Some(toml::Value::Table(base_table)), toml::Value::Table(override_table)) => {
+                deep_merge(base_table, override_table);
+            }
+            _ => {
+                base.insert(key.clone(), value.clone());
+            }
+        }
+    }
+}
+
+/// Setup system: copies stage name from RunConfig into SchedulerManager, and
+/// applies stage config overrides by merging with global config.
+pub fn set_stage_name(
+    run_config: Res<RunConfig>,
+    config: Res<Config>,
+    mut scheduler_manager: ResMut<SchedulerManager>,
+    mut stage_overrides: ResMut<StageOverrides>,
+) {
+    let index = scheduler_manager.index;
+    if index >= run_config.num_stages() {
+        return;
+    }
+    let stage = run_config.current_stage(index);
+    scheduler_manager.stage_name = stage.name.clone();
+
+    // Build merged config: global defaults + stage overrides
+    let mut merged = config.table.clone();
+    // Remove "run" from merged since it's not a config section
+    merged.remove("run");
+    deep_merge(&mut merged, &stage.overrides);
+    stage_overrides.table = merged;
+}
+
+/// Setup system: validates that stage names match StageNames (from StageAdvancePlugin).
+pub fn validate_stages(
+    run_config: Res<RunConfig>,
+    stage_names: Res<StageNames>,
+    scheduler_manager: Res<SchedulerManager>,
+) {
+    // Only validate on first stage
+    if scheduler_manager.index != 0 {
+        return;
+    }
+
+    let expected = stage_names.0;
+    let actual: Vec<Option<&str>> = run_config
+        .stages
+        .iter()
+        .map(|s| s.name.as_deref())
+        .collect();
+
+    // Check count matches
+    if run_config.stages.len() != expected.len() {
+        panic!(
+            "Stage count mismatch: {} [[run]] stages in TOML, but StageEnum has {} variants.\n\
+             Expected stage names: {:?}\n\
+             TOML stage names: {:?}",
+            run_config.stages.len(),
+            expected.len(),
+            expected,
+            actual,
+        );
+    }
+
+    // Check each stage name matches
+    for (i, (expected_name, stage)) in expected.iter().zip(run_config.stages.iter()).enumerate() {
+        match &stage.name {
+            Some(name) if name != expected_name => {
+                panic!(
+                    "Stage {} name mismatch: TOML has \"{}\", but StageEnum expects \"{}\"",
+                    i, name, expected_name,
+                );
+            }
+            None => {
+                panic!(
+                    "Stage {} is missing a name in TOML. Expected name: \"{}\"\n\
+                     All [[run]] stages must have a `name` when using StageAdvancePlugin.",
+                    i, expected_name,
+                );
+            }
+            _ => {} // matches
         }
     }
 }

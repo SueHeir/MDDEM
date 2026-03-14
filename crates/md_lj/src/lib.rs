@@ -83,7 +83,10 @@ cutoff = 2.5     # in sigma units"#,
 
         app.add_plugins(VirialStressPlugin);
         app.add_resource(LJTailCorrections::default())
-            .add_setup_system(setup_lj_tails, ScheduleSetupSet::PostSetup)
+            .add_setup_system(
+                setup_lj_tails.run_if(first_stage_only()),
+                ScheduleSetupSet::PostSetup,
+            )
             .add_update_system(lj_force.label("lj"), ScheduleSet::Force);
     }
 }
@@ -96,12 +99,7 @@ pub fn setup_lj_tails(
     domain: Res<Domain>,
     comm: Res<CommResource>,
     mut tails: ResMut<LJTailCorrections>,
-    scheduler_manager: Res<SchedulerManager>,
 ) {
-    if scheduler_manager.index != 0 {
-        return;
-    }
-
     let n = comm.all_reduce_sum_f64(atoms.nlocal as f64);
     let v = domain.volume;
     let rho = n / v;

@@ -103,6 +103,17 @@ impl Config {
             crate::RunConfig::default()
         }
     }
+
+    /// Load a config section from the stage-aware merged config (`StageOverrides`).
+    ///
+    /// This reads from the merged table (global defaults + current stage overrides),
+    /// so per-stage overrides like `thermostat.temperature = 1.2` inside `[[run]]` apply.
+    pub fn load_stage_aware<T: for<'de> Deserialize<'de> + Default>(
+        stage_overrides: &crate::StageOverrides,
+        key: &str,
+    ) -> T {
+        stage_overrides.section(key)
+    }
 }
 
 #[cfg(test)]
@@ -162,5 +173,78 @@ dump_interval = 100
         assert_eq!(run.num_stages(), 1);
         assert_eq!(run.current_stage(0).steps, 1000);
         assert_eq!(run.current_stage(0).thermo, 100);
+    }
+
+    #[test]
+    fn stage_config_captures_overrides() {
+        let toml_str = r#"
+[[run]]
+name = "settle"
+steps = 1000
+thermo = 100
+
+[[run]]
+name = "compress"
+steps = 5000
+thermo = 500
+thermostat.temperature = 1.2
+"#;
+        let table: toml::Table = toml_str.parse().unwrap();
+        let config = Config { table };
+        let run = config.parse_run_config();
+        assert_eq!(run.num_stages(), 2);
+        // First stage has no overrides
+        assert!(run.current_stage(0).overrides.is_empty());
+        // Second stage has thermostat override
+        let overrides = &run.current_stage(1).overrides;
+        assert!(overrides.contains_key("thermostat"));
+        let thermostat = overrides["thermostat"].as_table().unwrap();
+        assert_eq!(thermostat["temperature"].as_float(), Some(1.2));
+    }
+
+    #[test]
+    fn deep_merge_works() {
+        use crate::run::deep_merge;
+        let mut base: toml::Table = r#"
+[thermostat]
+temperature = 0.85
+damping = 100.0
+"#
+        .parse()
+        .unwrap();
+        let overrides: toml::Table = r#"
+[thermostat]
+temperature = 1.2
+"#
+        .parse()
+        .unwrap();
+        deep_merge(&mut base, &overrides);
+        let thermostat = base["thermostat"].as_table().unwrap();
+        assert_eq!(thermostat["temperature"].as_float(), Some(1.2));
+        assert_eq!(thermostat["damping"].as_float(), Some(100.0));
+    }
+
+    #[test]
+    fn stage_overrides_section() {
+        use crate::StageOverrides;
+        let table: toml::Table = r#"
+[thermostat]
+temperature = 1.2
+damping = 100.0
+"#
+        .parse()
+        .unwrap();
+        let so = StageOverrides { table };
+
+        #[derive(Deserialize, Default)]
+        struct ThermoConfig {
+            #[serde(default)]
+            temperature: f64,
+            #[serde(default)]
+            damping: f64,
+        }
+        let tc: ThermoConfig = so.section("thermostat");
+        assert!((tc.temperature - 1.2).abs() < 1e-10);
+        assert!((tc.damping - 100.0).abs() < 1e-10);
     }
 }

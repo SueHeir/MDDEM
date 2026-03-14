@@ -120,6 +120,12 @@ name = "blocker"
 [vtp]
 interval = 1000
 
-[run]
+[[run]]
+name = "filling"
+steps = 1000000
+thermo = 2000
+
+[[run]]
+name = "flowing"
 steps = 1000000
 thermo = 2000

@@ -9,7 +9,7 @@ use rand_distr::{Distribution, Normal};
 use serde::Deserialize;
 
 use dem_atom::{DemAtom, MaterialTable};
-use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, Domain};
+use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, Domain, RunConfig, StageOverrides};
 
 // ── Config structs ──────────────────────────────────────────────────────────
 
@@ -67,8 +67,6 @@ density = 2500.0
     }
 
     fn build(&self, app: &mut App) {
-        Config::load::<ParticlesConfig>(app, "particles");
-
         app.add_setup_system(dem_insert_atoms, ScheduleSetupSet::Setup)
             .add_setup_system(calculate_delta_time, ScheduleSetupSet::PostSetup);
     }
@@ -77,18 +75,28 @@ density = 2500.0
 // ── Insertion system ────────────────────────────────────────────────────────
 
 pub fn dem_insert_atoms(
-    particles_config: Res<ParticlesConfig>,
     comm: Res<CommResource>,
     domain: Res<Domain>,
     mut atom: ResMut<Atom>,
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
+    stage_overrides: Res<StageOverrides>,
+    run_config: Res<RunConfig>,
     scheduler_manager: Res<SchedulerManager>,
 ) {
-    // Only insert particles on the first stage
-    if scheduler_manager.index != 0 {
-        return;
-    }
+    let index = scheduler_manager.index;
+
+    // Determine if this stage should insert particles:
+    // - First stage: use top-level [particles] (backward compat) or stage overrides
+    // - Later stages: only if the stage's [[run]] block explicitly has particles
+    let has_stage_particles = index < run_config.num_stages()
+        && run_config.current_stage(index).overrides.contains_key("particles");
+
+    let particles_config: ParticlesConfig = if has_stage_particles || index == 0 {
+        Config::load_stage_aware(&stage_overrides, "particles")
+    } else {
+        ParticlesConfig::default()
+    };
 
     // Insert particles per insert block
     if let Some(ref inserts) = particles_config.insert {
@@ -207,11 +215,7 @@ fn calculate_delta_time(
     mut atoms: ResMut<Atom>,
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
-    scheduler_manager: Res<SchedulerManager>,
 ) {
-    if scheduler_manager.index != 0 {
-        return;
-    }
     let dem = registry.expect::<DemAtom>("calculate_delta_time");
     let mut dt: f64 = 0.001;
 

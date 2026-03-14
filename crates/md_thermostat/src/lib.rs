@@ -7,7 +7,7 @@ use rand_chacha::ChaCha8Rng;
 use rand::SeedableRng;
 use serde::Deserialize;
 
-use mddem_core::{compute_ke, group_includes, Atom, CommResource, Config, GroupRegistry};
+use mddem_core::{compute_ke, group_includes, Atom, CommResource, Config, GroupRegistry, StageOverrides};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -94,16 +94,14 @@ coupling = 1.0       # relaxation time tau_T
 // ── Systems ─────────────────────────────────────────────────────────────────
 
 pub fn setup_nose_hoover(
-    config: Res<ThermostatConfig>,
     atoms: Res<Atom>,
     comm: Res<CommResource>,
     groups: Res<GroupRegistry>,
     mut nh: ResMut<NoseHooverState>,
-    scheduler_manager: Res<SchedulerManager>,
+    stage_overrides: Res<StageOverrides>,
 ) {
-    if scheduler_manager.index != 0 {
-        return;
-    }
+    // Read config from stage overrides (allows per-stage temperature changes)
+    let config: ThermostatConfig = Config::load_stage_aware(&stage_overrides, "thermostat");
 
     if let Some(ref gname) = config.group {
         groups.validate_name(gname, "Nose-Hoover thermostat");
@@ -312,15 +310,13 @@ seed = 12345         # RNG seed
 }
 
 pub fn setup_langevin(
-    config: Res<LangevinConfig>,
     comm: Res<CommResource>,
     groups: Res<GroupRegistry>,
     mut state: ResMut<LangevinState>,
-    scheduler_manager: Res<SchedulerManager>,
+    stage_overrides: Res<StageOverrides>,
 ) {
-    if scheduler_manager.index != 0 {
-        return;
-    }
+    // Read config from stage overrides (allows per-stage changes)
+    let config: LangevinConfig = Config::load_stage_aware(&stage_overrides, "langevin");
 
     if let Some(ref gname) = config.group {
         groups.validate_name(gname, "Langevin thermostat");

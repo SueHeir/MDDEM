@@ -17,6 +17,6 @@ pub use sub_app::*;
 pub mod prelude {
     pub use crate::{
         app::App, app::ConfigSnippets, app::GenerateConfigFlag, sub_app::SubApp, Plugin,
-        PluginGroup, PluginGroupBuilder, StatesPlugin,
+        PluginGroup, PluginGroupBuilder, StageAdvancePlugin, StageNames, StatesPlugin,
     };
 }

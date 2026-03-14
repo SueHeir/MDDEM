@@ -426,6 +426,7 @@ dependencies = [
  "md_thermostat",
  "mddem_app",
  "mddem_core",
+ "mddem_derive",
  "mddem_fixes",
  "mddem_neighbor",
  "mddem_print",
@@ -440,6 +441,7 @@ dependencies = [
  "libffi-sys",
  "mddem",
  "mddem_derive",
+ "mddem_scheduler",
 ]
 
 [[package]]

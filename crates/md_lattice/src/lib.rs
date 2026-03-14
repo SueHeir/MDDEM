@@ -84,8 +84,14 @@ skin = 1.25          # neighbor skin distance"#,
 
         Config::load::<LatticeConfig>(app, "lattice");
 
-        app.add_setup_system(fcc_insert, ScheduleSetupSet::Setup)
-            .add_setup_system(lattice_set_dt, ScheduleSetupSet::PostSetup);
+        app.add_setup_system(
+                fcc_insert.run_if(first_stage_only()),
+                ScheduleSetupSet::Setup,
+            )
+            .add_setup_system(
+                lattice_set_dt.run_if(first_stage_only()),
+                ScheduleSetupSet::PostSetup,
+            );
     }
 }
 
@@ -98,11 +104,7 @@ pub fn fcc_insert(
     comm: Res<CommResource>,
     domain: Res<Domain>,
     mut atom: ResMut<Atom>,
-    scheduler_manager: Res<SchedulerManager>,
 ) {
-    if scheduler_manager.index != 0 {
-        return;
-    }
     if comm.rank() != 0 {
         return;
     }
@@ -256,12 +258,7 @@ pub fn fcc_insert(
 pub fn lattice_set_dt(
     comm: Res<CommResource>,
     mut atoms: ResMut<Atom>,
-    scheduler_manager: Res<SchedulerManager>,
 ) {
-    if scheduler_manager.index != 0 {
-        return;
-    }
-
     let dt = 0.005; // Standard LJ reduced-unit timestep
     atoms.dt = dt;
 
