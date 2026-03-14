@@ -115,6 +115,26 @@ app.add_plugins(StatesPlugin { initial: Phase::Settling })
 app.start();
 ```
 
+### Combining with `StageEnum` and `StageAdvancePlugin`
+
+When using named `[[run]]` stages, derive `StageEnum` on the state enum and add `StageAdvancePlugin`. This automatically advances the `[[run]]` stage whenever a state transition occurs:
+
+```rust
+#[derive(Clone, PartialEq, Default, StageEnum)]
+enum Phase {
+    #[default]
+    #[stage("filling")]
+    Filling,
+    #[stage("flowing")]
+    Flowing,
+}
+
+app.add_plugins(StatesPlugin { initial: Phase::Filling })
+    .add_plugins(StageAdvancePlugin::<Phase>::new());
+```
+
+When `next_state.set(Phase::Flowing)` is called, `StageAdvancePlugin` detects the transition and advances the scheduler from the `"filling"` run stage to `"flowing"`. Each `[[run]]` stage can have its own step count, thermo interval, and config overrides.
+
 Transition states by writing to `ResMut<NextState<S>>`:
 
 ```rust

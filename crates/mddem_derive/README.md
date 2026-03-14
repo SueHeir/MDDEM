@@ -1,6 +1,6 @@
 # mddem_derive
 
-Proc-macro crate providing `#[derive(AtomData)]` for [MDDEM](https://github.com/SueHeir/MDDEM).
+Proc-macro crate providing `#[derive(AtomData)]` and `#[derive(StageEnum)]` for [MDDEM](https://github.com/SueHeir/MDDEM).
 
 ## Usage
 
@@ -31,5 +31,31 @@ The derive macro checks that every field is `Vec<f64>` at compile time. Non-`Vec
 ```
 error: AtomData derive: field `name` must be `Vec<f64>`, got `String`
 ```
+
+## StageEnum
+
+Derive the `StageName` trait on an enum to map variants to `[[run]]` stage names:
+
+```rust
+use mddem_derive::StageEnum;
+
+#[derive(Clone, PartialEq, Default, StageEnum)]
+enum Phase {
+    #[default]
+    #[stage("insert")]
+    Insert,
+    #[stage("relax")]
+    Relax,
+    #[stage("compress")]
+    Compress,
+}
+```
+
+This generates implementations of:
+- `stage_name(&self) -> &'static str` — returns the stage name for a variant
+- `stage_names() -> &'static [&'static str]` — returns all stage names in variant order
+- `num_stages() -> usize` — returns the number of stages
+
+Every variant must have a `#[stage("name")]` attribute. Use with `StageAdvancePlugin` to automatically advance `[[run]]` stages when state transitions occur.
 
 Part of the [MDDEM](https://github.com/SueHeir/MDDEM) workspace.

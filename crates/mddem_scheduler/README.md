@@ -99,6 +99,22 @@ app.add_update_system(
 );
 ```
 
+Stage-aware run conditions are also available for `[[run]]` stage control:
+
+```rust
+// Only run during the "production" named stage
+app.add_update_system(
+    accumulate_stats.run_if(in_stage("production")),
+    ScheduleSet::PostFinalIntegration,
+);
+
+// Only run during the first [[run]] stage (index 0)
+app.add_update_system(
+    insert_particles.run_if(first_stage_only()),
+    ScheduleSet::PreInitialIntegration,
+);
+```
+
 Conditions compose naturally with ordering and states:
 
 ```rust
@@ -186,6 +202,8 @@ app.add_update_system(
     ScheduleSet::Force,
 );
 ```
+
+When using `#[derive(StageEnum)]` with `StageAdvancePlugin` (from `mddem_app`), state transitions automatically advance the `[[run]]` stage index, so each named stage gets its own step count, thermo interval, and config overrides.
 
 `in_state(S)` is itself a run condition and composes with `.run_if()`:
 

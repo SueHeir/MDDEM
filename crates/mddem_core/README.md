@@ -8,7 +8,7 @@ Core simulation infrastructure for [MDDEM](https://github.com/SueHeir/MDDEM). Pr
 - **`comm`** — `CommBackend` trait abstracting MPI communication. `CommunicationPlugin` provides full 3D domain decomposition with ghost atom exchange, border forwarding, and reverse force accumulation. `SingleProcessCommPlugin` is a drop-in replacement for non-MPI builds.
 - **`domain`** — `Domain` resource for simulation box boundaries and periodicity. `DomainDecomposition` trait with `CartesianDecomposition` default. `DomainPlugin` reads `[domain]` config and decomposes the box across MPI ranks.
 - **`input`** — TOML config loading via `Config` resource. `Config::load::<T>(app, key)` deserializes a TOML section and adds it as an `App` resource. All config structs use `#[serde(deny_unknown_fields)]` to reject typos at startup. `InputPlugin` handles CLI parsing and banner printing.
-- **`run`** — `RunPlugin` for run/cycle management. Supports single-stage `[run]` and multi-stage `[[run]]` configs with per-stage step counts and output intervals.
+- **`run`** — `RunPlugin` for run/cycle management. Supports single-stage `[run]` and multi-stage `[[run]]` configs with per-stage step counts, output intervals, and per-stage config overrides (e.g., `gravity.gz = -981.0`). Named stages are validated against `StageEnum` variants when `StageAdvancePlugin` is active.
 - **`virial`** — `VirialStress` full symmetric stress tensor (xx, yy, zz, xy, xz, yz) shared across all force types. `VirialStressPlugin` guards against double-registration so multiple force plugins (LJ, bond, contact) can each add it safely.
 
 ## Features

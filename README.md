@@ -28,7 +28,7 @@ I am still unsure about the TOML input for this. I think having real examples to
 
 I gave up on having every system (function handled by scheduler) be very readable (originally for educational purposes). Hot paths are full of unsafe code and many complex optimizations have led to this no longer being a goal of MDDEM; see the performance section. I have also removed nalgebra from the dependencies, so we only optionally depend on the Rust MPI wrapper. The Rust MPI wrapper is not feature-complete with MPI, but I don't think this is a huge deal right now. I think it's missing some features that might speed things up a little bit (non-blocking send/receive of arbitrary vec sizes).
 
-We have a `#[derive(AtomData)]` proc macro for per-atom extension data — it generates pack/unpack, communication, and permutation code. It now supports `Vec<f64>`, `Vec<[f64; 3]>`, and `Vec<[f64; 4]>` fields, plus `#[forward]`, `#[reverse]`, and `#[zero]` attributes for comm and accumulator behavior. DemAtom uses it successfully. I'd be interested if there are other places where proc or declarative macros could improve ergonomics.
+We have a `#[derive(AtomData)]` proc macro for per-atom extension data — it generates pack/unpack, communication, and permutation code. It now supports `Vec<f64>`, `Vec<[f64; 3]>`, and `Vec<[f64; 4]>` fields, plus `#[forward]`, `#[reverse]`, and `#[zero]` attributes for comm and accumulator behavior. DemAtom uses it successfully. We also have `#[derive(StageEnum)]` for named simulation stages — it generates stage name mappings so `StageAdvancePlugin` can automatically advance `[[run]]` stages when state transitions occur. I'd be interested if there are other places where proc or declarative macros could improve ergonomics.
 
 ## Installation
 
@@ -194,7 +194,7 @@ cargo run --release -- config.toml --schedule
 - TOML config with `serde` validation and `deny_unknown_fields` on all config structs
 - Dump files (CSV/binary), restart files (bincode/JSON), VTP visualization
 - Generic restart serialization — any registered `AtomData` extension is automatically saved/restored
-- Multi-stage runs with per-stage output control
+- Multi-stage runs with named stages (`#[derive(StageEnum)]`), `StageAdvancePlugin` for automatic stage advancement on state transitions, and per-stage config overrides (e.g., changing gravity between stages)
 - `#[derive(AtomData)]` proc macro for zero-boilerplate per-atom extension structs
 
 ## Examples
@@ -203,7 +203,8 @@ cargo run --release -- config.toml --schedule
 |---------|-------------|-----|
 | [granular_basic](examples/granular_basic/) | 500-particle granular gas in a periodic box | `cargo run --example granular_basic -- examples/granular_basic/config.toml` |
 | [granular_gas_benchmark](examples/granular_gas_benchmark/) | Haff's cooling law validation with LAMMPS comparison | `cargo run --example granular_gas_benchmark -- examples/granular_gas_benchmark/run_debug.toml` |
-| [hopper](examples/hopper/) | 2D slot hopper with angled walls, gravity, and simulation states | `cargo run --example hopper -- examples/hopper/config.toml` |
+| [hopper](examples/hopper/) | 2D slot hopper with named stages (`StageEnum`), KE-based state transitions | `cargo run --example hopper -- examples/hopper/config.toml` |
+| [dem_compression](examples/dem_compression/) | 3-stage DEM compression (insert → relax → compress) with per-stage config overrides | `cargo run --example dem_compression -- examples/dem_compression/config.toml` |
 | [lj_argon](examples/lj_argon/) | LJ fluid validated against liquid Argon (RDF, MSD, pressure) | `cargo run --release --example lj_argon -- examples/lj_argon/config.toml` |
 | [lj_langevin](examples/lj_langevin/) | LJ fluid with Langevin thermostat | `cargo run --release --example lj_langevin -- examples/lj_langevin/config.toml` |
 | [group_freeze](examples/group_freeze/) | Group-based freeze fix demonstration | `cargo run --release --example group_freeze -- examples/group_freeze/config.toml` |
@@ -282,6 +283,7 @@ Planned features, organized by implementation wave:
 4. ~~**AddForce / SetForce / Freeze / MoveLinear**~~ — Group-based atom manipulation fixes
 5. ~~**Virial stress tensor**~~ — Full 6-component symmetric tensor shared across LJ, bond, and contact forces
 6. ~~**Bonded particle model**~~ — Bond lists between DEM spheres with auto-bonding, spring-damper normal forces, and bond exclusion from contact
+7. ~~**Named stages**~~ — `#[derive(StageEnum)]` with `StageAdvancePlugin` for automatic `[[run]]` stage advancement on state transitions, plus per-stage config overrides
 
 ### Wave 3: Medium Complexity
 5. **Shrink-wrap boundaries** — Auto-expanding domain per axis
@@ -325,7 +327,7 @@ These are specialized features that won't be in core. Users can write plugins fo
 | [`mddem_neighbor`](crates/mddem_neighbor/) | Neighbor lists: brute force, sweep-and-prune, bin-based |
 | [`mddem_verlet`](crates/mddem_verlet/) | Velocity Verlet translational integration |
 | [`mddem_print`](crates/mddem_print/) | Thermo, VTP, dump files, restart files |
-| [`mddem_derive`](crates/mddem_derive/) | `#[derive(AtomData)]` proc macro |
+| [`mddem_derive`](crates/mddem_derive/) | `#[derive(AtomData)]` and `#[derive(StageEnum)]` proc macros |
 | [`dem_atom`](crates/dem_atom/) | Per-atom DEM data, `MaterialTable`, material config |
 | [`dem_atom_insert`](crates/dem_atom_insert/) | Random particle insertion with overlap checking |
 | [`dem_granular`](crates/dem_granular/) | Hertz normal, Mindlin tangential, rotational dynamics, granular temperature |
