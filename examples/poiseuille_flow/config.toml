@@ -28,18 +28,15 @@ cutoff = 2.5
 # Wall groups: bottom and top slabs
 [[group]]
 name = "wall_bottom"
-region_z_low = 0.0
-region_z_high = 2.5
+region = { type = "block", min = [-1e30, -1e30, 0.0], max = [1e30, 1e30, 2.5] }
 
 [[group]]
 name = "wall_top"
-region_z_low = 7.5
-region_z_high = 10.06
+region = { type = "block", min = [-1e30, -1e30, 7.5], max = [1e30, 1e30, 10.06] }
 
 [[group]]
 name = "fluid"
-region_z_low = 2.5
-region_z_high = 7.5
+region = { type = "block", min = [-1e30, -1e30, 2.5], max = [1e30, 1e30, 7.5] }
 
 # Freeze wall atoms
 [[freeze]]

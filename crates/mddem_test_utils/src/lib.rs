@@ -24,12 +24,8 @@ pub fn make_group_registry(name: &str, mask: Vec<bool>) -> GroupRegistry {
         def: GroupDef {
             name: name.to_string(),
             atom_types: None,
-            region_x_low: None,
-            region_x_high: None,
-            region_y_low: None,
-            region_y_high: None,
-            region_z_low: None,
-            region_z_high: None,
+            region: None,
+            dynamic: None,
         },
         mask,
         count,
@@ -40,6 +36,29 @@ pub fn make_group_registry(name: &str, mask: Vec<bool>) -> GroupRegistry {
 /// Create a single-process `CommResource` for testing.
 pub fn make_single_comm() -> CommResource {
     CommResource(Box::new(SingleProcessComm::new()))
+}
+
+/// Push a DEM test atom with all `DemAtom` fields populated.
+///
+/// Creates a solid sphere with `density = 2500`, computes mass from radius,
+/// and fills all rotational fields with defaults.
+pub fn push_dem_test_atom(
+    atom: &mut Atom,
+    dem: &mut dem_atom::DemAtom,
+    tag: u32,
+    pos: [f64; 3],
+    radius: f64,
+) {
+    let density = 2500.0;
+    let mass = density * 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3);
+    atom.push_test_atom(tag, pos, radius, mass);
+    dem.radius.push(radius);
+    dem.density.push(density);
+    dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
+    dem.quaternion.push([1.0, 0.0, 0.0, 0.0]);
+    dem.omega.push([0.0; 3]);
+    dem.ang_mom.push([0.0; 3]);
+    dem.torque.push([0.0; 3]);
 }
 
 /// Create a single-material "glass" [`MaterialTable`] for testing.

@@ -78,20 +78,7 @@ mod tests {
     use super::*;
     use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry};
-    use std::f64::consts::PI;
-
-    fn push_test_atom(atom: &mut Atom, dem: &mut DemAtom, tag: u32, radius: f64) {
-        let density = 2500.0;
-        let mass = density * 4.0 / 3.0 * PI * radius.powi(3);
-        atom.push_test_atom(tag, [0.0; 3], radius, mass);
-        dem.radius.push(radius);
-        dem.density.push(density);
-        dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
-        dem.quaternion.push([1.0, 0.0, 0.0, 0.0]);
-        dem.omega.push([0.0; 3]);
-        dem.ang_mom.push([0.0; 3]);
-        dem.torque.push([0.0; 3]);
-    }
+    use mddem_test_utils::push_dem_test_atom;
 
     #[test]
     fn angular_acceleration_from_torque() {
@@ -102,7 +89,7 @@ mod tests {
         let dt = 1e-7;
         atom.dt = dt;
 
-        push_test_atom(&mut atom, &mut dem, 0, radius);
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.0; 3], radius);
         let mass = atom.mass[0];
         let inertia = 0.4 * mass * radius * radius;
 
@@ -139,7 +126,7 @@ mod tests {
         let mut dem = DemAtom::new();
         atom.dt = 1e-5;
 
-        push_test_atom(&mut atom, &mut dem, 0, radius);
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.0; 3], radius);
         dem.omega[0][2] = 100.0;
         atom.nlocal = 1;
         atom.natoms = 1;

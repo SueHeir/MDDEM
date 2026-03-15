@@ -51,8 +51,7 @@ fn setup_chain(
         atom.nlocal += 1;
         atom.tag.push(tag);
         atom.origin_index.push(0);
-        atom.skin.push(radius);
-        atom.is_collision.push(false);
+        atom.cutoff_radius.push(radius);
         atom.is_ghost.push(false);
         atom.pos.push([0.0, 0.0, z]);
         atom.vel.push([0.0; 3]);

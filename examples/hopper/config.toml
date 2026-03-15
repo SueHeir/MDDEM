@@ -34,10 +34,7 @@ count = 200
 radius = 0.001
 density = 2500.0
 velocity_z = -1.0
-region_x_low = 0.005
-region_x_high = 0.035
-region_z_low = 0.055
-region_z_high = 0.075
+region = { type = "block", min = [0.005, 0.0, 0.055], max = [0.035, 0.02, 0.075] }
 
 # Left side wall (x = 0, normal +x)
 [[wall]]

@@ -262,16 +262,18 @@ pub fn zero_bond_metrics(mut metrics: ResMut<BondMetrics>) {
 pub fn output_bond_metrics(
     metrics: Res<BondMetrics>,
     comm: Res<CommResource>,
-    mut thermo: ResMut<Thermo>,
+    mut thermo: Option<ResMut<Thermo>>,
 ) {
     let strain_sum = comm.all_reduce_sum_f64(metrics.strain_sum);
     let bond_count = comm.all_reduce_sum_f64(metrics.bond_count as f64);
 
-    if bond_count > 0.0 {
-        let avg_strain = strain_sum / bond_count;
-        thermo.set("bond_strain", avg_strain);
-    } else {
-        thermo.set("bond_strain", 0.0);
+    if let Some(ref mut thermo) = thermo {
+        if bond_count > 0.0 {
+            let avg_strain = strain_sum / bond_count;
+            thermo.set("bond_strain", avg_strain);
+        } else {
+            thermo.set("bond_strain", 0.0);
+        }
     }
 }
 
@@ -280,21 +282,7 @@ mod tests {
     use super::*;
     use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry, BondEntry, BondStore, CommResource, SingleProcessComm};
-    use mddem_print::Thermo;
-
-    fn push_test_atom(
-        atom: &mut Atom,
-        dem: &mut DemAtom,
-        tag: u32,
-        pos: [f64; 3],
-        radius: f64,
-    ) {
-        let mass = 2500.0 * 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3);
-        atom.push_test_atom(tag, pos, radius, mass);
-        dem.radius.push(radius);
-        dem.density.push(2500.0);
-        dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
-    }
+    use mddem_test_utils::push_dem_test_atom;
 
     #[test]
     fn auto_bond_creates_symmetric_bonds() {
@@ -305,8 +293,8 @@ mod tests {
         let radius = 0.001;
 
         // Two touching particles along x-axis (distance = 2*radius = 0.002)
-        push_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
-        push_test_atom(
+        push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
+        push_dem_test_atom(
             &mut atom,
             &mut dem,
             2,
@@ -353,8 +341,8 @@ mod tests {
         let radius = 0.001;
 
         // Two far-apart particles
-        push_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
-        push_test_atom(
+        push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
+        push_dem_test_atom(
             &mut atom,
             &mut dem,
             2,
@@ -397,8 +385,8 @@ mod tests {
         let radius = 0.001;
 
         // Two particles at distance 0.0025, bonded with r0 = 0.002 (stretched)
-        push_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
-        push_test_atom(
+        push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
+        push_dem_test_atom(
             &mut atom,
             &mut dem,
             2,
@@ -468,8 +456,8 @@ mod tests {
         let radius = 0.001;
 
         // Two particles at distance 0.0015, bonded with r0 = 0.002 (compressed)
-        push_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
-        push_test_atom(
+        push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
+        push_dem_test_atom(
             &mut atom,
             &mut dem,
             2,
@@ -534,8 +522,8 @@ mod tests {
         let radius = 0.001;
 
         // Two particles exactly at r0
-        push_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
-        push_test_atom(
+        push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
+        push_dem_test_atom(
             &mut atom,
             &mut dem,
             2,

@@ -7,7 +7,7 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 
 /// Number of f64s packed/unpacked for one atom's base fields.
-pub const ATOM_PACK_SIZE: usize = 15;
+pub const ATOM_PACK_SIZE: usize = 14;
 
 // ── AtomData trait ───────────────────────────────────────────────────────────
 
@@ -239,11 +239,10 @@ macro_rules! for_each_atom_vec {
             (atom_type, u32),
             (origin_index, i32),
             (is_ghost, bool),
-            (is_collision, bool),
             (pos, [f64; 3]),
             (vel, [f64; 3]),
             (force, [f64; 3]),
-            (skin, f64),
+            (cutoff_radius, f64),
             (mass, f64),
             (inv_mass, f64),
         }
@@ -257,6 +256,9 @@ pub struct Atom {
     pub natoms: u64,
     pub nlocal: u32,
     pub nghost: u32,
+
+    /// Number of distinct atom types in the simulation.
+    pub ntypes: usize,
 
     pub dt: f64,
 
@@ -273,14 +275,13 @@ pub struct Atom {
     pub atom_type: Vec<u32>,
     pub origin_index: Vec<i32>,
     pub is_ghost: Vec<bool>,
-    pub is_collision: Vec<bool>,
 
     // Interleaved arrays: field[i] = [x, y, z]
     pub pos: Vec<[f64; 3]>,
     pub vel: Vec<[f64; 3]>,
     pub force: Vec<[f64; 3]>,
 
-    pub skin: Vec<f64>,
+    pub cutoff_radius: Vec<f64>,
     pub mass: Vec<f64>,
     pub inv_mass: Vec<f64>,
 }
@@ -298,6 +299,7 @@ macro_rules! impl_atom_new {
                 natoms: 0,
                 nlocal: 0,
                 nghost: 0,
+                ntypes: 1,
                 dt: 1.0,
                 communicate_only: false,
                 rebuild_on_pbc_wrap: false,
@@ -374,7 +376,7 @@ impl Atom {
     fn pack_atom_inner(&self, i: usize, origin_index_val: f64, pos_offset: [f64; 3], buf: &mut Vec<f64>) {
         buf.push(self.tag[i] as f64);
         buf.push(origin_index_val);
-        buf.push(self.skin[i]);
+        buf.push(self.cutoff_radius[i]);
         buf.push(self.atom_type[i] as f64);
         buf.push(self.pos[i][0] + pos_offset[0]);
         buf.push(self.pos[i][1] + pos_offset[1]);
@@ -386,7 +388,6 @@ impl Atom {
         buf.push(self.force[i][1]);
         buf.push(self.force[i][2]);
         buf.push(self.mass[i]);
-        buf.push(if self.is_collision[i] { 0.0 } else { 1.0 });
     }
 
     pub fn pack_exchange(&self, i: usize, buf: &mut Vec<f64>) {
@@ -400,14 +401,13 @@ impl Atom {
     pub fn unpack_atom(&mut self, buf: &[f64], is_ghost: bool) -> usize {
         self.tag.push(buf[0] as u32);
         self.origin_index.push(buf[1] as i32);
-        self.skin.push(buf[2]);
+        self.cutoff_radius.push(buf[2]);
         self.atom_type.push(buf[3] as u32);
         self.pos.push([buf[4], buf[5], buf[6]]);
         self.vel.push([buf[7], buf[8], buf[9]]);
         self.force.push([buf[10], buf[11], buf[12]]);
         self.mass.push(buf[13]);
         self.inv_mass.push(1.0 / buf[13]);
-        self.is_collision.push(buf[14] == 0.0);
         self.is_ghost.push(is_ghost);
         ATOM_PACK_SIZE
     }
@@ -421,9 +421,8 @@ impl Atom {
         self.force.push([0.0; 3]);
         self.mass.push(mass);
         self.inv_mass.push(1.0 / mass);
-        self.skin.push(radius);
+        self.cutoff_radius.push(radius);
         self.is_ghost.push(false);
-        self.is_collision.push(false);
     }
 }
 
@@ -468,7 +467,6 @@ pub fn remove_ghost_atoms(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistr
 
 fn zero_all_forces(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) {
     let n = atoms.len();
-    atoms.is_collision[..n].fill(false);
     atoms.force[..n].fill([0.0; 3]);
     registry.zero_all(n);
 }

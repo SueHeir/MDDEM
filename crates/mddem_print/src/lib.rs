@@ -188,7 +188,7 @@ struct RestartData {
     force_y: Vec<f64>,
     force_z: Vec<f64>,
     mass: Vec<f64>,
-    skin: Vec<f64>,
+    cutoff_radius: Vec<f64>,
     atom_data_buffers: Vec<Vec<f64>>,
     // Legacy fields for backwards compatibility with old restart files
     #[serde(default)]
@@ -211,6 +211,72 @@ struct RestartData {
     ang_mom_z: Vec<f64>,
     #[serde(default)]
     quaternion: Vec<[f64; 4]>,
+}
+
+// ── DumpRegistry ────────────────────────────────────────────────────────
+
+/// Registry of user-defined per-atom data callbacks for dump and VTP output.
+///
+/// Registered callbacks are only invoked on dump/VTP steps — zero overhead otherwise.
+///
+/// # Example
+/// ```rust,ignore
+/// // In a plugin's build():
+/// let dump_reg = app.get_resource_mut::<DumpRegistry>().unwrap();
+/// dump_reg.register_scalar("pressure", |atoms, registry| {
+///     let dem = registry.expect::<DemAtom>("pressure");
+///     (0..atoms.nlocal as usize).map(|i| /* ... */ 0.0).collect()
+/// });
+/// ```
+pub struct DumpRegistry {
+    scalar_fns: Vec<(
+        String,
+        Box<dyn Fn(&Atom, &AtomDataRegistry) -> Vec<f64> + Send + Sync>,
+    )>,
+    vector_fns: Vec<(
+        String,
+        Box<dyn Fn(&Atom, &AtomDataRegistry) -> Vec<[f64; 3]> + Send + Sync>,
+    )>,
+}
+
+impl Default for DumpRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DumpRegistry {
+    pub fn new() -> Self {
+        DumpRegistry {
+            scalar_fns: Vec::new(),
+            vector_fns: Vec::new(),
+        }
+    }
+
+    /// Register a per-atom scalar column for dump/VTP output.
+    /// The callback should return a Vec of length `atoms.nlocal`.
+    pub fn register_scalar(
+        &mut self,
+        name: impl Into<String>,
+        f: impl Fn(&Atom, &AtomDataRegistry) -> Vec<f64> + Send + Sync + 'static,
+    ) {
+        self.scalar_fns.push((name.into(), Box::new(f)));
+    }
+
+    /// Register a per-atom vector (3-component) column for dump/VTP output.
+    /// The callback should return a Vec of length `atoms.nlocal`.
+    pub fn register_vector(
+        &mut self,
+        name: impl Into<String>,
+        f: impl Fn(&Atom, &AtomDataRegistry) -> Vec<[f64; 3]> + Send + Sync + 'static,
+    ) {
+        self.vector_fns.push((name.into(), Box::new(f)));
+    }
+
+    /// Returns true if any callbacks are registered.
+    pub fn has_callbacks(&self) -> bool {
+        !self.scalar_fns.is_empty() || !self.vector_fns.is_empty()
+    }
 }
 
 // ── VTP config ──────────────────────────────────────────────────────────────
@@ -258,6 +324,7 @@ interval = 0"#,
         Config::load::<VtpConfig>(app, "vtp");
         Config::load::<ThermoConfig>(app, "thermo");
 
+        app.add_resource(DumpRegistry::new());
         app.add_resource(Thermo::new())
             .add_setup_system(setup_thermo, ScheduleSetupSet::PostSetup)
             .add_setup_system(read_restart.run_if(first_stage_only()), ScheduleSetupSet::PostSetup)
@@ -474,14 +541,17 @@ fn write_vtp_data_array(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn print_vtp(
     atoms: Res<Atom>,
+    registry: Res<AtomDataRegistry>,
     run_state: Res<RunState>,
     comm: Res<CommResource>,
     input: Res<Input>,
     vtp_config: Res<VtpConfig>,
     run_config: Res<RunConfig>,
     scheduler_manager: Res<SchedulerManager>,
+    dump_registry: Res<DumpRegistry>,
 ) {
     let count = run_state.total_cycle;
     let rank = comm.rank();
@@ -490,16 +560,18 @@ pub fn print_vtp(
     if interval == 0 || !count.is_multiple_of(interval) {
         return;
     }
-    if let Err(e) = print_vtp_inner(&atoms, count, rank, &input) {
+    if let Err(e) = print_vtp_inner(&atoms, &registry, count, rank, &input, &dump_registry) {
         eprintln!("WARNING: VTP write failed at step {}: {}", count, e);
     }
 }
 
 fn print_vtp_inner(
     atoms: &Atom,
+    registry: &AtomDataRegistry,
     count: usize,
     rank: i32,
     input: &Input,
+    dump_reg: &DumpRegistry,
 ) -> std::io::Result<()> {
     let base_dir = match input.output_dir.as_deref() {
         Some(dir) => format!("{}/vtp", dir),
@@ -524,7 +596,7 @@ fn print_vtp_inner(
 
     // Per-point data arrays
     writeln!(&mut file, "<PointData Scalars=\"\" Vectors=\"\">")?;
-    write_vtp_data_array(&mut file, "Float32", "Radius", n, |i| format!("{}", atoms.skin[i]))?;
+    write_vtp_data_array(&mut file, "Float32", "Radius", n, |i| format!("{}", atoms.cutoff_radius[i]))?;
     write_vtp_data_array(&mut file, "Float32", "Vel_Mag", n, |i| {
         let vmag = (atoms.vel[i][0].powi(2) + atoms.vel[i][1].powi(2) + atoms.vel[i][2].powi(2)).sqrt();
         format!("{}", vmag)
@@ -532,9 +604,35 @@ fn print_vtp_inner(
     write_vtp_data_array(&mut file, "Int32", "IsGhost", n, |i| {
         format!("{}", if i >= nlocal { 1 } else { 0 })
     })?;
-    write_vtp_data_array(&mut file, "Int32", "IsCollision", n, |i| {
-        format!("{}", if atoms.is_collision[i] { 1 } else { 0 })
-    })?;
+    // Registered scalar callbacks
+    for (name, f) in &dump_reg.scalar_fns {
+        let data = f(atoms, registry);
+        write_vtp_data_array(&mut file, "Float32", name, n, |i| {
+            if i < data.len() {
+                format!("{}", data[i])
+            } else {
+                "0".to_string()
+            }
+        })?;
+    }
+
+    // Registered vector callbacks
+    for (name, f) in &dump_reg.vector_fns {
+        let data = f(atoms, registry);
+        writeln!(
+            &mut file,
+            "<DataArray type=\"Float32\" Name=\"{}\" NumberOfComponents=\"3\" format=\"ascii\">",
+            name
+        )?;
+        for i in 0..n {
+            if i < data.len() {
+                writeln!(&mut file, "{} {} {}", data[i][0], data[i][1], data[i][2])?;
+            } else {
+                writeln!(&mut file, "0 0 0")?;
+            }
+        }
+        write!(&mut file, "</DataArray>")?;
+    }
 
     write!(&mut file, "</PointData>\n</Piece>\n</PolyData>\n</VTKFile>\n")?;
     Ok(())
@@ -545,12 +643,14 @@ fn print_vtp_inner(
 #[allow(clippy::too_many_arguments)]
 pub fn dump_atoms(
     atoms: Res<Atom>,
+    registry: Res<AtomDataRegistry>,
     run_state: Res<RunState>,
     comm: Res<CommResource>,
     input: Res<Input>,
     dump_config: Res<DumpConfig>,
     run_config: Res<RunConfig>,
     scheduler_manager: Res<SchedulerManager>,
+    dump_registry: Res<DumpRegistry>,
 ) {
     let stage = run_config.current_stage(scheduler_manager.index);
     let interval = stage.dump_interval.unwrap_or(dump_config.interval);
@@ -562,17 +662,19 @@ pub fn dump_atoms(
         return;
     }
 
-    if let Err(e) = dump_atoms_inner(&atoms, step, comm.rank(), &input, &dump_config) {
+    if let Err(e) = dump_atoms_inner(&atoms, &registry, step, comm.rank(), &input, &dump_config, &dump_registry) {
         eprintln!("WARNING: Dump write failed at step {}: {}", step, e);
     }
 }
 
 fn dump_atoms_inner(
     atoms: &Atom,
+    registry: &AtomDataRegistry,
     step: usize,
     rank: i32,
     input: &Input,
     dump_config: &DumpConfig,
+    dump_reg: &DumpRegistry,
 ) -> std::io::Result<()> {
     let nlocal = atoms.nlocal as usize;
     let base_dir = match input.output_dir.as_deref() {
@@ -580,6 +682,18 @@ fn dump_atoms_inner(
         None => "dump".to_string(),
     };
     fs::create_dir_all(&base_dir)?;
+
+    // Evaluate registered callbacks (only when dump is actually written)
+    let scalar_data: Vec<(&str, Vec<f64>)> = dump_reg
+        .scalar_fns
+        .iter()
+        .map(|(name, f)| (name.as_str(), f(atoms, registry)))
+        .collect();
+    let vector_data: Vec<(&str, Vec<[f64; 3]>)> = dump_reg
+        .vector_fns
+        .iter()
+        .map(|(name, f)| (name.as_str(), f(atoms, registry)))
+        .collect();
 
     match dump_config.format.as_str() {
         "binary" => {
@@ -599,7 +713,17 @@ fn dump_atoms_inner(
                 w.write_all(&atoms.force[i][0].to_le_bytes())?;
                 w.write_all(&atoms.force[i][1].to_le_bytes())?;
                 w.write_all(&atoms.force[i][2].to_le_bytes())?;
-                w.write_all(&atoms.skin[i].to_le_bytes())?;
+                w.write_all(&atoms.cutoff_radius[i].to_le_bytes())?;
+                // Append registered scalar fields
+                for (_, data) in &scalar_data {
+                    w.write_all(&data[i].to_le_bytes())?;
+                }
+                // Append registered vector fields
+                for (_, data) in &vector_data {
+                    w.write_all(&data[i][0].to_le_bytes())?;
+                    w.write_all(&data[i][1].to_le_bytes())?;
+                    w.write_all(&data[i][2].to_le_bytes())?;
+                }
             }
         }
         _ => {
@@ -607,9 +731,19 @@ fn dump_atoms_inner(
             let filename = format!("{}/dump_{}_rank{}.csv", base_dir, step, rank);
             let file = File::create(&filename)?;
             let mut w = BufWriter::new(file);
-            writeln!(w, "tag,type,x,y,z,vx,vy,vz,fx,fy,fz,radius")?;
+            // Build header
+            let mut header = "tag,type,x,y,z,vx,vy,vz,fx,fy,fz,radius".to_string();
+            for (name, _) in &scalar_data {
+                header.push(',');
+                header.push_str(name);
+            }
+            for (name, _) in &vector_data {
+                header.push(',');
+                header.push_str(&format!("{}_x,{}_y,{}_z", name, name, name));
+            }
+            writeln!(w, "{}", header)?;
             for i in 0..nlocal {
-                writeln!(
+                write!(
                     w,
                     "{},{},{},{},{},{},{},{},{},{},{},{}",
                     atoms.tag[i],
@@ -623,8 +757,15 @@ fn dump_atoms_inner(
                     atoms.force[i][0],
                     atoms.force[i][1],
                     atoms.force[i][2],
-                    atoms.skin[i],
+                    atoms.cutoff_radius[i],
                 )?;
+                for (_, data) in &scalar_data {
+                    write!(w, ",{}", data[i])?;
+                }
+                for (_, data) in &vector_data {
+                    write!(w, ",{},{},{}", data[i][0], data[i][1], data[i][2])?;
+                }
+                writeln!(w)?;
             }
         }
     }
@@ -678,7 +819,7 @@ pub fn write_restart(
         force_y: atoms.force[..nlocal].iter().map(|v| v[1]).collect(),
         force_z: atoms.force[..nlocal].iter().map(|v| v[2]).collect(),
         mass: atoms.mass[..nlocal].to_vec(),
-        skin: atoms.skin[..nlocal].to_vec(),
+        cutoff_radius: atoms.cutoff_radius[..nlocal].to_vec(),
         atom_data_buffers: registry.pack_all_for_restart(nlocal),
         // Legacy fields left empty — rotational data now in atom_data_buffers via DemAtom
         omega_x: Vec::new(),
@@ -805,7 +946,6 @@ pub fn read_restart(
     atoms.atom_type = data.atom_type;
     atoms.origin_index = vec![0; n];
     atoms.is_ghost = vec![false; n];
-    atoms.is_collision = vec![false; n];
     atoms.pos = data.pos_x.iter().zip(data.pos_y.iter()).zip(data.pos_z.iter())
         .map(|((&x, &y), &z)| [x, y, z]).collect();
     atoms.vel = data.vel_x.iter().zip(data.vel_y.iter()).zip(data.vel_z.iter())
@@ -814,7 +954,7 @@ pub fn read_restart(
         .map(|((&x, &y), &z)| [x, y, z]).collect();
     atoms.mass = data.mass;
     atoms.inv_mass = atoms.mass.iter().map(|&m| 1.0 / m).collect();
-    atoms.skin = data.skin;
+    atoms.cutoff_radius = data.cutoff_radius;
 
     // Restore AtomData (DemAtom, etc.) from generic buffers
     if !data.atom_data_buffers.is_empty() {

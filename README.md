@@ -178,7 +178,7 @@ cargo run --release -- config.toml --schedule
 - Named material types with per-pair mixing
 
 ### MD (Molecular)
-- Lennard-Jones 12-6 with cutoff, virial accumulator, and tail corrections
+- Lennard-Jones 12-6 with cutoff, virial accumulator, and tail corrections; multi-type support with per-type parameters, mixing rules, and explicit pair coefficient overrides
 - Nose-Hoover NVT thermostat (symmetric Liouville splitting)
 - Langevin thermostat (stochastic friction + random force, group-aware)
 - FCC lattice initialization with Maxwell-Boltzmann velocities
@@ -189,7 +189,9 @@ cargo run --release -- config.toml --schedule
 - Single-process mode with ghost atoms for periodic boundaries
 - Bin-based neighbor lists with CSR storage and forward-only stencil
 - Brute force and sweep-and-prune neighbor lists also available
-- Named atom groups (`[[group]]`) with type and region filters
+- Named atom groups (`[[group]]`) with type and region filters; structured `Region` primitives (block, sphere, cylinder, plane)
+- `PairCoeffTable<T>` generic NxN symmetric pair coefficient storage with geometric/arithmetic mixing
+- `DumpRegistry` callback-based per-atom output extension for dump and VTP files
 - Fixes: AddForce, SetForce, Freeze, MoveLinear (group-based)
 - TOML config with `serde` validation and `deny_unknown_fields` on all config structs
 - Dump files (CSV/binary), restart files (bincode/JSON), VTP visualization
@@ -323,7 +325,7 @@ These are specialized features that won't be in core. Users can write plugins fo
 | [`mddem`](crates/mddem/) | Umbrella crate: `CorePlugins`, `LJDefaultPlugins`, prelude re-exports |
 | [`mddem_scheduler`](crates/mddem_scheduler/) | DI scheduler, resources, schedule sets, ordering, run conditions, states |
 | [`mddem_app`](crates/mddem_app/) | App, SubApp, Plugin, PluginGroup, StatesPlugin |
-| [`mddem_core`](crates/mddem_core/) | TOML config, domain decomposition, communication, atom data, run management |
+| [`mddem_core`](crates/mddem_core/) | TOML config, domain decomposition, communication, atom data, pair coefficients, regions, run management |
 | [`mddem_neighbor`](crates/mddem_neighbor/) | Neighbor lists: brute force, sweep-and-prune, bin-based |
 | [`mddem_verlet`](crates/mddem_verlet/) | Velocity Verlet translational integration |
 | [`mddem_print`](crates/mddem_print/) | Thermo, VTP, dump files, restart files |
@@ -333,7 +335,7 @@ These are specialized features that won't be in core. Users can write plugins fo
 | [`dem_granular`](crates/dem_granular/) | Hertz normal, Mindlin tangential, rotational dynamics, granular temperature |
 | [`dem_gravity`](crates/dem_gravity/) | Gravity body force |
 | [`dem_wall`](crates/dem_wall/) | Plane wall contact forces |
-| [`md_lj`](crates/md_lj/) | LJ 12-6 pair force with virial and tail corrections |
+| [`md_lj`](crates/md_lj/) | LJ 12-6 pair force with virial, tail corrections, and multi-type support |
 | [`md_thermostat`](crates/md_thermostat/) | Nose-Hoover NVT thermostat |
 | [`md_langevin`](crates/md_langevin/) | Langevin thermostat (stochastic friction + random force) |
 | [`md_lattice`](crates/md_lattice/) | FCC lattice initialization |

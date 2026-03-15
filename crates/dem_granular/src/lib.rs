@@ -15,13 +15,13 @@ pub mod contact;
 use mddem_app::prelude::*;
 
 use dem_atom::DemAtomPlugin;
-use dem_atom_insert::DemAtomInsertPlugin;
+use dem_atom::DemAtomInsertPlugin;
 use mddem_verlet::VelocityVerletPlugin;
 
 pub use contact::HertzMindlinContactPlugin;
 
-/// √(5/3) — viscoelastic damping coefficient
-pub const SQRT_5_3: f64 = 0.9128709291752768;
+/// Re-export from [`dem_atom`] for convenience.
+pub use dem_atom::SQRT_5_3;
 /// Epsilon to avoid division by zero in tangential force
 pub const TANGENTIAL_EPSILON: f64 = 1e-30;
 /// Large overlap warning threshold (ratio of distance to sum of radii)

@@ -1,0 +1,323 @@
+//! Spatial region primitives for groups, particle insertion, and wall definitions.
+
+use rand::Rng;
+use serde::Deserialize;
+
+/// Axis for cylinder orientation.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum Axis {
+    X,
+    Y,
+    Z,
+}
+
+/// A spatial region primitive. Deserialized from TOML with `type` tag.
+///
+/// # Examples
+/// ```toml
+/// region = { type = "block", min = [0, 0, 0], max = [1, 1, 1] }
+/// region = { type = "sphere", center = [0, 0, 0], radius = 5.0 }
+/// region = { type = "cylinder", center = [0, 0], radius = 1.0, axis = "z", lo = 0.0, hi = 5.0 }
+/// region = { type = "plane", point = [0, 0, 0], normal = [0, 0, 1] }
+/// ```
+#[derive(Deserialize, Clone, Debug)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Region {
+    Block {
+        min: [f64; 3],
+        max: [f64; 3],
+    },
+    Sphere {
+        center: [f64; 3],
+        radius: f64,
+    },
+    Cylinder {
+        center: [f64; 2],
+        radius: f64,
+        axis: Axis,
+        lo: f64,
+        hi: f64,
+    },
+    Plane {
+        point: [f64; 3],
+        normal: [f64; 3],
+    },
+}
+
+impl Region {
+    /// Test whether a point lies inside (or on) the region.
+    ///
+    /// For `Plane`, returns true if the point is on the positive side (dot product >= 0).
+    pub fn contains(&self, pos: &[f64; 3]) -> bool {
+        match self {
+            Region::Block { min, max } => {
+                pos[0] >= min[0]
+                    && pos[0] <= max[0]
+                    && pos[1] >= min[1]
+                    && pos[1] <= max[1]
+                    && pos[2] >= min[2]
+                    && pos[2] <= max[2]
+            }
+            Region::Sphere { center, radius } => {
+                let dx = pos[0] - center[0];
+                let dy = pos[1] - center[1];
+                let dz = pos[2] - center[2];
+                dx * dx + dy * dy + dz * dz <= radius * radius
+            }
+            Region::Cylinder {
+                center,
+                radius,
+                axis,
+                lo,
+                hi,
+            } => {
+                let (axial, r0, r1) = match axis {
+                    Axis::X => (pos[0], pos[1] - center[0], pos[2] - center[1]),
+                    Axis::Y => (pos[1], pos[0] - center[0], pos[2] - center[1]),
+                    Axis::Z => (pos[2], pos[0] - center[0], pos[1] - center[1]),
+                };
+                axial >= *lo && axial <= *hi && r0 * r0 + r1 * r1 <= radius * radius
+            }
+            Region::Plane {
+                point,
+                normal,
+            } => {
+                let dx = pos[0] - point[0];
+                let dy = pos[1] - point[1];
+                let dz = pos[2] - point[2];
+                dx * normal[0] + dy * normal[1] + dz * normal[2] >= 0.0
+            }
+        }
+    }
+
+    /// Generate a uniformly random point inside the region.
+    ///
+    /// # Panics
+    /// Panics for `Plane` (infinite, no bounded volume).
+    pub fn random_point_inside(&self, rng: &mut impl Rng) -> [f64; 3] {
+        match self {
+            Region::Block { min, max } => [
+                rng.random_range(min[0]..max[0]),
+                rng.random_range(min[1]..max[1]),
+                rng.random_range(min[2]..max[2]),
+            ],
+            Region::Sphere { center, radius } => {
+                // Rejection sampling for uniform distribution in sphere
+                loop {
+                    let x = rng.random_range(-1.0..1.0);
+                    let y = rng.random_range(-1.0..1.0);
+                    let z = rng.random_range(-1.0..1.0);
+                    if x * x + y * y + z * z <= 1.0 {
+                        return [
+                            center[0] + x * radius,
+                            center[1] + y * radius,
+                            center[2] + z * radius,
+                        ];
+                    }
+                }
+            }
+            Region::Cylinder {
+                center,
+                radius,
+                axis,
+                lo,
+                hi,
+            } => {
+                // Rejection sampling for uniform distribution in cylinder cross-section
+                loop {
+                    let u = rng.random_range(-1.0..1.0);
+                    let v = rng.random_range(-1.0..1.0);
+                    if u * u + v * v <= 1.0 {
+                        let axial = rng.random_range(*lo..*hi);
+                        let r0 = center[0] + u * radius;
+                        let r1 = center[1] + v * radius;
+                        return match axis {
+                            Axis::X => [axial, r0, r1],
+                            Axis::Y => [r0, axial, r1],
+                            Axis::Z => [r0, r1, axial],
+                        };
+                    }
+                }
+            }
+            Region::Plane { .. } => {
+                panic!("Cannot generate random point inside a Plane region (unbounded)");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_block_contains() {
+        let r = Region::Block {
+            min: [0.0, 0.0, 0.0],
+            max: [1.0, 1.0, 1.0],
+        };
+        assert!(r.contains(&[0.5, 0.5, 0.5]));
+        assert!(r.contains(&[0.0, 0.0, 0.0]));
+        assert!(r.contains(&[1.0, 1.0, 1.0]));
+        assert!(!r.contains(&[1.1, 0.5, 0.5]));
+        assert!(!r.contains(&[-0.1, 0.5, 0.5]));
+    }
+
+    #[test]
+    fn test_sphere_contains() {
+        let r = Region::Sphere {
+            center: [0.0, 0.0, 0.0],
+            radius: 1.0,
+        };
+        assert!(r.contains(&[0.0, 0.0, 0.0]));
+        assert!(r.contains(&[0.5, 0.5, 0.5]));
+        assert!(!r.contains(&[1.0, 1.0, 0.0]));
+    }
+
+    #[test]
+    fn test_cylinder_contains() {
+        let r = Region::Cylinder {
+            center: [0.0, 0.0],
+            radius: 1.0,
+            axis: Axis::Z,
+            lo: 0.0,
+            hi: 5.0,
+        };
+        assert!(r.contains(&[0.0, 0.0, 2.5]));
+        assert!(r.contains(&[0.5, 0.5, 1.0]));
+        assert!(!r.contains(&[0.0, 0.0, -1.0]));
+        assert!(!r.contains(&[2.0, 0.0, 2.5]));
+    }
+
+    #[test]
+    fn test_plane_contains() {
+        let r = Region::Plane {
+            point: [0.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        assert!(r.contains(&[0.0, 0.0, 1.0]));
+        assert!(r.contains(&[0.0, 0.0, 0.0]));
+        assert!(!r.contains(&[0.0, 0.0, -1.0]));
+    }
+
+    #[test]
+    fn test_block_random_point() {
+        let r = Region::Block {
+            min: [1.0, 2.0, 3.0],
+            max: [4.0, 5.0, 6.0],
+        };
+        let mut rng = rand::rng();
+        for _ in 0..100 {
+            let p = r.random_point_inside(&mut rng);
+            assert!(r.contains(&p), "random point {:?} not in block", p);
+        }
+    }
+
+    #[test]
+    fn test_sphere_random_point() {
+        let r = Region::Sphere {
+            center: [1.0, 2.0, 3.0],
+            radius: 2.0,
+        };
+        let mut rng = rand::rng();
+        for _ in 0..100 {
+            let p = r.random_point_inside(&mut rng);
+            assert!(r.contains(&p), "random point {:?} not in sphere", p);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot generate random point inside a Plane")]
+    fn test_plane_random_panics() {
+        let r = Region::Plane {
+            point: [0.0, 0.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        let mut rng = rand::rng();
+        r.random_point_inside(&mut rng);
+    }
+
+    #[test]
+    fn test_cylinder_contains_axis_x() {
+        // Axis::X: axial = x, center is in (Y, Z) plane
+        let r = Region::Cylinder {
+            center: [2.0, 3.0], // center_y=2, center_z=3
+            radius: 1.0,
+            axis: Axis::X,
+            lo: 0.0,
+            hi: 5.0,
+        };
+        // On axis center: x=2.5, y=2.0, z=3.0
+        assert!(r.contains(&[2.5, 2.0, 3.0]));
+        // Near edge in Y: y=2.9, z=3.0 → r=0.9
+        assert!(r.contains(&[1.0, 2.9, 3.0]));
+        // Outside radius in Y: y=5.0, z=3.0 → r=3.0
+        assert!(!r.contains(&[2.5, 5.0, 3.0]));
+        // Outside axial range: x=-1.0
+        assert!(!r.contains(&[-1.0, 2.0, 3.0]));
+        // Outside axial range: x=6.0
+        assert!(!r.contains(&[6.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn test_cylinder_contains_axis_y() {
+        // Axis::Y: axial = y, center is in (X, Z) plane
+        let r = Region::Cylinder {
+            center: [1.0, 4.0], // center_x=1, center_z=4
+            radius: 0.5,
+            axis: Axis::Y,
+            lo: -1.0,
+            hi: 3.0,
+        };
+        // On axis center: x=1.0, y=0.0, z=4.0
+        assert!(r.contains(&[1.0, 0.0, 4.0]));
+        // Near edge: x=1.4, z=4.0 → r=0.4
+        assert!(r.contains(&[1.4, 2.0, 4.0]));
+        // Outside radius: x=2.0, z=4.0 → r=1.0
+        assert!(!r.contains(&[2.0, 1.0, 4.0]));
+        // Outside axial range: y=-2.0
+        assert!(!r.contains(&[1.0, -2.0, 4.0]));
+    }
+
+    #[test]
+    fn test_cylinder_random_point_axis_x() {
+        let r = Region::Cylinder {
+            center: [2.0, 3.0],
+            radius: 1.5,
+            axis: Axis::X,
+            lo: -1.0,
+            hi: 4.0,
+        };
+        let mut rng = rand::rng();
+        for _ in 0..200 {
+            let p = r.random_point_inside(&mut rng);
+            assert!(r.contains(&p), "random point {:?} not in X-cylinder", p);
+        }
+    }
+
+    #[test]
+    fn test_cylinder_random_point_axis_y() {
+        let r = Region::Cylinder {
+            center: [1.0, 4.0],
+            radius: 2.0,
+            axis: Axis::Y,
+            lo: 0.0,
+            hi: 10.0,
+        };
+        let mut rng = rand::rng();
+        for _ in 0..200 {
+            let p = r.random_point_inside(&mut rng);
+            assert!(r.contains(&p), "random point {:?} not in Y-cylinder", p);
+        }
+    }
+
+    #[test]
+    fn test_region_deserialization() {
+        let toml_str = r#"type = "sphere"
+center = [1.0, 2.0, 3.0]
+radius = 5.0"#;
+        let r: Region = toml::from_str(toml_str).unwrap();
+        assert!(r.contains(&[1.0, 2.0, 3.0]));
+    }
+}

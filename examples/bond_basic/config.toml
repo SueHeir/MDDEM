@@ -26,14 +26,12 @@ friction = 0.4
 # Bottom particle: frozen in place
 [[group]]
 name = "bottom"
-region_z_low = 0.0
-region_z_high = 0.002
+region = { type = "block", min = [-1e30, -1e30, 0.0], max = [1e30, 1e30, 0.002] }
 
 # Top particle: pulled upward
 [[group]]
 name = "top"
-region_z_low = 0.018
-region_z_high = 0.030
+region = { type = "block", min = [-1e30, -1e30, 0.018], max = [1e30, 1e30, 0.030] }
 
 [[freeze]]
 group = "bottom"

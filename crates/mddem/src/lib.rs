@@ -3,10 +3,8 @@
 //! plugin groups for quick setup.
 
 pub use dem_atom;
-pub use dem_atom_insert;
 pub use dem_bond;
 pub use dem_granular;
-pub use dem_gravity;
 pub use dem_wall;
 pub use md_lattice;
 pub use md_lj;
@@ -87,13 +85,13 @@ impl PluginGroup for LJDefaultPlugins {
 pub mod prelude {
     pub use crate::{CorePlugins, LJDefaultPlugins};
     pub use dem_atom::{DemAtomPlugin, DemConfig, MaterialTable};
-    pub use dem_atom_insert::{DemAtomInsertPlugin, ParticlesConfig};
+    pub use dem_atom::{DemAtomInsertPlugin, ParticlesConfig};
     pub use dem_bond::DemBondPlugin;
     pub use dem_granular::GranularDefaultPlugins;
-    pub use dem_gravity::{GravityConfig, GravityPlugin};
+    pub use mddem_fixes::{GravityConfig, GravityPlugin};
     pub use dem_wall::{WallDef, WallPlane, WallPlugin, Walls};
     pub use md_lattice::{LatticeConfig, LatticePlugin};
-    pub use md_lj::{LJConfig, LJForcePlugin, LJTailCorrections};
+    pub use md_lj::{LJConfig, LJForcePlugin, LJPairTable, LJTailCorrections};
     pub use md_measure::{MeasureConfig, MeasurePlugin};
     pub use md_thermostat::{LangevinConfig, LangevinPlugin, LangevinState, NoseHooverPlugin, NoseHooverState, ThermostatConfig};
     pub use mddem_fixes::{AddForceDef, FixesPlugin, FixesRegistry, FreezeDef, MoveLinearDef, SetForceDef};

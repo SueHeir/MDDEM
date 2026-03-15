@@ -4,11 +4,8 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::Deserialize;
 
-use dem_atom::{DemAtom, MaterialTable};
+use dem_atom::{DemAtom, MaterialTable, SQRT_5_3};
 use mddem_core::{Atom, AtomDataRegistry, Config};
-
-// √(5/3) — appears in the viscoelastic damping formula
-const SQRT_5_3: f64 = 0.9128709291752768;
 
 fn default_neg_inf() -> f64 {
     f64::NEG_INFINITY
@@ -293,23 +290,7 @@ mod tests {
     use super::*;
     use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry};
-    use mddem_test_utils::make_material_table;
-
-    fn push_test_atom(
-        atom: &mut Atom,
-        dem: &mut DemAtom,
-        tag: u32,
-        pos_x: f64,
-        pos_y: f64,
-        pos_z: f64,
-        radius: f64,
-    ) {
-        let mass = 2500.0 * 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3);
-        atom.push_test_atom(tag, [pos_x, pos_y, pos_z], radius, mass);
-        dem.radius.push(radius);
-        dem.density.push(2500.0);
-        dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
-    }
+    use mddem_test_utils::{make_material_table, push_dem_test_atom};
 
     fn make_wall_plane(
         point_x: f64,
@@ -345,7 +326,7 @@ mod tests {
         let radius = 0.001;
 
         // Atom at z = 0.0005, wall at z = 0 with normal +z → overlap = 0.001 - 0.0005 = 0.0005
-        push_test_atom(&mut atom, &mut dem, 0, 0.01, 0.01, 0.0005, radius);
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.01, 0.01, 0.0005], radius);
         atom.nlocal = 1;
         atom.natoms = 1;
 
@@ -384,7 +365,7 @@ mod tests {
         let radius = 0.001;
 
         // Atom at z = 0.002, wall at z = 0 → distance = 0.002 > radius = 0.001
-        push_test_atom(&mut atom, &mut dem, 0, 0.01, 0.01, 0.002, radius);
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.01, 0.01, 0.002], radius);
         atom.nlocal = 1;
         atom.natoms = 1;
 
@@ -415,7 +396,7 @@ mod tests {
         let mut dem = DemAtom::new();
         let radius = 0.001;
 
-        push_test_atom(&mut atom, &mut dem, 0, 0.01, 0.01, 0.0005, radius);
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.01, 0.01, 0.0005], radius);
         atom.nlocal = 1;
         atom.natoms = 1;
 
@@ -466,7 +447,7 @@ mod tests {
 
         // 45-degree wall in x-z plane: normal = (1, 0, 1) normalized
         // Wall passes through origin. Place atom at (0.0003, 0, 0.0003) — distance along normal ≈ 0.000424
-        push_test_atom(&mut atom, &mut dem, 0, 0.0003, 0.0, 0.0003, radius);
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.0003, 0.0, 0.0003], radius);
         atom.nlocal = 1;
         atom.natoms = 1;
 
@@ -513,7 +494,7 @@ mod tests {
         let radius = 0.001;
 
         // Atom at z = 0.0005 overlaps wall at z=0, but atom is at x=0.05 outside bound_x_high=0.04
-        push_test_atom(&mut atom, &mut dem, 0, 0.05, 0.01, 0.0005, radius);
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.05, 0.01, 0.0005], radius);
         atom.nlocal = 1;
         atom.natoms = 1;
 

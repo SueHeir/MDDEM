@@ -109,9 +109,6 @@ pub fn hertz_mindlin_contact_force(
             continue;
         }
 
-        atoms.is_collision[i] = true;
-        atoms.is_collision[j] = true;
-
         // ── Shared quantities (computed once) ────────────────────────────
         let inv_dist = 1.0 / distance;
         let nx = dx * inv_dist;
@@ -307,10 +304,9 @@ mod tests {
     use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry};
     use mddem_neighbor::Neighbor;
-    use mddem_test_utils::make_material_table;
-    use std::f64::consts::PI;
+    use mddem_test_utils::{make_material_table, push_dem_test_atom};
 
-    fn push_test_atom(
+    fn push_test_atom_with_history(
         atom: &mut Atom,
         dem: &mut DemAtom,
         history: &mut ContactHistoryStore,
@@ -318,16 +314,7 @@ mod tests {
         pos: [f64; 3],
         radius: f64,
     ) {
-        let density = 2500.0;
-        let mass = density * 4.0 / 3.0 * PI * radius.powi(3);
-        atom.push_test_atom(tag, pos, radius, mass);
-        dem.radius.push(radius);
-        dem.density.push(density);
-        dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
-        dem.quaternion.push([1.0, 0.0, 0.0, 0.0]);
-        dem.omega.push([0.0; 3]);
-        dem.ang_mom.push([0.0; 3]);
-        dem.torque.push([0.0; 3]);
+        push_dem_test_atom(atom, dem, tag, pos, radius);
         history.contacts.push(Vec::new());
     }
 
@@ -340,11 +327,11 @@ mod tests {
         let mut hist = ContactHistoryStore::new();
         atom.dt = 1e-7;
 
-        push_test_atom(
+        push_test_atom_with_history(
             &mut atom, &mut dem, &mut hist, 0,
             [0.0, 0.0, 0.0], radius,
         );
-        push_test_atom(
+        push_test_atom_with_history(
             &mut atom, &mut dem, &mut hist, 1,
             [0.0019, 0.0, 0.0], radius,
         );
@@ -382,11 +369,11 @@ mod tests {
         let mut hist = ContactHistoryStore::new();
         atom.dt = 1e-7;
 
-        push_test_atom(
+        push_test_atom_with_history(
             &mut atom, &mut dem, &mut hist, 0,
             [0.0, 0.0, 0.0], radius,
         );
-        push_test_atom(
+        push_test_atom_with_history(
             &mut atom, &mut dem, &mut hist, 1,
             [0.0019, 0.0, 0.0], radius,
         );
@@ -436,11 +423,11 @@ mod tests {
         let mut hist = ContactHistoryStore::new();
         atom.dt = 1e-7;
 
-        push_test_atom(
+        push_test_atom_with_history(
             &mut atom, &mut dem, &mut hist, 0,
             [0.0, 0.0, 0.0], radius,
         );
-        push_test_atom(
+        push_test_atom_with_history(
             &mut atom, &mut dem, &mut hist, 1,
             [0.003, 0.0, 0.0], radius,
         );

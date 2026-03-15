@@ -6,7 +6,7 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, CommResource, Config, Domain, VirialStressPlugin};
+use mddem_core::{Atom, CommResource, Config, Domain, MixingRule, PairCoeffTable, VirialStressPlugin};
 use mddem_neighbor::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -25,15 +25,24 @@ fn default_cutoff() -> f64 {
 #[serde(deny_unknown_fields)]
 /// TOML `[lj]` — Lennard-Jones potential parameters.
 pub struct LJConfig {
-    /// Well depth (energy units).
+    /// Well depth (energy units). Used as default for single-type mode.
     #[serde(default = "default_epsilon")]
     pub epsilon: f64,
-    /// Particle diameter (length units).
+    /// Particle diameter (length units). Used as default for single-type mode.
     #[serde(default = "default_sigma")]
     pub sigma: f64,
     /// Cutoff distance in units of sigma.
     #[serde(default = "default_cutoff")]
     pub cutoff: f64,
+    /// Mixing rule for multi-type: "geometric" or "arithmetic".
+    #[serde(default)]
+    pub mixing: Option<String>,
+    /// Per-type LJ parameters. If present, enables multi-type mode.
+    #[serde(default)]
+    pub types: Option<Vec<LJTypeConfig>>,
+    /// Explicit pair coefficient overrides.
+    #[serde(default)]
+    pub pair_coeffs: Option<Vec<LJPairOverride>>,
 }
 
 impl Default for LJConfig {
@@ -42,9 +51,74 @@ impl Default for LJConfig {
             epsilon: 1.0,
             sigma: 1.0,
             cutoff: 2.5,
+            mixing: None,
+            types: None,
+            pair_coeffs: None,
         }
     }
 }
+
+/// Per-type LJ parameters from `[[lj.types]]`.
+#[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct LJTypeConfig {
+    pub epsilon: f64,
+    pub sigma: f64,
+}
+
+/// Explicit pair override from `[[lj.pair_coeffs]]`.
+#[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct LJPairOverride {
+    pub types: [usize; 2],
+    pub epsilon: f64,
+    pub sigma: f64,
+    #[serde(default)]
+    pub cutoff: Option<f64>,
+}
+
+// ── Precomputed pair coefficients ───────────────────────────────────────────
+
+/// Precomputed LJ pair coefficients for fast inner-loop evaluation.
+#[derive(Clone)]
+pub struct LJPairCoeffs {
+    /// 48 * eps * sigma^12
+    pub lj1: f64,
+    /// 24 * eps * sigma^6
+    pub lj2: f64,
+    /// cutoff^2 (in absolute length units)
+    pub cutoff2: f64,
+    pub epsilon: f64,
+    pub sigma: f64,
+}
+
+impl Default for LJPairCoeffs {
+    fn default() -> Self {
+        LJPairCoeffs {
+            lj1: 0.0,
+            lj2: 0.0,
+            cutoff2: 0.0,
+            epsilon: 0.0,
+            sigma: 0.0,
+        }
+    }
+}
+
+impl LJPairCoeffs {
+    fn from_params(epsilon: f64, sigma: f64, cutoff_sigma: f64) -> Self {
+        let sigma6 = (sigma * sigma).powi(3);
+        LJPairCoeffs {
+            lj1: 48.0 * epsilon * sigma6 * sigma6,
+            lj2: 24.0 * epsilon * sigma6,
+            cutoff2: (cutoff_sigma * sigma).powi(2),
+            epsilon,
+            sigma,
+        }
+    }
+}
+
+/// Wrapper resource for the LJ pair coefficient table.
+pub struct LJPairTable(pub PairCoeffTable<LJPairCoeffs>);
 
 // ── Resources ───────────────────────────────────────────────────────────────
 
@@ -82,13 +156,74 @@ cutoff = 2.5     # in sigma units"#,
         Config::load::<LJConfig>(app, "lj");
 
         app.add_plugins(VirialStressPlugin);
+        // Add a default 1x1 pair table; build_lj_pair_table will replace it.
+        let mut default_table = PairCoeffTable::new(1, LJPairCoeffs::default());
+        default_table.set(0, 0, LJPairCoeffs::from_params(1.0, 1.0, 2.5));
+        app.add_resource(LJPairTable(default_table));
         app.add_resource(LJTailCorrections::default())
+            .add_setup_system(
+                build_lj_pair_table,
+                ScheduleSetupSet::Setup,
+            )
             .add_setup_system(
                 setup_lj_tails.run_if(first_stage_only()),
                 ScheduleSetupSet::PostSetup,
             )
             .add_update_system(lj_force.label("lj"), ScheduleSet::Force);
     }
+}
+
+// ── Pair table construction ─────────────────────────────────────────────────
+
+fn build_lj_pair_table(
+    lj: Res<LJConfig>,
+    mut atoms: ResMut<Atom>,
+    comm: Res<CommResource>,
+    mut pair_table_res: ResMut<LJPairTable>,
+) {
+    let mixing = match lj.mixing.as_deref() {
+        Some("arithmetic") => MixingRule::Arithmetic,
+        _ => MixingRule::Geometric,
+    };
+
+    if let Some(ref types) = lj.types {
+        let n = types.len();
+        atoms.ntypes = n;
+        let mut table = PairCoeffTable::new(n, LJPairCoeffs::default());
+
+        for i in 0..n {
+            for j in i..n {
+                let eps = match mixing {
+                    MixingRule::Geometric => (types[i].epsilon * types[j].epsilon).sqrt(),
+                    MixingRule::Arithmetic => (types[i].epsilon + types[j].epsilon) / 2.0,
+                };
+                let sig = match mixing {
+                    MixingRule::Geometric => (types[i].sigma * types[j].sigma).sqrt(),
+                    MixingRule::Arithmetic => (types[i].sigma + types[j].sigma) / 2.0,
+                };
+                table.set(i, j, LJPairCoeffs::from_params(eps, sig, lj.cutoff));
+            }
+        }
+
+        // Apply explicit overrides
+        if let Some(ref overrides) = lj.pair_coeffs {
+            for ov in overrides {
+                let cut = ov.cutoff.unwrap_or(lj.cutoff);
+                table.set(ov.types[0], ov.types[1], LJPairCoeffs::from_params(ov.epsilon, ov.sigma, cut));
+            }
+        }
+
+        if comm.rank() == 0 {
+            println!("LJ: {} types, mixing={:?}", n, mixing);
+        }
+        pair_table_res.0 = table;
+    } else {
+        // Single-type legacy mode
+        atoms.ntypes = 1;
+        let mut table = PairCoeffTable::new(1, LJPairCoeffs::default());
+        table.set(0, 0, LJPairCoeffs::from_params(lj.epsilon, lj.sigma, lj.cutoff));
+        pair_table_res.0 = table;
+    };
 }
 
 // ── Systems ─────────────────────────────────────────────────────────────────
@@ -99,30 +234,58 @@ pub fn setup_lj_tails(
     domain: Res<Domain>,
     comm: Res<CommResource>,
     mut tails: ResMut<LJTailCorrections>,
+    pair_table_res: Res<LJPairTable>,
 ) {
     let n = comm.all_reduce_sum_f64(atoms.nlocal as f64);
     let v = domain.volume;
     let rho = n / v;
-    let rc = lj.cutoff * lj.sigma;
-    let sigma3 = lj.sigma.powi(3);
-    let rc3 = rc.powi(3);
-    let rc9 = rc3.powi(3);
-    let sigma6 = sigma3 * sigma3;
-    let sigma9 = sigma6 * sigma3;
-    // Standard LJ tail corrections
-    // E_tail = (8/3) * pi * N * rho * eps * sigma^3 * [ (1/3)(sigma/rc)^9 - (sigma/rc)^3 ]
-    tails.energy_tail =
-        (8.0 / 3.0) * PI * n * rho * lj.epsilon * sigma3 * (sigma9 / (3.0 * rc9) - sigma3 / rc3);
 
-    // P_tail = (16/3) * pi * rho^2 * eps * sigma^3 * [ (2/3)(sigma/rc)^9 - (sigma/rc)^3 ]
-    tails.pressure_tail = (16.0 / 3.0) * PI * rho * rho * lj.epsilon * sigma3
-        * (2.0 * sigma9 / (3.0 * rc9) - sigma3 / rc3);
+    let pair_table = &pair_table_res.0;
+    let ntypes = pair_table.ntypes();
+
+    let mut e_tail = 0.0;
+    let mut p_tail = 0.0;
+
+    // For simplicity, assume uniform type distribution when multi-type.
+    // Single-type case: frac = 1.0, so result is identical to original.
+    let frac = 1.0 / ntypes as f64;
+
+    for i in 0..ntypes {
+        for j in 0..ntypes {
+            let c = pair_table.get(i as u32, j as u32);
+            let rc = c.cutoff2.sqrt();
+            let sigma3 = c.sigma.powi(3);
+            let rc3 = rc.powi(3);
+            let rc9 = rc3.powi(3);
+            let sigma6 = sigma3 * sigma3;
+            let sigma9 = sigma6 * sigma3;
+
+            let w = frac * frac;
+            e_tail += w * (8.0 / 3.0) * PI * n * rho * c.epsilon * sigma3
+                * (sigma9 / (3.0 * rc9) - sigma3 / rc3);
+            p_tail += w * (16.0 / 3.0) * PI * rho * rho * c.epsilon * sigma3
+                * (2.0 * sigma9 / (3.0 * rc9) - sigma3 / rc3);
+        }
+    }
+
+    tails.energy_tail = e_tail;
+    tails.pressure_tail = p_tail;
 
     if comm.rank() == 0 {
-        println!(
-            "LJ: eps={}, sigma={}, rc={}, rho={:.4}",
-            lj.epsilon, lj.sigma, lj.cutoff, rho
-        );
+        if ntypes == 1 {
+            let c = pair_table.get(0, 0);
+            println!(
+                "LJ: eps={}, sigma={}, rc={}, rho={:.4}",
+                c.epsilon, c.sigma, lj.cutoff, rho
+            );
+        } else {
+            println!("LJ: {} types, rho={:.4}", ntypes, rho);
+            eprintln!(
+                "WARNING: LJ tail corrections assume equimolar type distribution (1/{} each). \
+                 For non-equimolar mixtures, tail corrections will be approximate.",
+                ntypes
+            );
+        }
         println!(
             "LJ tail corrections: E_tail={:.6}, P_tail={:.6}",
             tails.energy_tail, tails.pressure_tail
@@ -133,33 +296,24 @@ pub fn setup_lj_tails(
 pub fn lj_force(
     mut atoms: ResMut<Atom>,
     neighbor: Res<Neighbor>,
-    lj: Res<LJConfig>,
+    _lj: Res<LJConfig>,
     _domain: Res<Domain>,
     virial: Option<ResMut<mddem_core::VirialStress>>,
+    pair_table_res: Res<LJPairTable>,
 ) {
-    let cutoff2 = (lj.cutoff * lj.sigma).powi(2);
-    // Precompute LAMMPS-style constants: lj1 = 48*eps*sigma^12, lj2 = 24*eps*sigma^6
-    // Inner loop then needs only one division (r2inv = 1/r2) and multiplies.
-    let sigma6 = (lj.sigma * lj.sigma).powi(3);
-    let lj1 = 48.0 * lj.epsilon * sigma6 * sigma6;
-    let lj2 = 24.0 * lj.epsilon * sigma6;
-
+    let pair_table = &pair_table_res.0;
     let nlocal = atoms.nlocal as usize;
+    let multi_type = pair_table.ntypes() > 1;
 
-    // SAFETY: i < nlocal <= atoms.len(), neighbor_offsets has nlocal+1 entries,
-    // neighbor_indices[k] < atoms.len() (from CSR construction), j < atoms.len().
     let pos_ptr = atoms.pos.as_ptr();
     let force_ptr = atoms.force.as_mut_ptr();
-    // Cache CSR pointers to prevent alias-reload in inner loops.
-    // Without this, the compiler reloads the Vec data pointer every iteration
-    // because it can't prove the force writes don't alias the Neighbor struct.
     let offsets_ptr = neighbor.neighbor_offsets.as_ptr();
     let indices_ptr = neighbor.neighbor_indices.as_ptr();
+    let type_ptr = atoms.atom_type.as_ptr();
 
     let virial_active = virial.as_ref().map_or(false, |v| v.active);
 
     if virial_active {
-        // Virial path: accumulate virial stress tensor alongside forces.
         let mut vxx = 0.0f64;
         let mut vyy = 0.0f64;
         let mut vzz = 0.0f64;
@@ -172,6 +326,7 @@ pub fn lj_force(
             let mut fi = unsafe { *force_ptr.add(i) };
             let start = unsafe { *offsets_ptr.add(i) } as usize;
             let end = unsafe { *offsets_ptr.add(i + 1) } as usize;
+            let ti = unsafe { *type_ptr.add(i) };
 
             for k in start..end {
                 let j = unsafe { *indices_ptr.add(k) } as usize;
@@ -181,13 +336,20 @@ pub fn lj_force(
                 let dz = pj[2] - pi[2];
                 let r2 = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
 
-                if r2 >= cutoff2 {
+                let c = if multi_type {
+                    let tj = unsafe { *type_ptr.add(j) };
+                    pair_table.get(ti, tj)
+                } else {
+                    pair_table.get(0, 0)
+                };
+
+                if r2 >= c.cutoff2 {
                     continue;
                 }
 
                 let r2inv = 1.0 / r2;
                 let r6inv = r2inv * r2inv * r2inv;
-                let fpair = r2inv * r6inv * lj1.mul_add(r6inv, -lj2);
+                let fpair = r2inv * r6inv * c.lj1.mul_add(r6inv, -c.lj2);
 
                 let fx = -fpair * dx;
                 let fy = -fpair * dy;
@@ -219,12 +381,12 @@ pub fn lj_force(
             virial.yz += vyz;
         }
     } else {
-        // Fast path: no virial accumulation, enables FMA for force updates.
         for i in 0..nlocal {
             let pi = unsafe { *pos_ptr.add(i) };
             let mut fi = unsafe { *force_ptr.add(i) };
             let start = unsafe { *offsets_ptr.add(i) } as usize;
             let end = unsafe { *offsets_ptr.add(i + 1) } as usize;
+            let ti = unsafe { *type_ptr.add(i) };
 
             for k in start..end {
                 let j = unsafe { *indices_ptr.add(k) } as usize;
@@ -234,13 +396,20 @@ pub fn lj_force(
                 let dz = pj[2] - pi[2];
                 let r2 = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
 
-                if r2 >= cutoff2 {
+                let c = if multi_type {
+                    let tj = unsafe { *type_ptr.add(j) };
+                    pair_table.get(ti, tj)
+                } else {
+                    pair_table.get(0, 0)
+                };
+
+                if r2 >= c.cutoff2 {
                     continue;
                 }
 
                 let r2inv = 1.0 / r2;
                 let r6inv = r2inv * r2inv * r2inv;
-                let fpair = r2inv * r6inv * lj1.mul_add(r6inv, -lj2);
+                let fpair = r2inv * r6inv * c.lj1.mul_add(r6inv, -c.lj2);
 
                 fi[0] = (-fpair).mul_add(dx, fi[0]);
                 fi[1] = (-fpair).mul_add(dy, fi[1]);
@@ -271,6 +440,9 @@ mod tests {
             epsilon: 1.0,
             sigma: 1.0,
             cutoff: 2.5,
+            mixing: None,
+            types: None,
+            pair_coeffs: None,
         };
         app.add_resource(lj_config);
         app.add_resource(mddem_core::VirialStress::default());
@@ -284,11 +456,15 @@ mod tests {
         atom.natoms = 2;
         app.add_resource(atom);
 
+        // Build pair table as resource
+        let mut table = PairCoeffTable::new(1, LJPairCoeffs::default());
+        table.set(0, 0, LJPairCoeffs::from_params(1.0, 1.0, 2.5));
+        app.add_resource(LJPairTable(table));
+
         let mut neighbor = Neighbor::new();
         neighbor.neighbor_list.push((0, 1));
-        // CSR format: offsets for 2 local atoms
-        neighbor.neighbor_offsets = vec![0, 1, 1]; // atom 0 has 1 neighbor, atom 1 has 0
-        neighbor.neighbor_indices = vec![1];        // atom 0's neighbor is atom 1
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
         app.add_resource(neighbor);
 
         app.add_update_system(

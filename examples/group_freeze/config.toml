@@ -25,15 +25,19 @@ epsilon = 1.0
 sigma = 1.0
 cutoff = 2.5
 
+# "frozen" uses a region but dynamic = false locks membership at setup time,
+# so atoms that drift out of the region stay frozen.
 [[group]]
 name = "frozen"
-region_z_low = 0.0
-region_z_high = 3.0
+region = { type = "block", min = [-1e30, -1e30, 0.0], max = [1e30, 1e30, 3.0] }
+dynamic = false
 
+# "mobile" is type-only (no region), so it's static by default — no need to
+# re-evaluate every timestep since atom types don't change.
 [[group]]
 name = "mobile"
-region_z_low = 3.0
-region_z_high = 10.06
+region = { type = "block", min = [-1e30, -1e30, 3.0], max = [1e30, 1e30, 10.06] }
+dynamic = false
 
 [[freeze]]
 group = "frozen"
@@ -43,9 +47,25 @@ temperature = 0.85
 coupling = 1.0
 group = "mobile"
 
-[run]
+# Stage 1: equilibrate with a thick frozen slab
+[[run]]
+name = "equilibrate"
 steps = 5000
 thermo = 100
+
+# Stage 2: shrink the frozen region and add a "top" group
+# Per-stage [[run.group]] redefines "frozen" to a thinner slab and adds "top".
+[[run]]
+name = "release"
+steps = 5000
+thermo = 100
+[[run.group]]
+name = "frozen"
+region = { type = "block", min = [-1e30, -1e30, 0.0], max = [1e30, 1e30, 1.5] }
+dynamic = false
+[[run.group]]
+name = "top"
+region = { type = "block", min = [-1e30, -1e30, 8.0], max = [1e30, 1e30, 10.06] }
 
 [thermo]
 columns = ["step", "atoms", "temp", "temp/mobile", "ke", "walltime", "stepps"]

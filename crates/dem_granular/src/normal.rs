@@ -75,9 +75,6 @@ pub fn hertz_normal_force(
             continue;
         }
 
-        atoms.is_collision[i] = true;
-        atoms.is_collision[j] = true;
-
         let inv_dist = 1.0 / distance;
         let nx = dx * inv_dist;
         let ny = dy * inv_dist;
@@ -128,21 +125,7 @@ mod tests {
     use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry};
     use mddem_neighbor::Neighbor;
-    use mddem_test_utils::make_material_table;
-
-    fn push_test_atom(
-        atom: &mut Atom,
-        dem: &mut DemAtom,
-        tag: u32,
-        pos: [f64; 3],
-        radius: f64,
-    ) {
-        let mass = 2500.0 * 4.0 / 3.0 * std::f64::consts::PI * radius.powi(3);
-        atom.push_test_atom(tag, pos, radius, mass);
-        dem.radius.push(radius);
-        dem.density.push(2500.0);
-        dem.inv_inertia.push(1.0 / (0.4 * mass * radius * radius));
-    }
+    use mddem_test_utils::{make_material_table, push_dem_test_atom};
 
     #[test]
     fn hertz_repulsive_for_overlap() {
@@ -152,8 +135,8 @@ mod tests {
         let mut dem = DemAtom::new();
 
         let radius = 0.001;
-        push_test_atom(&mut atom, &mut dem, 0, [0.0, 0.0, 0.0], radius);
-        push_test_atom(
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.0, 0.0, 0.0], radius);
+        push_dem_test_atom(
             &mut atom,
             &mut dem,
             1,
@@ -198,8 +181,8 @@ mod tests {
         let mut dem = DemAtom::new();
 
         let radius = 0.001;
-        push_test_atom(&mut atom, &mut dem, 0, [0.0, 0.0, 0.0], radius);
-        push_test_atom(
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.0, 0.0, 0.0], radius);
+        push_dem_test_atom(
             &mut atom,
             &mut dem,
             1,

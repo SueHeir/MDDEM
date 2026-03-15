@@ -18,6 +18,7 @@ Long-range corrections computed once at setup from density and cutoff:
 
 ## Config
 
+### Single-type (backward compatible)
 ```toml
 [lj]
 epsilon = 1.0    # well depth (reduced units)
@@ -25,9 +26,33 @@ sigma = 1.0      # length scale
 cutoff = 2.5     # cutoff distance in sigma units
 ```
 
+### Multi-type
+```toml
+[lj]
+cutoff = 2.5
+mixing = "geometric"     # "geometric" (default) or "arithmetic"
+
+[[lj.types]]
+epsilon = 1.0
+sigma = 1.0
+
+[[lj.types]]
+epsilon = 0.5
+sigma = 0.8
+
+# Optional explicit pair overrides
+[[lj.pair_coeffs]]
+types = [0, 1]
+epsilon = 0.75
+sigma = 0.9
+```
+
+When `types` is present, the plugin builds an NxN `PairCoeffTable<LJPairCoeffs>` with mixed parameters. Explicit `pair_coeffs` entries override the mixed values for specific pairs.
+
 ## Resources
 
 - `LJConfig` — deserialized config
+- `LJPairTable` — precomputed NxN pair coefficient table (`PairCoeffTable<LJPairCoeffs>`)
 - `VirialStress` — full symmetric virial stress tensor (from `mddem_core`, shared with bond/contact forces)
 - `LJTailCorrections` — energy and pressure tail corrections (computed once at setup)
 

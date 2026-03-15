@@ -284,7 +284,7 @@ pub fn neighbor_read_input(
 pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor>, mut domain: ResMut<Domain>, mut atoms: ResMut<Atom>, comm: Res<CommResource>) {
     // Compute max neighbor cutoff = (skin_i + skin_j) * skin_fraction = 2 * max_skin * skin_fraction
     // Use global reduction: at PostSetup, atoms may only be on rank 0 (before exchange).
-    let local_max_skin = atoms.skin.iter().cloned().fold(0.0f64, f64::max);
+    let local_max_skin = atoms.cutoff_radius.iter().cloned().fold(0.0f64, f64::max);
     let max_skin = -comm.all_reduce_min_f64(-local_max_skin); // global max via negated min
     let max_cutoff = 2.0 * max_skin * neighbor.skin_fraction;
     // Add displacement buffer to ghost_cutoff so atoms don't drift in/out of the
@@ -292,7 +292,7 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
     // fluctuates every step, forcing unnecessary neighbor rebuilds.
     // Max per-atom displacement before rebuild = (skin_fraction - 1) * min_skin.
     // Two atoms can each move this far, so buffer = 2 * displacement.
-    let local_min_skin = atoms.skin.iter().cloned().fold(f64::MAX, f64::min);
+    let local_min_skin = atoms.cutoff_radius.iter().cloned().fold(f64::MAX, f64::min);
     let min_skin = comm.all_reduce_min_f64(local_min_skin);
     let displacement_buffer = (neighbor.skin_fraction - 1.0) * min_skin;
     let ghost_cut = max_cutoff + 2.0 * displacement_buffer;
@@ -422,7 +422,7 @@ fn save_build_positions(atoms: &Atom, neighbor: &mut Neighbor) {
     neighbor.last_build_pos[..nlocal].copy_from_slice(&atoms.pos[..nlocal]);
     neighbor.last_build_total = atoms.len();
     neighbor.steps_since_build = 0;
-    let (min_skin, max_skin) = atoms.skin[..nlocal]
+    let (min_skin, max_skin) = atoms.cutoff_radius[..nlocal]
         .iter()
         .fold((f64::MAX, f64::MIN), |(mn, mx), &s| (mn.min(s), mx.max(s)));
     neighbor.cached_min_skin = min_skin;
@@ -571,7 +571,7 @@ pub fn sweep_and_prune_neighbor_list(
         let px = atoms.pos[index][0];
         let py = atoms.pos[index][1];
         let pz = atoms.pos[index][2];
-        let r = atoms.skin[index];
+        let r = atoms.cutoff_radius[index];
         for j in (i + 1)..neighbor.sweep_and_prune.len() {
             if (neighbor.sweep_and_prune[j].1 - px) > (r * 2.0 * skin_fraction) {
                 break;
@@ -582,7 +582,7 @@ pub fn sweep_and_prune_neighbor_list(
             {
                 continue;
             }
-            let r2 = atoms.skin[index2];
+            let r2 = atoms.cutoff_radius[index2];
             let dx = atoms.pos[index2][0] - px;
             let dy = atoms.pos[index2][1] - py;
             let dz = atoms.pos[index2][2] - pz;
@@ -608,7 +608,7 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
             let dy = atoms.pos[j][1] - atoms.pos[i][1];
             let dz = atoms.pos[j][2] - atoms.pos[i][2];
             let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-            if distance < (atoms.skin[i] + atoms.skin[j]) * neighbor.skin_fraction {
+            if distance < (atoms.cutoff_radius[i] + atoms.cutoff_radius[j]) * neighbor.skin_fraction {
                 neighbor.neighbor_list.push((i, j));
             }
         }
@@ -899,7 +899,7 @@ pub fn bin_neighbor_list(
             offsets.push(nidx as u32);
             let my_cell = unsafe { *atom_cell.get_unchecked(i) } as usize;
             let pi = unsafe { *atoms.pos.get_unchecked(i) };
-            let si = unsafe { *atoms.skin.get_unchecked(i) };
+            let si = unsafe { *atoms.cutoff_radius.get_unchecked(i) };
 
             if has_self {
                 let self_start = unsafe { *atom_sorted_idx.get_unchecked(i) } as usize + 1;
@@ -911,7 +911,7 @@ pub fn bin_neighbor_list(
                     let dy = pj[1] - pi[1];
                     let dz = pj[2] - pi[2];
                     let r2 = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
-                    let sum_skin = si + unsafe { *atoms.skin.get_unchecked(j) };
+                    let sum_skin = si + unsafe { *atoms.cutoff_radius.get_unchecked(j) };
                     if r2 < sum_skin * sum_skin * skin_fraction_sq {
                         push_index!(j as u32);
                     }
@@ -929,7 +929,7 @@ pub fn bin_neighbor_list(
                     let dy = pj[1] - pi[1];
                     let dz = pj[2] - pi[2];
                     let r2 = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
-                    let sum_skin = si + unsafe { *atoms.skin.get_unchecked(j) };
+                    let sum_skin = si + unsafe { *atoms.cutoff_radius.get_unchecked(j) };
                     if r2 < sum_skin * sum_skin * skin_fraction_sq {
                         push_index!(j as u32);
                     }

@@ -169,9 +169,8 @@ pub fn fcc_insert(
                     atom.force.push([0.0; 3]);
                     atom.mass.push(mass);
                     atom.inv_mass.push(1.0 / mass);
-                    atom.skin.push(lattice.skin);
+                    atom.cutoff_radius.push(lattice.skin);
                     atom.is_ghost.push(false);
-                    atom.is_collision.push(false);
                     max_tag += 1;
                     atom.nlocal += 1;
                     atom.natoms += 1;

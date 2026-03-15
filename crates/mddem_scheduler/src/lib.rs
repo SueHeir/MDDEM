@@ -1205,7 +1205,6 @@ impl Scheduler {
                     self.write_dot("schedule.dot");
                 }
                 self.setup();
-                self.organize_systems(); // systems may be added during setup in the future
 
                 let sm_idx = self.resource_index[&TypeId::of::<SchedulerManager>()];
                 let mut binding = self.resources[sm_idx].borrow_mut();

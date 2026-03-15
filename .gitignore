@@ -3,9 +3,20 @@
 /src/.gitignore
 .DS_Store
 */.DS_Store
+**/.DS_Store
 .cargo
 .claude
 **/vtp/
 *.vtp
 **/data/
 *.csv
+
+# Generated artifacts
+log.lammps
+**/log.lammps
+schedule.dot
+schedule.png
+*.svg
+**/profile*.json
+**/sample_output.txt
+**/*.log

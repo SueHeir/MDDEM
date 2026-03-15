@@ -4,7 +4,7 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::Deserialize;
 
-use crate::{Atom, Config};
+use crate::{Atom, Config, Region, StageOverrides};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -15,18 +15,21 @@ pub struct GroupDef {
     pub name: String,
     #[serde(rename = "type", default)]
     pub atom_types: Option<Vec<u32>>,
+    /// Spatial region filter (AND-combined with type filter if both present).
     #[serde(default)]
-    pub region_x_low: Option<f64>,
+    pub region: Option<Region>,
+    /// Whether the group re-evaluates membership every timestep.
+    /// Defaults to `true` if a region is set, `false` otherwise.
     #[serde(default)]
-    pub region_x_high: Option<f64>,
-    #[serde(default)]
-    pub region_y_low: Option<f64>,
-    #[serde(default)]
-    pub region_y_high: Option<f64>,
-    #[serde(default)]
-    pub region_z_low: Option<f64>,
-    #[serde(default)]
-    pub region_z_high: Option<f64>,
+    pub dynamic: Option<bool>,
+}
+
+impl GroupDef {
+    /// Returns whether this group should be rebuilt every timestep.
+    /// Smart default: dynamic if a region is set, static otherwise.
+    pub fn is_dynamic(&self) -> bool {
+        self.dynamic.unwrap_or(self.region.is_some())
+    }
 }
 
 // ── Group ───────────────────────────────────────────────────────────────────
@@ -113,33 +116,8 @@ fn evaluate_membership(def: &GroupDef, atoms: &Atom, i: usize) -> bool {
             return false;
         }
     }
-    if let Some(lo) = def.region_x_low {
-        if atoms.pos[i][0] < lo {
-            return false;
-        }
-    }
-    if let Some(hi) = def.region_x_high {
-        if atoms.pos[i][0] > hi {
-            return false;
-        }
-    }
-    if let Some(lo) = def.region_y_low {
-        if atoms.pos[i][1] < lo {
-            return false;
-        }
-    }
-    if let Some(hi) = def.region_y_high {
-        if atoms.pos[i][1] > hi {
-            return false;
-        }
-    }
-    if let Some(lo) = def.region_z_low {
-        if atoms.pos[i][2] < lo {
-            return false;
-        }
-    }
-    if let Some(hi) = def.region_z_high {
-        if atoms.pos[i][2] > hi {
+    if let Some(ref r) = def.region {
+        if !r.contains(&atoms.pos[i]) {
             return false;
         }
     }
@@ -149,6 +127,10 @@ fn evaluate_membership(def: &GroupDef, atoms: &Atom, i: usize) -> bool {
 fn rebuild_group_masks(groups: &mut GroupRegistry, atoms: &Atom) {
     let nlocal = atoms.nlocal as usize;
     for group in groups.groups.iter_mut() {
+        // Skip static groups that are already initialized
+        if !group.def.is_dynamic() && !group.mask.is_empty() {
+            continue;
+        }
         group.mask.clear();
         group.mask.resize(nlocal, false);
         group.count = 0;
@@ -179,9 +161,9 @@ impl Plugin for GroupPlugin {
             r#"# Atom groups — named subsets for selective operations.
 # [[group]]
 # name = "mobile"
-# type = [1, 2]              # optional: match atom_type
-# region_z_low = 0.0         # optional: spatial bounds (AND-combined)
-# region_z_high = 5.0"#,
+# type = [1, 2]                                              # optional: match atom_type
+# region = { type = "block", min = [0, 0, 0], max = [5, 5, 5] }  # optional: spatial region
+# dynamic = false                                            # optional: lock membership at setup (default: true if region set, false otherwise)"#,
         )
     }
 
@@ -199,44 +181,78 @@ pub fn setup_groups(
     atoms: Res<Atom>,
     comm: Res<crate::CommResource>,
     mut groups: ResMut<GroupRegistry>,
+    stage_overrides: Res<StageOverrides>,
+    scheduler_manager: Res<SchedulerManager>,
 ) {
-    let defs = config.parse_array::<GroupDef>("group");
+    let index = scheduler_manager.index;
 
-    // Always start with the built-in "all" group.
-    groups.groups.clear();
-    groups.groups.push(Group {
-        name: "all".to_string(),
-        def: GroupDef {
-            name: "all".to_string(),
-            atom_types: None,
-            region_x_low: None,
-            region_x_high: None,
-            region_y_low: None,
-            region_y_high: None,
-            region_z_low: None,
-            region_z_high: None,
-        },
-        mask: Vec::new(),
-        count: 0,
-    });
+    if index == 0 {
+        // First stage: parse global [[group]] config
+        let defs = config.parse_array::<GroupDef>("group");
 
-    for def in defs {
-        if def.name == "all" {
-            if comm.rank() == 0 {
-                eprintln!("WARNING: Cannot redefine built-in group 'all', skipping.");
-            }
-            continue;
-        }
-        if comm.rank() == 0 {
-            println!("Group '{}': {:?}", def.name, def);
-        }
+        // Always start with the built-in "all" group.
+        groups.groups.clear();
         groups.groups.push(Group {
-            name: def.name.clone(),
-            def,
+            name: "all".to_string(),
+            def: GroupDef {
+                name: "all".to_string(),
+                atom_types: None,
+                region: None,
+                dynamic: None,
+            },
             mask: Vec::new(),
             count: 0,
         });
+
+        for def in defs {
+            if def.name == "all" {
+                if comm.rank() == 0 {
+                    eprintln!("WARNING: Cannot redefine built-in group 'all', skipping.");
+                }
+                continue;
+            }
+            if comm.rank() == 0 {
+                println!("Group '{}': {:?}", def.name, def);
+            }
+            groups.groups.push(Group {
+                name: def.name.clone(),
+                def,
+                mask: Vec::new(),
+                count: 0,
+            });
+        }
+    } else if stage_overrides.table.contains_key("group") {
+        // Later stage with group overrides: merge/overlay by name
+        let stage_defs: Vec<GroupDef> = stage_overrides.section("group");
+        for def in stage_defs {
+            if def.name == "all" {
+                if comm.rank() == 0 {
+                    eprintln!("WARNING: Cannot redefine built-in group 'all', skipping.");
+                }
+                continue;
+            }
+            if let Some(existing) = groups.groups.iter_mut().find(|g| g.name == def.name) {
+                // Replace definition, clear mask to force rebuild
+                if comm.rank() == 0 {
+                    println!("Stage {}: redefining group '{}': {:?}", index, def.name, def);
+                }
+                existing.def = def;
+                existing.mask.clear();
+            } else {
+                // Add new group
+                if comm.rank() == 0 {
+                    println!("Stage {}: adding group '{}': {:?}", index, def.name, def);
+                }
+                groups.groups.push(Group {
+                    name: def.name.clone(),
+                    def,
+                    mask: Vec::new(),
+                    count: 0,
+                });
+            }
+        }
     }
+    // else: no group overrides in this stage, keep existing groups as-is
 
     rebuild_group_masks(&mut groups, &atoms);
 }
@@ -261,21 +277,21 @@ mod tests {
         atom
     }
 
+    fn make_group_def(name: &str, types: Option<Vec<u32>>, region: Option<Region>) -> GroupDef {
+        GroupDef {
+            name: name.to_string(),
+            atom_types: types,
+            region,
+            dynamic: None,
+        }
+    }
+
     #[test]
     fn test_all_group_always_exists() {
         let mut registry = GroupRegistry::new();
         registry.groups.push(Group {
             name: "all".to_string(),
-            def: GroupDef {
-                name: "all".to_string(),
-                atom_types: None,
-                region_x_low: None,
-                region_x_high: None,
-                region_y_low: None,
-                region_y_high: None,
-                region_z_low: None,
-                region_z_high: None,
-            },
+            def: make_group_def("all", None, None),
             mask: Vec::new(),
             count: 0,
         });
@@ -292,16 +308,7 @@ mod tests {
             &[(0.0, 0.0, 0.0), (1.0, 1.0, 1.0), (2.0, 2.0, 2.0)],
             &[0, 1, 0],
         );
-        let def = GroupDef {
-            name: "type0".to_string(),
-            atom_types: Some(vec![0]),
-            region_x_low: None,
-            region_x_high: None,
-            region_y_low: None,
-            region_y_high: None,
-            region_z_low: None,
-            region_z_high: None,
-        };
+        let def = make_group_def("type0", Some(vec![0]), None);
         let mut registry = GroupRegistry::new();
         registry.groups.push(Group {
             name: "type0".to_string(),
@@ -321,16 +328,14 @@ mod tests {
             &[(0.0, 0.0, 1.0), (0.0, 0.0, 3.0), (0.0, 0.0, 5.0)],
             &[0, 0, 0],
         );
-        let def = GroupDef {
-            name: "bottom".to_string(),
-            atom_types: None,
-            region_x_low: None,
-            region_x_high: None,
-            region_y_low: None,
-            region_y_high: None,
-            region_z_low: Some(0.0),
-            region_z_high: Some(4.0),
-        };
+        let def = make_group_def(
+            "bottom",
+            None,
+            Some(Region::Block {
+                min: [f64::NEG_INFINITY, f64::NEG_INFINITY, 0.0],
+                max: [f64::INFINITY, f64::INFINITY, 4.0],
+            }),
+        );
         let mut registry = GroupRegistry::new();
         registry.groups.push(Group {
             name: "bottom".to_string(),
@@ -350,16 +355,14 @@ mod tests {
             &[(0.0, 0.0, 1.0), (0.0, 0.0, 3.0), (0.0, 0.0, 5.0)],
             &[0, 1, 0],
         );
-        let def = GroupDef {
-            name: "combo".to_string(),
-            atom_types: Some(vec![0]),
-            region_x_low: None,
-            region_x_high: None,
-            region_y_low: None,
-            region_y_high: None,
-            region_z_low: Some(0.0),
-            region_z_high: Some(4.0),
-        };
+        let def = make_group_def(
+            "combo",
+            Some(vec![0]),
+            Some(Region::Block {
+                min: [f64::NEG_INFINITY, f64::NEG_INFINITY, 0.0],
+                max: [f64::INFINITY, f64::INFINITY, 4.0],
+            }),
+        );
         let mut registry = GroupRegistry::new();
         registry.groups.push(Group {
             name: "combo".to_string(),
@@ -379,16 +382,7 @@ mod tests {
             &[(0.0, 0.0, 1.0), (0.0, 0.0, 3.0)],
             &[0, 0],
         );
-        let def = GroupDef {
-            name: "empty".to_string(),
-            atom_types: Some(vec![99]),
-            region_x_low: None,
-            region_x_high: None,
-            region_y_low: None,
-            region_y_high: None,
-            region_z_low: None,
-            region_z_high: None,
-        };
+        let def = make_group_def("empty", Some(vec![99]), None);
         let mut registry = GroupRegistry::new();
         registry.groups.push(Group {
             name: "empty".to_string(),
@@ -400,5 +394,157 @@ mod tests {
         let g = registry.expect("empty");
         assert_eq!(g.count, 0);
         assert!(g.mask.iter().all(|&m| !m));
+    }
+
+    #[test]
+    fn test_is_dynamic_defaults() {
+        // Type-only group: static by default
+        let def = make_group_def("type_only", Some(vec![1]), None);
+        assert!(!def.is_dynamic());
+
+        // Region group: dynamic by default
+        let def = make_group_def(
+            "region",
+            None,
+            Some(Region::Block {
+                min: [0.0, 0.0, 0.0],
+                max: [1.0, 1.0, 1.0],
+            }),
+        );
+        assert!(def.is_dynamic());
+
+        // No filters (like "all"): static by default
+        let def = make_group_def("all", None, None);
+        assert!(!def.is_dynamic());
+    }
+
+    #[test]
+    fn test_is_dynamic_explicit() {
+        // Explicitly dynamic type-only group
+        let mut def = make_group_def("type_dyn", Some(vec![1]), None);
+        def.dynamic = Some(true);
+        assert!(def.is_dynamic());
+
+        // Explicitly static region group
+        let mut def = make_group_def(
+            "region_static",
+            None,
+            Some(Region::Block {
+                min: [0.0, 0.0, 0.0],
+                max: [1.0, 1.0, 1.0],
+            }),
+        );
+        def.dynamic = Some(false);
+        assert!(!def.is_dynamic());
+    }
+
+    #[test]
+    fn test_static_group_skips_rebuild() {
+        let atom = make_atom(
+            &[(0.0, 0.0, 1.0), (0.0, 0.0, 3.0), (0.0, 0.0, 5.0)],
+            &[0, 1, 0],
+        );
+
+        // Create a static type group (dynamic = None, no region → static)
+        let def = make_group_def("type0", Some(vec![0]), None);
+        assert!(!def.is_dynamic());
+
+        let mut registry = GroupRegistry::new();
+        registry.groups.push(Group {
+            name: "type0".to_string(),
+            def,
+            mask: Vec::new(),
+            count: 0,
+        });
+
+        // First rebuild: mask is empty, so it gets built
+        rebuild_group_masks(&mut registry, &atom);
+        assert_eq!(registry.expect("type0").count, 2);
+        assert_eq!(registry.expect("type0").mask, vec![true, false, true]);
+
+        // Manually change the mask to verify it's NOT rebuilt
+        registry.groups[0].mask = vec![false, false, false];
+        registry.groups[0].count = 0;
+
+        // Second rebuild: mask is non-empty and group is static → skipped
+        rebuild_group_masks(&mut registry, &atom);
+        assert_eq!(registry.groups[0].mask, vec![false, false, false]);
+        assert_eq!(registry.groups[0].count, 0);
+    }
+
+    #[test]
+    fn test_dynamic_group_rebuilds_every_time() {
+        let atom = make_atom(
+            &[(0.0, 0.0, 1.0), (0.0, 0.0, 3.0), (0.0, 0.0, 5.0)],
+            &[0, 0, 0],
+        );
+
+        // Create a dynamic region group
+        let def = make_group_def(
+            "bottom",
+            None,
+            Some(Region::Block {
+                min: [f64::NEG_INFINITY, f64::NEG_INFINITY, 0.0],
+                max: [f64::INFINITY, f64::INFINITY, 4.0],
+            }),
+        );
+        assert!(def.is_dynamic());
+
+        let mut registry = GroupRegistry::new();
+        registry.groups.push(Group {
+            name: "bottom".to_string(),
+            def,
+            mask: Vec::new(),
+            count: 0,
+        });
+
+        // First rebuild
+        rebuild_group_masks(&mut registry, &atom);
+        assert_eq!(registry.expect("bottom").count, 2);
+
+        // Manually change mask
+        registry.groups[0].mask = vec![false, false, false];
+        registry.groups[0].count = 0;
+
+        // Second rebuild: dynamic group gets rebuilt
+        rebuild_group_masks(&mut registry, &atom);
+        assert_eq!(registry.expect("bottom").count, 2);
+        assert_eq!(registry.expect("bottom").mask, vec![true, true, false]);
+    }
+
+    #[test]
+    fn test_dynamic_field_deserializes() {
+        let toml_str = r#"
+[[group]]
+name = "static_type"
+type = [1]
+
+[[group]]
+name = "dynamic_region"
+region = { type = "block", min = [0, 0, 0], max = [1, 1, 1] }
+
+[[group]]
+name = "explicit_static_region"
+region = { type = "block", min = [0, 0, 0], max = [1, 1, 1] }
+dynamic = false
+
+[[group]]
+name = "explicit_dynamic_type"
+type = [2]
+dynamic = true
+"#;
+        let table: toml::Table = toml_str.parse().unwrap();
+        let defs: Vec<GroupDef> = table
+            .get("group")
+            .unwrap()
+            .clone()
+            .try_into()
+            .unwrap();
+
+        assert_eq!(defs.len(), 4);
+        assert!(!defs[0].is_dynamic()); // type-only, no explicit → false
+        assert!(defs[1].is_dynamic());  // region, no explicit → true
+        assert!(!defs[2].is_dynamic()); // region, explicit false
+        assert!(defs[3].is_dynamic());  // type, explicit true
     }
 }

@@ -3,8 +3,8 @@
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use rand::Rng;
-use rand_chacha::ChaCha8Rng;
 use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use serde::Deserialize;
 
 use mddem_core::{compute_ke, group_includes, Atom, CommResource, Config, GroupRegistry, StageOverrides};
@@ -387,8 +387,8 @@ pub fn langevin_force(
 /// Sample from standard normal distribution using Box-Muller transform.
 fn normal_sample(rng: &mut ChaCha8Rng) -> f64 {
     use std::f64::consts::TAU;
-    let u1: f64 = rng.gen::<f64>();
-    let u2: f64 = rng.gen::<f64>();
+    let u1: f64 = rng.random::<f64>();
+    let u2: f64 = rng.random::<f64>();
     (-2.0 * u1.max(1e-300).ln()).sqrt() * (TAU * u2).cos()
 }
 

@@ -10,6 +10,8 @@ pub mod comm;
 pub mod domain;
 pub mod group;
 pub mod input;
+pub mod pair_coeff;
+pub mod region;
 pub mod run;
 pub mod virial;
 
@@ -20,6 +22,8 @@ pub use comm::*;
 pub use domain::*;
 pub use group::{group_includes, Group, GroupDef, GroupPlugin, GroupRegistry};
 pub use input::{load_toml, print_banner, Config, Input, InputPlugin};
+pub use pair_coeff::{MixingRule, PairCoeffTable};
+pub use region::{Axis, Region};
 pub use run::*;
 pub use virial::*;
 

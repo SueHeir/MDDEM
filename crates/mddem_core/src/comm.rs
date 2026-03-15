@@ -452,7 +452,7 @@ fn pack_border_atoms(
     // Use ghost_cutoff if set (> 0), otherwise fall back to per-atom skin * 4.0 (DEM default)
     for i in 0..scan_end {
         let pos_dim = atoms.pos_component(i, dim);
-        let cut = if ghost_cutoff > 0.0 { ghost_cutoff } else { atoms.skin[i] * 4.0 };
+        let cut = if ghost_cutoff > 0.0 { ghost_cutoff } else { atoms.cutoff_radius[i] * 4.0 };
         let in_skin = if swap == 0 {
             pos_dim < domain.sub_domain_low[dim] + cut
         } else {
