@@ -339,4 +339,285 @@ mod tests {
         let fx = atom.force[0][0].abs();
         assert!(fx > 100.0, "FENE force should be large near R0, got {}", fx);
     }
+
+    // ── FENE divergence scaling ────────────────────────────────────────────
+
+    #[test]
+    fn fene_force_scaling_as_r_approaches_r0() {
+        // FENE force: F = k * r / (1 - (r/R0)^2)
+        // As r → R0, the denominator → 0, so F → ∞.
+        // Verify that force at r = R0 - ε is approximately k*R0 / (2ε/R0)
+        // i.e. F ≈ k*R0^2 / (2ε) for small ε.
+        let k = 30.0;
+        let r0 = 1.5;
+
+        let eps1 = 0.01;
+        let eps2 = 0.005; // half of eps1
+
+        let mut app1 = make_bonded_pair_app(r0 - eps1, BondStyle::Fene, k, r0);
+        app1.run();
+        let f1 = app1.get_resource_ref::<Atom>().unwrap().force[0][0].abs();
+
+        let mut app2 = make_bonded_pair_app(r0 - eps2, BondStyle::Fene, k, r0);
+        app2.run();
+        let f2 = app2.get_resource_ref::<Atom>().unwrap().force[0][0].abs();
+
+        // When ε halves, force should approximately double (1/ε scaling)
+        let ratio = f2 / f1;
+        assert!(
+            (ratio - 2.0).abs() < 0.3,
+            "FENE force should scale as ~1/ε near R0: f2/f1={:.3}, expected ~2.0",
+            ratio
+        );
+    }
+
+    #[test]
+    fn fene_exact_force_value() {
+        // Verify exact FENE force at a specific distance.
+        // F_on_i = k * r / (1 - (r/R0)^2) directed toward j (in +x).
+        // At r=1.0, R0=1.5, k=30:
+        //   ratio2 = 1.0 / 2.25 = 0.4444...
+        //   fpair = k / (1 - ratio2) = 30 / 0.5556 = 54.0
+        //   F = fpair * dx = 54.0 * 1.0 = 54.0
+        let k = 30.0;
+        let r0 = 1.5;
+        let r = 1.0;
+        let expected_fpair = k / (1.0 - (r * r) / (r0 * r0));
+        let expected_force = expected_fpair * r; // F = fpair * dx, dx = r along x
+
+        let mut app = make_bonded_pair_app(r, BondStyle::Fene, k, r0);
+        app.run();
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        let fx = atom.force[0][0];
+        assert!(
+            (fx - expected_force).abs() < 1e-10,
+            "FENE force mismatch: got {}, expected {}",
+            fx,
+            expected_force
+        );
+    }
+
+    // ── FENE energy conservation (elastic two-body oscillation) ────────────
+
+    /// Manually integrate a FENE bonded pair using velocity Verlet,
+    /// computing potential energy analytically at each step.
+    /// U_FENE = -0.5 * k * R0^2 * ln(1 - (r/R0)^2)
+    #[test]
+    fn fene_energy_conservation_two_body() {
+        let k = 30.0;
+        let r0_max = 1.5;
+        let mass = 1.0;
+        let dt = 0.0001; // small timestep for accurate conservation
+        let nsteps = 10_000;
+
+        // Initial condition: two particles, separation r=0.8 (< R0), at rest.
+        // Reduced mass μ = m/2 for equal masses.
+        let mut x1 = 0.0_f64;
+        let mut x2 = 0.8_f64;
+        let mut v1 = 0.0_f64;
+        let mut v2 = 0.0_f64;
+
+        let fene_potential = |r: f64| -> f64 {
+            let ratio2 = (r / r0_max).powi(2);
+            -0.5 * k * r0_max * r0_max * (1.0 - ratio2).ln()
+        };
+        let fene_force_on_1 = |x1: f64, x2: f64| -> f64 {
+            // Force on particle 1 due to FENE bond to particle 2
+            let dx = x2 - x1;
+            let r = dx.abs();
+            let ratio2 = (r / r0_max).powi(2);
+            let fpair = k / (1.0 - ratio2);
+            fpair * dx // attractive: pulls 1 toward 2
+        };
+
+        let r_init = (x2 - x1).abs();
+        let pe_init = fene_potential(r_init);
+        let ke_init = 0.5 * mass * (v1 * v1 + v2 * v2);
+        let e_total_init = ke_init + pe_init;
+
+        let mut max_energy_error = 0.0_f64;
+
+        for _ in 0..nsteps {
+            // Velocity Verlet
+            let f1 = fene_force_on_1(x1, x2);
+            let f2 = -f1; // Newton's 3rd law
+
+            // Half-kick
+            v1 += 0.5 * dt * f1 / mass;
+            v2 += 0.5 * dt * f2 / mass;
+
+            // Drift
+            x1 += v1 * dt;
+            x2 += v2 * dt;
+
+            // New forces
+            let f1_new = fene_force_on_1(x1, x2);
+            let f2_new = -f1_new;
+
+            // Half-kick
+            v1 += 0.5 * dt * f1_new / mass;
+            v2 += 0.5 * dt * f2_new / mass;
+
+            // Check energy
+            let r = (x2 - x1).abs();
+            let pe = fene_potential(r);
+            let ke = 0.5 * mass * (v1 * v1 + v2 * v2);
+            let e_total = ke + pe;
+            let err = (e_total - e_total_init).abs();
+            if err > max_energy_error {
+                max_energy_error = err;
+            }
+        }
+
+        // With dt=0.0001, Velocity Verlet should conserve energy to ~O(dt^2) per step
+        assert!(
+            max_energy_error < 1e-4,
+            "FENE energy drift too large: max error = {:.2e} (expected < 1e-4)",
+            max_energy_error
+        );
+    }
+
+    // ── Harmonic limit: oscillation frequency ──────────────────────────────
+
+    #[test]
+    fn fene_harmonic_limit_oscillation_frequency() {
+        // For small displacements around r=0, FENE reduces to harmonic:
+        //   U ≈ 0.5 * k * r^2  (for r << R0)
+        // Two equal-mass particles on a FENE bond have reduced mass μ = m/2
+        // and oscillation frequency ω = sqrt(k/μ) = sqrt(2k/m).
+        // Period T = 2π/ω.
+        //
+        // Start from small displacement, measure half-period (time to return
+        // to initial separation after one full oscillation).
+        let k = 30.0;
+        let r0_max = 1.5;
+        let mass = 1.0;
+        let dt = 0.0001;
+
+        let omega = (2.0_f64 * k / mass).sqrt(); // ω = sqrt(2k/m) for two-body
+        let period = 2.0 * std::f64::consts::PI / omega;
+
+        // Start with small displacement (r << R0 for harmonic regime)
+        let r_init = 0.05;
+        let mut x1 = 0.0_f64;
+        let mut x2 = r_init;
+        let mut v1 = 0.0_f64;
+        let mut v2 = 0.0_f64;
+
+        let fene_force_on_1 = |x1: f64, x2: f64| -> f64 {
+            let dx = x2 - x1;
+            let r2 = dx * dx;
+            let ratio2 = r2 / (r0_max * r0_max);
+            let fpair = k / (1.0 - ratio2);
+            fpair * dx
+        };
+
+        // Integrate for one full period and check that r returns close to r_init
+        let total_steps = (period / dt).round() as usize;
+        for _ in 0..total_steps {
+            let f1 = fene_force_on_1(x1, x2);
+            v1 += 0.5 * dt * f1 / mass;
+            v2 -= 0.5 * dt * f1 / mass;
+            x1 += v1 * dt;
+            x2 += v2 * dt;
+            let f1_new = fene_force_on_1(x1, x2);
+            v1 += 0.5 * dt * f1_new / mass;
+            v2 -= 0.5 * dt * f1_new / mass;
+        }
+
+        let r_final = x2 - x1;
+        let rel_error = ((r_final - r_init) / r_init).abs();
+        assert!(
+            rel_error < 0.01,
+            "After one period, r should return to r_init: r_final={:.6}, r_init={:.6}, rel_error={:.4}",
+            r_final, r_init, rel_error
+        );
+    }
+
+    // ── Harmonic energy conservation ───────────────────────────────────────
+
+    #[test]
+    fn harmonic_energy_conservation_two_body() {
+        // U_harmonic = 0.5 * k * (r - r0)^2
+        // Two equal-mass particles with Velocity Verlet should conserve total energy.
+        let k = 50.0;
+        let r0_eq = 1.0;
+        let mass = 1.0;
+        let dt = 0.0001;
+        let nsteps = 10_000;
+
+        // Start stretched: r = 1.3
+        let mut x1 = 0.0_f64;
+        let mut x2 = 1.3_f64;
+        let mut v1 = 0.0_f64;
+        let mut v2 = 0.0_f64;
+
+        let harmonic_pe = |x1: f64, x2: f64| -> f64 {
+            let r = (x2 - x1).abs();
+            0.5 * k * (r - r0_eq).powi(2)
+        };
+        let harmonic_force_on_1 = |x1: f64, x2: f64| -> f64 {
+            let dx = x2 - x1;
+            let r = dx.abs();
+            k * (r - r0_eq) * dx / r // attractive when stretched
+        };
+
+        let e_init = 0.5 * mass * (v1 * v1 + v2 * v2) + harmonic_pe(x1, x2);
+        let mut max_err = 0.0_f64;
+
+        for _ in 0..nsteps {
+            let f1 = harmonic_force_on_1(x1, x2);
+            v1 += 0.5 * dt * f1 / mass;
+            v2 -= 0.5 * dt * f1 / mass;
+            x1 += v1 * dt;
+            x2 += v2 * dt;
+            let f1_new = harmonic_force_on_1(x1, x2);
+            v1 += 0.5 * dt * f1_new / mass;
+            v2 -= 0.5 * dt * f1_new / mass;
+
+            let e = 0.5 * mass * (v1 * v1 + v2 * v2) + harmonic_pe(x1, x2);
+            let err = (e - e_init).abs();
+            if err > max_err {
+                max_err = err;
+            }
+        }
+
+        assert!(
+            max_err < 1e-5,
+            "Harmonic energy drift: max error = {:.2e}",
+            max_err
+        );
+    }
+
+    // ── FENE force at r=0 is zero ──────────────────────────────────────────
+
+    #[test]
+    fn fene_force_zero_at_zero_separation() {
+        // FENE: F = k * r / (1 - (r/R0)^2). At r=0, F=0 (equilibrium).
+        // We can't set r=0 exactly (skipped for r < 1e-20), but very small r
+        // should give very small force.
+        let mut app = make_bonded_pair_app(1e-10, BondStyle::Fene, 30.0, 1.5);
+        app.run();
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        let fx = atom.force[0][0].abs();
+        assert!(
+            fx < 1e-5,
+            "FENE force should be ~0 at r≈0, got {}",
+            fx
+        );
+    }
+
+    // ── FENE cap behavior beyond R0 ────────────────────────────────────────
+
+    #[test]
+    fn fene_beyond_r0_caps_force() {
+        // When r >= R0, force should be capped (not NaN or infinite)
+        let r0 = 1.5;
+        let mut app = make_bonded_pair_app(1.6, BondStyle::Fene, 30.0, r0);
+        app.run();
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        let fx = atom.force[0][0];
+        assert!(fx.is_finite(), "FENE force beyond R0 should be finite, got {}", fx);
+        assert!(fx > 0.0, "FENE force beyond R0 should be attractive (capped), got {}", fx);
+    }
 }

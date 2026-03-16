@@ -19,3 +19,4 @@ rand_chacha = "0.9"
 
 [dev-dependencies]
 mddem_test_utils = { path = "../mddem_test_utils", version = "0.1.3" }
+mddem_verlet = { path = "../mddem_verlet", version = "0.1.3" }

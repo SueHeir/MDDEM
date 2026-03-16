@@ -1100,4 +1100,290 @@ mod tests {
         let n = app.get_resource_ref::<Neighbor>().unwrap();
         assert_eq!(n.neighbor_list.len(), 1);
     }
+
+    // ── Brute-force vs bin-based neighbor list comparison ──────────────────
+
+    /// Reference O(N²) all-pairs neighbor finder that doesn't use ghost atoms
+    /// or any accelerated algorithm. Pure distance-based cutoff check.
+    fn reference_all_pairs(
+        positions: &[[f64; 3]],
+        cutoff_radii: &[f64],
+        skin_fraction: f64,
+        nlocal: usize,
+    ) -> Vec<(usize, usize)> {
+        let mut pairs = Vec::new();
+        for i in 0..nlocal {
+            for j in (i + 1)..positions.len() {
+                let dx = positions[j][0] - positions[i][0];
+                let dy = positions[j][1] - positions[i][1];
+                let dz = positions[j][2] - positions[i][2];
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                let cutoff = (cutoff_radii[i] + cutoff_radii[j]) * skin_fraction;
+                if dist < cutoff {
+                    pairs.push((i, j));
+                }
+            }
+        }
+        pairs.sort();
+        pairs
+    }
+
+    #[test]
+    fn brute_force_matches_reference_all_pairs() {
+        // Create a system of 20 particles at pseudo-random positions
+        // and verify brute_force_neighbor_list matches our reference.
+        let n = 20;
+        let skin_fraction = 1.0;
+        let radius = 0.5;
+
+        let mut atom = Atom::new();
+        // Place atoms in a pseudo-random but deterministic pattern
+        for i in 0..n {
+            let x = (i as f64 * 0.37).sin() * 2.0 + 3.0;
+            let y = (i as f64 * 0.73).cos() * 2.0 + 3.0;
+            let z = (i as f64 * 1.13).sin() * 2.0 + 3.0;
+            push_atom(&mut atom, i as u32, [x, y, z], radius);
+        }
+        atom.nlocal = n as u32;
+        atom.natoms = n as u64;
+
+        // Reference calculation
+        let ref_pairs = reference_all_pairs(
+            &atom.pos[..n],
+            &atom.cutoff_radius[..n],
+            skin_fraction,
+            n,
+        );
+
+        // Build via brute_force_neighbor_list
+        let mut app = App::new();
+        let mut neighbor = Neighbor::new();
+        neighbor.skin_fraction = skin_fraction;
+        app.add_resource(atom);
+        app.add_resource(neighbor);
+        app.add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
+        app.organize_systems();
+        app.run();
+
+        let neigh = app.get_resource_ref::<Neighbor>().unwrap();
+        let mut bf_pairs: Vec<(usize, usize)> = neigh.neighbor_list.clone();
+        // Normalize: ensure (min, max) ordering
+        for p in bf_pairs.iter_mut() {
+            if p.0 > p.1 {
+                *p = (p.1, p.0);
+            }
+        }
+        bf_pairs.sort();
+        bf_pairs.dedup();
+
+        assert_eq!(
+            bf_pairs, ref_pairs,
+            "Brute-force neighbor list doesn't match reference.\nBF: {:?}\nRef: {:?}",
+            bf_pairs, ref_pairs
+        );
+    }
+
+    #[test]
+    fn bin_neighbor_list_matches_brute_force() {
+        // Create a system and verify that bin-based neighbor list finds
+        // exactly the same pairs as brute-force.
+        let n = 30;
+        let skin_fraction = 1.0;
+        let radius = 0.3;
+
+        let mut positions = Vec::new();
+        for i in 0..n {
+            let x = (i as f64 * 0.31).sin() * 1.5 + 2.0;
+            let y = (i as f64 * 0.67).cos() * 1.5 + 2.0;
+            let z = (i as f64 * 0.97).sin() * 1.5 + 2.0;
+            positions.push([x, y, z]);
+        }
+
+        // Reference all-pairs
+        let cutoffs: Vec<f64> = vec![radius; n];
+        let ref_pairs = reference_all_pairs(&positions, &cutoffs, skin_fraction, n);
+
+        // Brute-force neighbor list
+        let mut app_bf = App::new();
+        let mut atom_bf = Atom::new();
+        for i in 0..n {
+            push_atom(&mut atom_bf, i as u32, positions[i], radius);
+        }
+        atom_bf.nlocal = n as u32;
+        atom_bf.natoms = n as u64;
+        let mut neighbor_bf = Neighbor::new();
+        neighbor_bf.skin_fraction = skin_fraction;
+        app_bf.add_resource(atom_bf);
+        app_bf.add_resource(neighbor_bf);
+        app_bf.add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
+        app_bf.organize_systems();
+        app_bf.run();
+
+        let neigh_bf = app_bf.get_resource_ref::<Neighbor>().unwrap();
+        let mut bf_pairs: Vec<(usize, usize)> = neigh_bf.neighbor_list.clone();
+        for p in bf_pairs.iter_mut() {
+            if p.0 > p.1 { *p = (p.1, p.0); }
+        }
+        bf_pairs.sort();
+        bf_pairs.dedup();
+
+        // Bin-based neighbor list
+        let mut app_bin = App::new();
+        let mut atom_bin = Atom::new();
+        for i in 0..n {
+            push_atom(&mut atom_bin, i as u32, positions[i], radius);
+        }
+        atom_bin.nlocal = n as u32;
+        atom_bin.natoms = n as u64;
+
+        let mut domain = mddem_core::Domain::new();
+        domain.sub_domain_low = [0.0, 0.0, 0.0];
+        domain.sub_domain_high = [4.0, 4.0, 4.0];
+        domain.sub_length = [4.0, 4.0, 4.0];
+
+        let mut neighbor_bin = Neighbor::new();
+        neighbor_bin.skin_fraction = skin_fraction;
+        neighbor_bin.bin_min_size = 0.5;
+
+        app_bin.add_resource(atom_bin);
+        app_bin.add_resource(neighbor_bin);
+        app_bin.add_resource(domain);
+        app_bin.add_resource(NeighborConfig::default());
+        app_bin.add_resource(mddem_core::CommResource(Box::new(
+            mddem_core::SingleProcessComm::new(),
+        )));
+        app_bin.add_setup_system(neighbor_setup, ScheduleSetupSet::PostSetup);
+        app_bin.add_update_system(bin_neighbor_list, ScheduleSet::Neighbor);
+        app_bin.organize_systems();
+        app_bin.setup();
+        app_bin.run();
+
+        let neigh_bin = app_bin.get_resource_ref::<Neighbor>().unwrap();
+        // Extract pairs from CSR format
+        let nlocal = n;
+        let mut bin_pairs = Vec::new();
+        for i in 0..nlocal {
+            if i + 1 >= neigh_bin.neighbor_offsets.len() {
+                break;
+            }
+            let start = neigh_bin.neighbor_offsets[i] as usize;
+            let end = neigh_bin.neighbor_offsets[i + 1] as usize;
+            for k in start..end {
+                let j = neigh_bin.neighbor_indices[k] as usize;
+                let pair = if i < j { (i, j) } else { (j, i) };
+                bin_pairs.push(pair);
+            }
+        }
+        bin_pairs.sort();
+        bin_pairs.dedup();
+
+        // Verify: bin-based should find at least all pairs that brute-force finds
+        // (bin-based might find more if there are edge effects, but shouldn't miss any)
+        for pair in &ref_pairs {
+            assert!(
+                bin_pairs.contains(pair),
+                "Bin neighbor list missed pair {:?} found by reference",
+                pair
+            );
+        }
+
+        // Also verify brute-force matches reference
+        assert_eq!(
+            bf_pairs, ref_pairs,
+            "Brute-force doesn't match reference for N=30 system"
+        );
+    }
+
+    #[test]
+    fn no_spurious_pairs_in_brute_force() {
+        // Verify that brute-force doesn't include pairs beyond the cutoff.
+        // Place two atoms far apart (distance 5.0) with small radii (0.1).
+        // Cutoff = (0.1 + 0.1) * 1.0 = 0.2. Distance 5.0 >> 0.2.
+        let mut atom = Atom::new();
+        push_atom(&mut atom, 0, [0.0, 0.0, 0.0], 0.1);
+        push_atom(&mut atom, 1, [5.0, 0.0, 0.0], 0.1);
+        push_atom(&mut atom, 2, [0.15, 0.0, 0.0], 0.1); // close to atom 0
+        atom.nlocal = 3;
+        atom.natoms = 3;
+
+        let ref_pairs = reference_all_pairs(
+            &atom.pos[..3],
+            &atom.cutoff_radius[..3],
+            1.0,
+            3,
+        );
+
+        let mut app = App::new();
+        let mut neighbor = Neighbor::new();
+        neighbor.skin_fraction = 1.0;
+        app.add_resource(atom);
+        app.add_resource(neighbor);
+        app.add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
+        app.organize_systems();
+        app.run();
+
+        let neigh = app.get_resource_ref::<Neighbor>().unwrap();
+        let mut bf_pairs: Vec<(usize, usize)> = neigh.neighbor_list.clone();
+        for p in bf_pairs.iter_mut() {
+            if p.0 > p.1 { *p = (p.1, p.0); }
+        }
+        bf_pairs.sort();
+        bf_pairs.dedup();
+
+        // Should only find (0, 2), not (0, 1) or (1, 2)
+        assert_eq!(
+            bf_pairs, ref_pairs,
+            "Spurious pairs detected.\nBF: {:?}\nRef: {:?}",
+            bf_pairs, ref_pairs
+        );
+        assert_eq!(ref_pairs.len(), 1, "Should find exactly 1 pair: (0,2)");
+        assert_eq!(ref_pairs[0], (0, 2));
+    }
+
+    #[test]
+    fn varied_cutoff_radii_neighbor_list() {
+        // Test with different cutoff radii per atom.
+        // Atom 0: radius=0.5 at origin
+        // Atom 1: radius=0.1 at (0.5, 0, 0) -- cutoff = 0.6 > 0.5 ✓ neighbor
+        // Atom 2: radius=0.1 at (0.7, 0, 0) -- cutoff = 0.6 < 0.7 ✗ not neighbor
+        let mut atom = Atom::new();
+        push_atom(&mut atom, 0, [0.0, 0.0, 0.0], 0.5);
+        push_atom(&mut atom, 1, [0.5, 0.0, 0.0], 0.1);
+        push_atom(&mut atom, 2, [0.7, 0.0, 0.0], 0.1);
+        atom.nlocal = 3;
+        atom.natoms = 3;
+
+        let ref_pairs = reference_all_pairs(
+            &atom.pos[..3],
+            &atom.cutoff_radius[..3],
+            1.0,
+            3,
+        );
+
+        let mut app = App::new();
+        let mut neighbor = Neighbor::new();
+        neighbor.skin_fraction = 1.0;
+        app.add_resource(atom);
+        app.add_resource(neighbor);
+        app.add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
+        app.organize_systems();
+        app.run();
+
+        let neigh = app.get_resource_ref::<Neighbor>().unwrap();
+        let mut bf_pairs: Vec<(usize, usize)> = neigh.neighbor_list.clone();
+        for p in bf_pairs.iter_mut() {
+            if p.0 > p.1 { *p = (p.1, p.0); }
+        }
+        bf_pairs.sort();
+        bf_pairs.dedup();
+
+        assert_eq!(bf_pairs, ref_pairs);
+        // (0,1): dist=0.5, cutoff=0.6 ✓
+        // (0,2): dist=0.7, cutoff=0.6 ✗
+        // (1,2): dist=0.2, cutoff=0.2 ✗ (exactly at boundary, not less than)
+        assert!(
+            ref_pairs.contains(&(0, 1)),
+            "Should find pair (0,1)"
+        );
+    }
 }

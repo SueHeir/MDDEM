@@ -411,6 +411,7 @@ dependencies = [
  "mddem_core",
  "mddem_scheduler",
  "mddem_test_utils",
+ "mddem_verlet",
  "rand",
  "rand_chacha",
  "serde",
