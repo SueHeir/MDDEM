@@ -33,3 +33,4 @@ mddem_derive = { path = "../mddem_derive", version = "0.1.3" }
 mddem_fixes = { path = "../mddem_fixes", version = "0.1.3" }
 dem_thermal = { path = "../dem_thermal", version = "0.1.3" }
 dem_measure_plane = { path = "../dem_measure_plane", version = "0.1.3" }
+mddem_velocity_distribution = { path = "../mddem_velocity_distribution", version = "0.1.3" }
