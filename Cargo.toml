@@ -102,6 +102,9 @@ path = "examples/polymer_chain/main.rs"
 name = "dem_benchmark"
 path = "examples/dem_benchmark/main.rs"
 
+[[example]]
+name = "polymer_melt"
+path = "examples/polymer_melt/main.rs"
 
 [profile.release]
 opt-level = 3
