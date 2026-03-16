@@ -1,3 +1,12 @@
+//! Uniaxial compression: insert → relax → compress with 100× gravity.
+//!
+//! Three-stage DEM simulation demonstrating per-stage config overrides
+//! and KE-based automatic stage advancement.
+//!
+//! ```bash
+//! cargo run --example dem_compression --no-default-features -- examples/dem_compression/config.toml
+//! ```
+
 use mddem::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Default, StageEnum)]

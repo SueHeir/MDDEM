@@ -15,7 +15,12 @@ impl Config {
             Some(v) => match v.clone().try_into::<T>() {
                 Ok(val) => val,
                 Err(e) => {
-                    eprintln!("ERROR: [{}] config error: {}", key, e);
+                    eprintln!();
+                    eprintln!("ERROR: Failed to parse [{}] section in config file.", key);
+                    eprintln!("  {}", e);
+                    eprintln!();
+                    eprintln!("  Hint: Check that all field names are spelled correctly and values have the right type.");
+                    eprintln!("  Run with --generate-config to see a complete example configuration.");
                     std::process::exit(1);
                 }
             },
@@ -50,10 +55,12 @@ impl Config {
                     .map(|(idx, v)| match v.clone().try_into::<StageConfig>() {
                         Ok(s) => s,
                         Err(e) => {
-                            eprintln!(
-                                "ERROR: [[run]] stage {} config error: {}",
-                                idx, e
-                            );
+                            eprintln!();
+                            eprintln!("ERROR: Failed to parse [[run]] stage {} in config file.", idx);
+                            eprintln!("  {}", e);
+                            eprintln!();
+                            eprintln!("  Hint: Check that all field names are spelled correctly and values have the right type.");
+                            eprintln!("  Run with --generate-config to see a complete example configuration.");
                             std::process::exit(1);
                         }
                     })
@@ -79,10 +86,12 @@ impl Config {
                 .map(|(idx, v)| match v.clone().try_into::<T>() {
                     Ok(val) => val,
                     Err(e) => {
-                        eprintln!(
-                            "ERROR: [[{}]] entry {} config error: {}",
-                            key, idx, e
-                        );
+                        eprintln!();
+                        eprintln!("ERROR: Failed to parse [[{}]] entry {} in config file.", key, idx);
+                        eprintln!("  {}", e);
+                        eprintln!();
+                        eprintln!("  Hint: Check that all field names are spelled correctly and values have the right type.");
+                        eprintln!("  Run with --generate-config to see a complete example configuration.");
                         std::process::exit(1);
                     }
                 })
