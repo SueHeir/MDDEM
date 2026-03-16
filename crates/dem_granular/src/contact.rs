@@ -1300,6 +1300,317 @@ mod tests {
     }
 
     #[test]
+    // ══════════════════════════════════════════════════════════════════════
+    // VALIDATION: Hertz force scales as delta^(3/2)
+    // The Hertz normal elastic force is F = (4/3)*E_eff*sqrt(R_eff)*delta^(3/2).
+    // We verify that the force ratio between two different overlaps matches
+    // (delta2/delta1)^(3/2) to confirm the correct power law.
+    // ══════════════════════════════════════════════════════════════════════
+    #[test]
+    fn hertz_force_scales_as_delta_three_halves() {
+        let radius = 0.001;
+
+        // Compute elastic-only normal force for a given separation (zero velocity → no damping).
+        let hertz_force_at = |sep: f64| -> f64 {
+            let mut app = App::new();
+            let mut atom = Atom::new();
+            let mut dem = DemAtom::new();
+            let mut hist = ContactHistoryStore::new();
+            atom.dt = 1e-7;
+            push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
+            push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 1, [sep, 0.0, 0.0], radius);
+            atom.nlocal = 2;
+            atom.natoms = 2;
+            let mut neighbor = Neighbor::new();
+            neighbor.neighbor_offsets = vec![0, 1, 1];
+            neighbor.neighbor_indices = vec![1];
+            let mut registry = AtomDataRegistry::new();
+            registry.register(dem);
+            registry.register(hist);
+            app.add_resource(atom);
+            app.add_resource(neighbor);
+            app.add_resource(registry);
+            app.add_resource(make_material_table());
+            app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+            app.organize_systems();
+            app.run();
+            let atom = app.get_resource_ref::<Atom>().unwrap();
+            // Force on atom 0 is negative (pushed away from atom 1), take absolute value
+            atom.force[0][0].abs()
+        };
+
+        // Test at 5 different overlaps
+        let deltas = [1e-5, 2e-5, 4e-5, 6e-5, 8e-5];
+        let forces: Vec<f64> = deltas.iter().map(|d| {
+            let sep = 2.0 * radius - d;
+            hertz_force_at(sep)
+        }).collect();
+
+        // For each pair (i, 0), check F_i/F_0 ≈ (delta_i/delta_0)^(3/2)
+        for i in 1..deltas.len() {
+            let expected_ratio = (deltas[i] / deltas[0]).powf(1.5);
+            let actual_ratio = forces[i] / forces[0];
+            let rel_err = ((actual_ratio - expected_ratio) / expected_ratio).abs();
+            assert!(
+                rel_err < 0.01,
+                "Hertz force scaling: delta ratio {:.1}, expected F ratio {:.4}, got {:.4} (rel err {:.4})",
+                deltas[i] / deltas[0], expected_ratio, actual_ratio, rel_err
+            );
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // VALIDATION: Hooke force scales as delta^1 across multiple overlaps
+    // Linear spring model: F = kn * delta. Verify ratio F2/F1 = delta2/delta1.
+    // ══════════════════════════════════════════════════════════════════════
+    #[test]
+    fn hooke_force_scales_linearly_across_overlaps() {
+        let radius = 0.001;
+        let hooke_force_at = |sep: f64| -> f64 {
+            let mut app = App::new();
+            let mut atom = Atom::new();
+            let mut dem = DemAtom::new();
+            let mut hist = ContactHistoryStore::new();
+            atom.dt = 1e-7;
+            push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
+            push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 1, [sep, 0.0, 0.0], radius);
+            atom.nlocal = 2;
+            atom.natoms = 2;
+            let mut neighbor = Neighbor::new();
+            neighbor.neighbor_offsets = vec![0, 1, 1];
+            neighbor.neighbor_indices = vec![1];
+            let mut registry = AtomDataRegistry::new();
+            registry.register(dem);
+            registry.register(hist);
+            app.add_resource(atom);
+            app.add_resource(neighbor);
+            app.add_resource(registry);
+            app.add_resource(make_material_table_hooke());
+            app.add_update_system(hooke_contact_force, ScheduleSet::Force);
+            app.organize_systems();
+            app.run();
+            let atom = app.get_resource_ref::<Atom>().unwrap();
+            atom.force[0][0].abs()
+        };
+
+        let deltas = [2e-5, 4e-5, 6e-5, 8e-5, 1e-4];
+        let forces: Vec<f64> = deltas.iter().map(|d| {
+            let sep = 2.0 * radius - d;
+            hooke_force_at(sep)
+        }).collect();
+
+        for i in 1..deltas.len() {
+            let expected_ratio = deltas[i] / deltas[0]; // linear
+            let actual_ratio = forces[i] / forces[0];
+            let rel_err = ((actual_ratio - expected_ratio) / expected_ratio).abs();
+            assert!(
+                rel_err < 0.01,
+                "Hooke force scaling: delta ratio {:.1}, expected F ratio {:.4}, got {:.4} (rel err {:.4})",
+                deltas[i] / deltas[0], expected_ratio, actual_ratio, rel_err
+            );
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // VALIDATION: Hertz analytical force value
+    // For two identical spheres with zero relative velocity (no damping),
+    // the elastic normal force should be F = (4/3)*E_eff*sqrt(R_eff)*delta^(3/2).
+    // ══════════════════════════════════════════════════════════════════════
+    #[test]
+    fn hertz_force_matches_analytical_value() {
+        let radius = 0.001;
+        let delta = 5e-5;
+        let sep = 2.0 * radius - delta;
+
+        let mut app = App::new();
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let mut hist = ContactHistoryStore::new();
+        atom.dt = 1e-7;
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 1, [sep, 0.0, 0.0], radius);
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let mut neighbor = Neighbor::new();
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(hist);
+
+        let mt = make_material_table();
+        let e_eff = mt.e_eff_ij[0][0];
+        let r_eff = radius / 2.0; // two equal spheres: r_eff = r1*r2/(r1+r2) = r/2
+
+        app.add_resource(atom);
+        app.add_resource(neighbor);
+        app.add_resource(registry);
+        app.add_resource(mt);
+        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        let f_computed = atom.force[0][0].abs();
+        // Analytical: F = (4/3) * E_eff * sqrt(R_eff) * delta^(3/2)
+        let f_analytical = (4.0 / 3.0) * e_eff * r_eff.sqrt() * delta.powf(1.5);
+        let rel_err = (f_computed - f_analytical).abs() / f_analytical;
+        assert!(
+            rel_err < 1e-10,
+            "Hertz force analytical check: computed={:.6e}, expected={:.6e}, rel_err={:.2e}",
+            f_computed, f_analytical, rel_err
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // VALIDATION: Linear momentum conservation for elastic contact
+    // Two particles colliding with zero damping (e=1.0) should conserve
+    // total linear momentum exactly (to machine precision) at every step.
+    // ══════════════════════════════════════════════════════════════════════
+    #[test]
+    fn linear_momentum_conserved_during_elastic_contact() {
+        // Use a perfectly elastic material (restitution = 1.0 → beta = 0 → no damping)
+        let mut mt = MaterialTable::new();
+        mt.add_material("elastic", 8.7e9, 0.3, 1.0, 0.0, 0.0, 0.0);
+        mt.build_pair_tables();
+        assert!(
+            mt.beta_ij[0][0].abs() < 1e-15,
+            "beta should be 0 for e=1.0"
+        );
+
+        let radius = 0.001;
+        let dt = 1e-8;
+
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let mut hist = ContactHistoryStore::new();
+        atom.dt = dt;
+
+        // Two particles approaching each other, slight overlap
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 1, [0.00195, 0.0, 0.0], radius);
+        atom.vel[0] = [0.1, 0.05, -0.02];
+        atom.vel[1] = [-0.05, 0.03, 0.01];
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let initial_momentum = [
+            atom.mass[0] * atom.vel[0][0] + atom.mass[1] * atom.vel[1][0],
+            atom.mass[0] * atom.vel[0][1] + atom.mass[1] * atom.vel[1][1],
+            atom.mass[0] * atom.vel[0][2] + atom.mass[1] * atom.vel[1][2],
+        ];
+
+        let mut neighbor = Neighbor::new();
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(hist);
+
+        let mut app = App::new();
+        app.add_resource(atom);
+        app.add_resource(neighbor);
+        app.add_resource(registry);
+        app.add_resource(mt);
+        app.add_update_system(
+            crate::contact::hertz_mindlin_contact_force,
+            ScheduleSet::Force,
+        );
+        app.add_update_system(
+            mddem_verlet::initial_integration,
+            ScheduleSet::InitialIntegration,
+        );
+        app.add_update_system(
+            mddem_verlet::final_integration,
+            ScheduleSet::FinalIntegration,
+        );
+        // Zero forces between steps
+        app.add_update_system(
+            |mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>| {
+                let n = atoms.len();
+                atoms.force[..n].fill([0.0; 3]);
+                registry.zero_all(n);
+            },
+            ScheduleSet::PostInitialIntegration,
+        );
+        app.organize_systems();
+
+        // Run for 100 steps
+        for _ in 0..100 {
+            app.run();
+        }
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        let final_momentum = [
+            atom.mass[0] * atom.vel[0][0] + atom.mass[1] * atom.vel[1][0],
+            atom.mass[0] * atom.vel[0][1] + atom.mass[1] * atom.vel[1][1],
+            atom.mass[0] * atom.vel[0][2] + atom.mass[1] * atom.vel[1][2],
+        ];
+
+        for d in 0..3 {
+            let err = (final_momentum[d] - initial_momentum[d]).abs();
+            assert!(
+                err < 1e-12,
+                "Momentum not conserved in dim {}: initial={:.6e}, final={:.6e}, err={:.2e}",
+                d, initial_momentum[d], final_momentum[d], err
+            );
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // VALIDATION: Contact force symmetry
+    // Two identical particles approaching symmetrically should have
+    // exactly mirror-image forces (Newton's 3rd law).
+    // ══════════════════════════════════════════════════════════════════════
+    #[test]
+    fn contact_force_symmetry_with_tangential_velocity() {
+        let radius = 0.001;
+        let sep = 0.0019;
+
+        let mut app = App::new();
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let mut hist = ContactHistoryStore::new();
+        atom.dt = 1e-7;
+
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 1, [sep, 0.0, 0.0], radius);
+        // Give both atoms velocities in all directions
+        atom.vel[0] = [0.1, 0.2, -0.1];
+        atom.vel[1] = [-0.3, 0.1, 0.05];
+        dem.omega[0] = [10.0, 20.0, -5.0];
+        dem.omega[1] = [-15.0, 5.0, 10.0];
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let mut neighbor = Neighbor::new();
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(hist);
+
+        app.add_resource(atom);
+        app.add_resource(neighbor);
+        app.add_resource(registry);
+        app.add_resource(make_material_table());
+        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        // Newton's 3rd law: forces equal and opposite
+        for d in 0..3 {
+            assert!(
+                (atom.force[0][d] + atom.force[1][d]).abs() < 1e-10,
+                "Newton's 3rd law violated in dim {}: f0={:.6e}, f1={:.6e}",
+                d, atom.force[0][d], atom.force[1][d]
+            );
+        }
+    }
+
+    #[test]
     fn rolling_resistance_opposes_angular_velocity() {
         let mut app = App::new();
         let radius = 0.001;
