@@ -1,0 +1,19 @@
+[package]
+name = "mddem_deform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Box deformation fix (erate, vel, final) for MDDEM — triaxial compression, oedometer tests"
+keywords = ["deform", "compression", "triaxial", "geomechanics", "dem"]
+categories = ["simulation", "science"]
+
+[dependencies]
+mddem_core = { path = "../mddem_core", version = "0.1.3", default-features = false }
+mddem_app = { path = "../mddem_app", version = "0.1.3" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.3" }
+mddem_neighbor = { path = "../mddem_neighbor", version = "0.1.3" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+mddem_test_utils = { path = "../mddem_test_utils", version = "0.1.3" }

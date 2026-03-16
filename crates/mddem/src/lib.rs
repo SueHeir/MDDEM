@@ -17,6 +17,7 @@ pub use md_type_rdf;
 pub use md_polymer;
 pub use md_thermostat;
 pub use mddem_core;
+pub use mddem_deform;
 pub use mddem_fixes;
 pub use mddem_neighbor;
 pub use mddem_print;
@@ -106,6 +107,7 @@ pub mod prelude {
     pub use md_type_rdf::{TypeRdfConfig, TypeRdfPlugin};
     pub use md_polymer::{ChainStatsConfig, ChainStatsPlugin, PolymerConfig, PolymerInitConfig, PolymerInitPlugin, PolymerPlugin};
     pub use md_thermostat::{LangevinConfig, LangevinPlugin, LangevinState, NoseHooverPlugin, NoseHooverState, ThermostatConfig};
+    pub use mddem_deform::{DeformPlugin, DeformState};
     pub use mddem_fixes::{AddForceDef, FixesPlugin, FixesRegistry, FreezeDef, MoveLinearDef, SetForceDef, ViscousDef};
     pub use mddem_app::prelude::*;
     pub use mddem_derive::StageEnum;
