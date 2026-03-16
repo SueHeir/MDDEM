@@ -33,7 +33,7 @@
 //! domain bounds and remapping atoms before the Verlet position update.
 
 use mddem_app::prelude::*;
-use mddem_core::{Atom, CommResource, Config, Domain};
+use mddem_core::{Atom, CommResource, Config, Domain, StageOverrides};
 use mddem_neighbor::Neighbor;
 use mddem_scheduler::prelude::*;
 use serde::Deserialize;
@@ -141,26 +141,20 @@ impl Plugin for DeformPlugin {
     }
 
     fn build(&self, app: &mut App) {
-        let deform_config = Config::load::<DeformConfig>(app, "deform");
-
-        let axes = [
-            parse_axis_def(&deform_config.x, "x"),
-            parse_axis_def(&deform_config.y, "y"),
-            parse_axis_def(&deform_config.z, "z"),
-        ];
+        // Register a default (empty) DeformState. The setup system re-reads
+        // the merged stage-aware config each stage, so we don't parse axes here.
+        Config::load::<DeformConfig>(app, "deform");
 
         let state = DeformState {
-            axes,
-            remap: deform_config.remap,
+            axes: [None, None, None],
+            remap: true,
             step: 0,
             initialized: false,
         };
 
-        if !state.has_any() {
-            app.add_resource(state);
-            return;
-        }
-
+        // Always register systems — the setup system reads per-stage config and
+        // populates axes (or clears them) accordingly. The update system early-
+        // returns when no axes are active.
         app.add_resource(state)
             .add_setup_system(setup_deform, ScheduleSetupSet::PostSetup)
             .add_update_system(apply_deform, ScheduleSet::PreInitialIntegration);
@@ -210,8 +204,30 @@ fn parse_axis_def(def: &Option<AxisDeformDef>, axis_name: &str) -> Option<AxisDe
 
 // ── Setup system ────────────────────────────────────────────────────────────
 
-/// Initialize deform state with current domain bounds.
-fn setup_deform(mut state: ResMut<DeformState>, domain: Res<Domain>, comm: Res<CommResource>) {
+/// Re-read deformation config from stage overrides and initialize state.
+///
+/// This runs at the start of every stage, so per-stage `[deform]` overrides
+/// inside `[[run]]` blocks take effect. When a stage has no `[deform]`
+/// section, all axes are cleared so deformation doesn't persist from a
+/// previous stage.
+fn setup_deform(
+    mut state: ResMut<DeformState>,
+    domain: Res<Domain>,
+    comm: Res<CommResource>,
+    stage_overrides: Res<StageOverrides>,
+) {
+    // Re-read config from the merged (global + current stage) config table.
+    let config: DeformConfig = Config::load_stage_aware(&stage_overrides, "deform");
+
+    // Parse axis definitions fresh from this stage's config.
+    state.axes = [
+        parse_axis_def(&config.x, "x"),
+        parse_axis_def(&config.y, "y"),
+        parse_axis_def(&config.z, "z"),
+    ];
+    state.remap = config.remap;
+
+    // Set initial bounds from current domain and reset step counter.
     for (dim, axis) in state.axes.iter_mut().enumerate() {
         if let Some(ref mut ax) = axis {
             ax.lo_0 = domain.boundaries_low[dim];
@@ -221,7 +237,7 @@ fn setup_deform(mut state: ResMut<DeformState>, domain: Res<Domain>, comm: Res<C
     state.initialized = true;
     state.step = 0;
 
-    if comm.rank() == 0 {
+    if comm.rank() == 0 && state.has_any() {
         let axis_names = ["x", "y", "z"];
         for (dim, axis) in state.axes.iter().enumerate() {
             if let Some(ref ax) = axis {
@@ -269,7 +285,7 @@ fn apply_deform(
     mut neighbor: ResMut<Neighbor>,
     run_state: Res<mddem_core::RunState>,
 ) {
-    if !state.initialized {
+    if !state.initialized || !state.has_any() {
         return;
     }
 
@@ -278,7 +294,10 @@ fn apply_deform(
     let step = state.step;
     let nlocal = atoms.nlocal as usize;
 
-    // Get total steps for this run stage (needed for "final" style)
+    // Total steps for the current stage, needed by "final" style to compute
+    // interpolation fraction.  RunState tracks per-stage progress as parallel
+    // vectors: `cycle_count[i]` = steps completed so far in stage i,
+    // `cycle_remaining[i]` = steps left. Their sum is the stage's total steps.
     let total_steps = if !run_state.cycle_remaining.is_empty() {
         let stage_idx = run_state.cycle_count.len().saturating_sub(1);
         if stage_idx < run_state.cycle_remaining.len() {
