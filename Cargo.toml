@@ -106,6 +106,10 @@ path = "examples/dem_benchmark/main.rs"
 name = "polymer_melt"
 path = "examples/polymer_melt/main.rs"
 
+[[example]]
+name = "lj_binary"
+path = "examples/lj_binary/main.rs"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
@@ -116,6 +120,7 @@ panic = "abort"
 mddem = { path = "./crates/mddem", default-features = false }
 dem_measure_plane = { path = "./crates/dem_measure_plane" }
 md_type_rdf = { path = "./crates/md_type_rdf" }
+md_msd = { path = "./crates/md_msd" }
 mddem_derive = { path = "./crates/mddem_derive" }
 mddem_fire = { path = "./crates/mddem_fire" }
 mddem_velocity_distribution = { path = "./crates/mddem_velocity_distribution" }
