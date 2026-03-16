@@ -74,7 +74,7 @@ dir = "examples/granular_shear/output"
 [thermo]
 columns = ["step", "atoms", "ke", "walltime"]
 
-# Stage 1: Let particles settle under gravity (no wall motion initially)
+# Stage 1: Let particles settle under gravity (walls are moving from step 0)
 [[run]]
 name = "settle"
 steps = 100000

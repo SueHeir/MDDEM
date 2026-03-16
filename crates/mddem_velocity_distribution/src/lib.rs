@@ -323,7 +323,6 @@ pub fn analyze_velocity_distribution(
 
 // ── ECS system ─────────────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
 fn compute_velocity_distribution(
     atoms: Res<Atom>,
     run_state: Res<RunState>,
@@ -338,6 +337,12 @@ fn compute_velocity_distribution(
         return;
     }
 
+    // Velocity distribution analysis is local-only — skip entirely on
+    // multi-rank runs to avoid silently producing incorrect results.
+    if comm.size() > 1 {
+        return;
+    }
+
     let step = run_state.total_cycle;
     if config.interval == 0 || !step.is_multiple_of(config.interval) {
         return;
@@ -348,28 +353,12 @@ fn compute_velocity_distribution(
         return;
     }
 
-    // Warn once if running with MPI — analysis is local-only and will not
-    // aggregate velocities across ranks. A proper implementation would
-    // allgather velocities before computing the distribution.
-    if comm.size() > 1 && step == config.interval {
-        eprintln!(
-            "WARNING: velocity_distribution plugin is local-only; \
-             results on {} ranks may not represent the global distribution. \
-             Consider running in single-process mode for accurate analysis.",
-            comm.size()
-        );
-    }
-
     let velocities = &atoms.vel[..nlocal];
     let masses = &atoms.mass[..nlocal];
 
     let result = analyze_velocity_distribution(velocities, masses, config.num_bins, config.max_speed_factor);
 
-    // Only rank 0 writes output
-    if comm.rank() != 0 {
-        return;
-    }
-
+    // Single-rank run, so we are rank 0 — write output directly.
     let base_dir = match input.output_dir.as_deref() {
         Some(dir) => format!("{}/data", dir),
         None => "data".to_string(),

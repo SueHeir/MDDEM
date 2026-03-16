@@ -216,6 +216,8 @@ cargo run --release -- config.toml --schedule
 |---------|-------------|-----|
 | [granular_basic](examples/granular_basic/) | 500-particle granular gas in a periodic box | `cargo run --example granular_basic -- examples/granular_basic/config.toml` |
 | [granular_gas_benchmark](examples/granular_gas_benchmark/) | Haff's cooling law validation with LAMMPS comparison | `cargo run --example granular_gas_benchmark -- examples/granular_gas_benchmark/run_debug.toml` |
+| [granular_gas_vdist](examples/granular_gas_vdist/) | Granular gas with velocity distribution analysis (Maxwell-Boltzmann comparison) | `cargo run --example granular_gas_vdist -- examples/granular_gas_vdist/config.toml` |
+| [granular_shear](examples/granular_shear/) | Polydisperse shear flow between opposing walls with velocity distribution analysis | `cargo run --example granular_shear -- examples/granular_shear/config.toml` |
 | [hopper](examples/hopper/) | 2D slot hopper with named stages (`StageEnum`), KE-based state transitions | `cargo run --example hopper -- examples/hopper/config.toml` |
 | [dem_compression](examples/dem_compression/) | 3-stage DEM compression (insert → relax → compress) with per-stage config overrides | `cargo run --example dem_compression -- examples/dem_compression/config.toml` |
 | [bond_basic](examples/bond_basic/) | Bonded particle model with auto-bonding and breakage | `cargo run --example bond_basic -- examples/bond_basic/config.toml` |
@@ -351,6 +353,7 @@ These are specialized features that won't be in core. Users can write plugins fo
 | [`dem_wall`](crates/dem_wall/) | Plane, cylinder, and sphere wall contact forces with motion (static, constant velocity, oscillating, servo) |
 | [`dem_thermal`](crates/dem_thermal/) | Contact-based heat conduction with per-atom temperature |
 | [`dem_bond`](crates/dem_bond/) | Bonded particle model: auto-bonding, normal/tangential/bending forces, breakage |
+| [`mddem_velocity_distribution`](crates/mddem_velocity_distribution/) | Velocity distribution analysis: speed histograms, Maxwell-Boltzmann comparison, kurtosis, per-component PDFs |
 | [`md_lj`](crates/md_lj/) | LJ 12-6 pair force with virial, tail corrections, and multi-type support |
 | [`md_thermostat`](crates/md_thermostat/) | Nose-Hoover NVT and Langevin thermostats (group-aware) |
 | [`md_lattice`](crates/md_lattice/) | FCC lattice initialization |
