@@ -447,6 +447,7 @@ dependencies = [
  "md_type_rdf",
  "mddem_app",
  "mddem_core",
+ "mddem_deform",
  "mddem_derive",
  "mddem_fixes",
  "mddem_neighbor",
@@ -465,6 +466,7 @@ dependencies = [
  "md_msd",
  "md_type_rdf",
  "mddem",
+ "mddem_deform",
  "mddem_derive",
  "mddem_fire",
  "mddem_scheduler",
@@ -490,6 +492,18 @@ dependencies = [
  "rand",
  "serde",
  "toml",
+]
+
+[[package]]
+name = "mddem_deform"
+version = "0.1.3"
+dependencies = [
+ "mddem_app",
+ "mddem_core",
+ "mddem_neighbor",
+ "mddem_scheduler",
+ "mddem_test_utils",
+ "serde",
 ]
 
 [[package]]

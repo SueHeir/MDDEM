@@ -99,6 +99,10 @@ name = "polymer_chain"
 path = "examples/polymer_chain/main.rs"
 
 [[example]]
+name = "dem_triaxial"
+path = "examples/dem_triaxial/main.rs"
+
+[[example]]
 name = "shrink_wrap_demo"
 path = "examples/shrink_wrap_demo/main.rs"
 
@@ -136,6 +140,7 @@ md_msd = { path = "./crates/md_msd" }
 mddem_derive = { path = "./crates/mddem_derive" }
 mddem_fire = { path = "./crates/mddem_fire" }
 mddem_velocity_distribution = { path = "./crates/mddem_velocity_distribution" }
+mddem_deform = { path = "./crates/mddem_deform" }
 mddem_scheduler = { path = "./crates/mddem_scheduler" }
 # Force libffi-sys to use system libffi (via pkg-config) instead of building
 # from source. libffi-sys 2.3.0 has a broken aarch64 macOS assembler; Homebrew
