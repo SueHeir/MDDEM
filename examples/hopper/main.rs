@@ -1,3 +1,12 @@
+//! Slot hopper discharge: particles fill a funnel, then flow through an exit.
+//!
+//! Demonstrates multi-stage simulation with runtime wall control (removing a
+//! blocker wall when particles settle) and KE-based stage transitions.
+//!
+//! ```bash
+//! cargo run --example hopper --no-default-features -- examples/hopper/config.toml
+//! ```
+
 use mddem::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Default, StageEnum)]

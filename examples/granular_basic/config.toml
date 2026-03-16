@@ -1,37 +1,45 @@
+# Basic granular DEM simulation: 500 glass spheres in a periodic box.
+# Particles are inserted with random velocities and collide via Hertzian contact.
+
 [comm]
+# MPI processor grid — product should equal total MPI ranks
 processors_x = 2
 processors_y = 2
 processors_z = 1
 
 [neighbor]
+# skin_fraction: enlarges neighbor search radius by this factor (dimensionless, typically 1.0–1.5)
 skin_fraction = 1.1
+# bin_size: neighbor-list bin width [m] — should be >= largest particle diameter
 bin_size = 0.005
 
 [domain]
+# Simulation box extents [m]
 x_low = 0.0
 x_high = 0.025
 y_low = 0.0
 y_high = 0.025
 z_low = 0.0
 z_high = 0.025
+# Periodic boundaries wrap particles that exit one side back through the opposite side
 periodic_x = true
 periodic_y = true
 periodic_z = true
 
 [[dem.materials]]
 name = "glass"
-youngs_mod = 8.7e9
-poisson_ratio = 0.3
-restitution = 0.95
-friction = 0.4
+youngs_mod = 8.7e9       # Young's modulus [Pa] — controls contact stiffness
+poisson_ratio = 0.3      # Poisson's ratio [dimensionless, 0–0.5]
+restitution = 0.95       # Coefficient of restitution [0–1] — 1 = perfectly elastic
+friction = 0.4           # Sliding friction coefficient [dimensionless, >= 0]
 
 [[particles.insert]]
-material = "glass"
-count = 500
-radius = 0.001
-density = 2500.0
-velocity = 0.5
+material = "glass"       # Must match a [[dem.materials]] name
+count = 500              # Number of particles to insert
+radius = 0.001           # Particle radius [m]
+density = 2500.0         # Particle density [kg/m³]
+velocity = 0.5           # Random initial velocity magnitude [m/s]
 
 [run]
-thermo = 500
-steps = 5000000
+thermo = 500             # Print thermodynamic output every N steps
+steps = 5000000          # Total number of timesteps to run

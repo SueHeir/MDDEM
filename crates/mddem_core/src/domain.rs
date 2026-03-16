@@ -15,24 +15,32 @@ fn default_true() -> bool {
 #[serde(deny_unknown_fields)]
 /// TOML `[domain]` — simulation box boundaries and periodic flags.
 pub struct DomainConfig {
-    /// Lower x boundary of the simulation box.
-    #[serde(default)]
+    /// Lower x boundary of the simulation box (simulation units, e.g. meters for DEM).
+    #[serde(default, alias = "x_lo")]
     pub x_low: f64,
-    #[serde(default = "default_one_f64")]
+    /// Upper x boundary of the simulation box (simulation units).
+    #[serde(default = "default_one_f64", alias = "x_hi")]
     pub x_high: f64,
-    #[serde(default)]
+    /// Lower y boundary of the simulation box (simulation units).
+    #[serde(default, alias = "y_lo")]
     pub y_low: f64,
-    #[serde(default = "default_one_f64")]
+    /// Upper y boundary of the simulation box (simulation units).
+    #[serde(default = "default_one_f64", alias = "y_hi")]
     pub y_high: f64,
-    #[serde(default)]
+    /// Lower z boundary of the simulation box (simulation units).
+    #[serde(default, alias = "z_lo")]
     pub z_low: f64,
-    #[serde(default = "default_one_f64")]
+    /// Upper z boundary of the simulation box (simulation units).
+    #[serde(default = "default_one_f64", alias = "z_hi")]
     pub z_high: f64,
-    #[serde(default = "default_true")]
+    /// Whether the x axis uses periodic boundary conditions.
+    #[serde(default = "default_true", alias = "x_periodic")]
     pub periodic_x: bool,
-    #[serde(default = "default_true")]
+    /// Whether the y axis uses periodic boundary conditions.
+    #[serde(default = "default_true", alias = "y_periodic")]
     pub periodic_y: bool,
-    #[serde(default = "default_true")]
+    /// Whether the z axis uses periodic boundary conditions.
+    #[serde(default = "default_true", alias = "z_periodic")]
     pub periodic_z: bool,
 }
 
@@ -183,14 +191,14 @@ impl Plugin for DomainPlugin {
     fn default_config(&self) -> Option<&str> {
         Some(
             r#"[domain]
-# Simulation box boundaries
+# Simulation box boundaries (also accepts x_lo/x_hi, y_lo/y_hi, z_lo/z_hi)
 x_low = 0.0
 x_high = 1.0
 y_low = 0.0
 y_high = 1.0
 z_low = 0.0
 z_high = 1.0
-# Periodic boundary conditions per axis
+# Periodic boundary conditions per axis (also accepts x_periodic, y_periodic, z_periodic)
 periodic_x = true
 periodic_y = true
 periodic_z = true"#,

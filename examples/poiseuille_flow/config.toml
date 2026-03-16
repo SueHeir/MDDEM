@@ -1,3 +1,7 @@
+# Poiseuille flow: LJ fluid between frozen walls with body force
+# All values in reduced (Lennard-Jones) units: length=sigma, energy=epsilon, mass=m
+
+# Simulation box: periodic in x,y but non-periodic in z for wall confinement
 [domain]
 x_low = 0.0
 x_high = 10.06
@@ -7,25 +11,28 @@ z_low = 0.0
 z_high = 10.06
 periodic_x = true
 periodic_y = true
-periodic_z = false
+periodic_z = false  # Non-periodic to confine fluid between walls
 
+# Neighbor list settings (reduced units)
 [neighbor]
-skin_fraction = 1.12
-bin_size = 1.0
+skin_fraction = 1.12  # Extra distance beyond cutoff for neighbor search (sigma)
+bin_size = 1.0        # Spatial bin width for neighbor binning (sigma)
 
+# FCC lattice initialization
 [lattice]
 style = "fcc"
-density = 0.85
-temperature = 0.85
+density = 0.85       # Reduced number density rho* = N*sigma^3/V
+temperature = 0.85   # Initial reduced temperature T* = kT/epsilon
 mass = 1.0
 skin = 1.25
 
+# Lennard-Jones pair potential parameters
 [lj]
-epsilon = 1.0
-sigma = 1.0
-cutoff = 2.5
+epsilon = 1.0  # Well depth (energy scale)
+sigma = 1.0    # Particle diameter (length scale)
+cutoff = 2.5   # Interaction cutoff in units of sigma
 
-# Wall groups: bottom and top slabs
+# Wall groups: frozen slabs at bottom and top of the box
 [[group]]
 name = "wall_bottom"
 region = { type = "block", min = [-1e30, -1e30, 0.0], max = [1e30, 1e30, 2.5] }
@@ -34,37 +41,40 @@ region = { type = "block", min = [-1e30, -1e30, 0.0], max = [1e30, 1e30, 2.5] }
 name = "wall_top"
 region = { type = "block", min = [-1e30, -1e30, 7.5], max = [1e30, 1e30, 10.06] }
 
+# Fluid group: mobile atoms between the two walls
 [[group]]
 name = "fluid"
 region = { type = "block", min = [-1e30, -1e30, 2.5], max = [1e30, 1e30, 7.5] }
 
-# Freeze wall atoms
+# Freeze wall atoms in place (zero velocity, excluded from integration)
 [[freeze]]
 group = "wall_bottom"
 
 [[freeze]]
 group = "wall_top"
 
-# Body force on fluid in x-direction
+# Constant body force on fluid in x-direction to drive Poiseuille flow
 [[addforce]]
 group = "fluid"
-fx = 0.05
+fx = 0.05  # Force per atom in reduced units (epsilon/sigma)
 
-# Langevin thermostat on fluid only
+# Langevin thermostat on fluid only (walls are frozen, no thermostat needed)
 [langevin]
-temperature = 0.85
-damping = 1.0
-seed = 54321
-group = "fluid"
+temperature = 0.85  # Target reduced temperature T*
+damping = 1.0       # Damping time constant (reduced time units)
+seed = 54321        # Random number generator seed for reproducibility
+group = "fluid"     # Only thermostat the fluid atoms
 
 [run]
 steps = 10000
 thermo = 100
 
+# Measurements disabled for this example
 [measure]
 rdf_bins = 0
 msd_interval = 0
 output_interval = 0
 
+# Dump trajectory for visualization of flow profile
 [dump]
 interval = 1000

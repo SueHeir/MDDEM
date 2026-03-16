@@ -1,3 +1,7 @@
+# LJ Argon with Langevin thermostat (stochastic dynamics)
+# All values in reduced (Lennard-Jones) units: length=sigma, energy=epsilon, mass=m
+
+# Simulation box dimensions in reduced units (sigma)
 [domain]
 x_low = 0.0
 x_high = 10.06
@@ -5,41 +9,47 @@ y_low = 0.0
 y_high = 10.06
 z_low = 0.0
 z_high = 10.06
-periodic_x = true
+periodic_x = true  # Periodic boundary conditions in all directions
 periodic_y = true
 periodic_z = true
 
+# Neighbor list settings (reduced units)
 [neighbor]
-skin_fraction = 1.12
-bin_size = 1.0
+skin_fraction = 1.12  # Extra distance beyond cutoff for neighbor search (sigma)
+bin_size = 1.0        # Spatial bin width for neighbor binning (sigma)
 
+# FCC lattice initialization
 [lattice]
 style = "fcc"
-density = 0.85
-temperature = 0.85
-mass = 1.0
-skin = 1.25
+density = 0.85       # Reduced number density rho* = N*sigma^3/V
+temperature = 0.85   # Initial reduced temperature T* = kT/epsilon
+mass = 1.0           # Particle mass in reduced units
+skin = 1.25          # Lattice spacing factor for neighbor cutoff
 
+# Lennard-Jones pair potential parameters
 [lj]
-epsilon = 1.0
-sigma = 1.0
-cutoff = 2.5
+epsilon = 1.0  # Well depth (energy scale)
+sigma = 1.0    # Particle diameter (length scale)
+cutoff = 2.5   # Interaction cutoff in units of sigma
 
+# Langevin thermostat: adds friction + random force to maintain temperature
 [langevin]
-temperature = 0.85
-damping = 1.0
-seed = 12345
+temperature = 0.85  # Target reduced temperature T*
+damping = 1.0       # Damping time constant (reduced time units); lower = stronger coupling
+seed = 12345        # Random number generator seed for reproducibility
 
 [run]
 steps = 10000
-thermo = 100
+thermo = 100  # Print thermodynamic output every 100 steps
 
+# Measurement settings
 [measure]
-rdf_bins = 200
-rdf_cutoff = 3.0
-rdf_interval = 100
-msd_interval = 10
-output_interval = 5000
+rdf_bins = 200         # Number of histogram bins for radial distribution function
+rdf_cutoff = 3.0       # RDF cutoff distance (sigma)
+rdf_interval = 100     # Accumulate RDF data every 100 steps
+msd_interval = 10      # Accumulate MSD data every 10 steps
+output_interval = 5000  # Write measurement results every 5000 steps
 
+# Dump (trajectory) output
 [dump]
-interval = 0
+interval = 0  # 0 = no dump output

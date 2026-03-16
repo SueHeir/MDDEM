@@ -1,3 +1,12 @@
+//! Per-atom energy tracking with a custom `AtomData` extension.
+//!
+//! Extends the default LJ simulation with a per-atom potential energy field,
+//! demonstrating `#[reverse]` and `#[zero]` attributes for ghost communication.
+//!
+//! ```bash
+//! cargo run --example lj_per_atom_energy --no-default-features -- examples/lj_per_atom_energy/config.toml
+//! ```
+
 use mddem::md_lj::{self, LJPairTable};
 use mddem::prelude::*;
 use mddem_derive::AtomData;

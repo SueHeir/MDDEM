@@ -2,6 +2,7 @@
 # 10 particles placed by setup_chain (no [[particles.insert]])
 
 [domain]
+# Simulation box extents [m]
 x_low = -0.005
 x_high = 0.005
 y_low = -0.005
@@ -13,15 +14,17 @@ periodic_y = false
 periodic_z = false
 
 [neighbor]
+# skin_fraction: neighbor search radius multiplier [dimensionless, typically 1.0–1.5]
 skin_fraction = 1.1
+# bin_size: neighbor-list bin width [m] — should be >= largest particle diameter
 bin_size = 0.005
 
 [[dem.materials]]
 name = "glass"
-youngs_mod = 8.7e9
-poisson_ratio = 0.3
-restitution = 0.95
-friction = 0.4
+youngs_mod = 8.7e9       # Young's modulus [Pa] — used for particle-particle Hertz contact
+poisson_ratio = 0.3      # Poisson's ratio [dimensionless, 0–0.5]
+restitution = 0.95       # Coefficient of restitution [0–1]
+friction = 0.4           # Sliding friction coefficient [dimensionless]
 
 # Bottom particle: frozen in place
 [[group]]
@@ -38,11 +41,14 @@ group = "bottom"
 
 [[addforce]]
 group = "top"
-fz = 0.01
+fz = 0.01                # Applied force [N] — constant upward pull on the top particle
 
 [bonds]
+# auto_bond: automatically bond all particles within bonding distance at startup
 auto_bond = true
+# normal_stiffness: bond spring constant [N/m] — higher = stiffer bonds
 normal_stiffness = 1e7
+# normal_damping: bond viscous damping [N·s/m]
 # Critical damping ~ 20; use 10 for stable underdamped settling
 normal_damping = 10.0
 
@@ -50,8 +56,8 @@ normal_damping = 10.0
 columns = ["step", "bond_strain", "virial_zz", "ke", "walltime"]
 
 [run]
-thermo = 1000
-steps = 10000
+thermo = 1000            # Print thermodynamic output every N steps
+steps = 10000            # Total number of timesteps
 
 [dump]
-interval = 5000
+interval = 5000          # Write dump file every N steps

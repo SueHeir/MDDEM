@@ -1,3 +1,12 @@
+//! LJ Argon with Langevin thermostat (stochastic dynamics).
+//!
+//! Same setup as `lj_argon` but uses a Langevin thermostat instead of
+//! Nose-Hoover. Demonstrates manual plugin selection without `LJDefaultPlugins`.
+//!
+//! ```bash
+//! cargo run --example lj_langevin --no-default-features -- examples/lj_langevin/config.toml
+//! ```
+
 use mddem::prelude::*;
 
 fn main() {
