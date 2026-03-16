@@ -64,7 +64,7 @@ pub fn push_dem_test_atom(
 /// Create a single-material "glass" [`MaterialTable`] for testing.
 pub fn make_material_table() -> dem_atom::MaterialTable {
     let mut mt = dem_atom::MaterialTable::new();
-    mt.add_material("glass", 8.7e9, 0.3, 0.95, 0.4);
+    mt.add_material("glass", 8.7e9, 0.3, 0.95, 0.4, 0.0, 0.0);
     mt.build_pair_tables();
     mt
 }

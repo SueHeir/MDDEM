@@ -332,7 +332,8 @@ interval = 0"#,
             .add_update_system(print_vtp, ScheduleSet::PostFinalIntegration)
             .add_update_system(print_thermo, ScheduleSet::PostFinalIntegration)
             .add_update_system(dump_atoms, ScheduleSet::PostFinalIntegration)
-            .add_update_system(write_restart, ScheduleSet::PostFinalIntegration);
+            .add_update_system(write_restart, ScheduleSet::PostFinalIntegration)
+            .add_update_system(check_stage_end_save.before("update_cycle"), ScheduleSet::PostFinalIntegration);
     }
 }
 
@@ -667,7 +668,7 @@ pub fn dump_atoms(
     }
 }
 
-fn dump_atoms_inner(
+pub(crate) fn dump_atoms_inner(
     atoms: &Atom,
     registry: &AtomDataRegistry,
     step: usize,
@@ -839,7 +840,7 @@ pub fn write_restart(
     }
 }
 
-fn write_restart_inner(
+pub(crate) fn write_restart_inner(
     data: &RestartData,
     base_dir: &str,
     step: usize,
@@ -859,6 +860,102 @@ fn write_restart_inner(
         }
     }
     Ok(())
+}
+
+// ── Stage-end save ──────────────────────────────────────────────────────────
+
+/// Writes dump + restart files when a stage with `save_at_end = true` finishes.
+/// Runs before `update_cycle` so the stage index is still valid.
+#[allow(clippy::too_many_arguments)]
+pub fn check_stage_end_save(
+    atoms: Res<Atom>,
+    registry: Res<AtomDataRegistry>,
+    run_state: Res<RunState>,
+    comm: Res<CommResource>,
+    input: Res<Input>,
+    dump_config: Res<DumpConfig>,
+    restart_config: Res<RestartConfig>,
+    run_config: Res<RunConfig>,
+    scheduler_manager: Res<SchedulerManager>,
+    dump_registry: Res<DumpRegistry>,
+) {
+    let index = scheduler_manager.index;
+    if index >= run_config.num_stages() {
+        return;
+    }
+    let stage = run_config.current_stage(index);
+    if !stage.save_at_end {
+        return;
+    }
+
+    let remaining = run_state.cycle_remaining[index];
+    // Don't save for skipped stages (remaining == 0)
+    if remaining == 0 {
+        return;
+    }
+
+    let count = run_state.cycle_count[index];
+    let is_last_step = count == remaining;
+    let is_advancing = scheduler_manager.advance_requested;
+
+    if !is_last_step && !is_advancing {
+        return;
+    }
+
+    let step = run_state.total_cycle;
+    let rank = comm.rank();
+    let stage_label = stage.name.as_deref().unwrap_or("(unnamed)");
+
+    if rank == 0 {
+        println!("Stage {} [{}] finished — saving dump + restart at step {}", index, stage_label, step);
+    }
+
+    // Write dump
+    if let Err(e) = dump_atoms_inner(&atoms, &registry, step, rank, &input, &dump_config, &dump_registry) {
+        eprintln!("WARNING: Stage-end dump write failed at step {}: {}", step, e);
+    }
+
+    // Write restart
+    let nlocal = atoms.nlocal as usize;
+    let base_dir = match input.output_dir.as_deref() {
+        Some(dir) => format!("{}/restart", dir),
+        None => "restart".to_string(),
+    };
+    fs::create_dir_all(&base_dir).ok();
+
+    let data = RestartData {
+        natoms: atoms.natoms,
+        total_cycle: step,
+        dt: atoms.dt,
+        tag: atoms.tag[..nlocal].to_vec(),
+        atom_type: atoms.atom_type[..nlocal].to_vec(),
+        pos_x: atoms.pos[..nlocal].iter().map(|p| p[0]).collect(),
+        pos_y: atoms.pos[..nlocal].iter().map(|p| p[1]).collect(),
+        pos_z: atoms.pos[..nlocal].iter().map(|p| p[2]).collect(),
+        vel_x: atoms.vel[..nlocal].iter().map(|v| v[0]).collect(),
+        vel_y: atoms.vel[..nlocal].iter().map(|v| v[1]).collect(),
+        vel_z: atoms.vel[..nlocal].iter().map(|v| v[2]).collect(),
+        force_x: atoms.force[..nlocal].iter().map(|v| v[0]).collect(),
+        force_y: atoms.force[..nlocal].iter().map(|v| v[1]).collect(),
+        force_z: atoms.force[..nlocal].iter().map(|v| v[2]).collect(),
+        mass: atoms.mass[..nlocal].to_vec(),
+        cutoff_radius: atoms.cutoff_radius[..nlocal].to_vec(),
+        atom_data_buffers: registry.pack_all_for_restart(nlocal),
+        omega_x: Vec::new(),
+        omega_y: Vec::new(),
+        omega_z: Vec::new(),
+        torque_x: Vec::new(),
+        torque_y: Vec::new(),
+        torque_z: Vec::new(),
+        ang_mom_x: Vec::new(),
+        ang_mom_y: Vec::new(),
+        ang_mom_z: Vec::new(),
+        quaternion: Vec::new(),
+    };
+
+    if let Err(e) = write_restart_inner(&data, &base_dir, step, rank, &restart_config) {
+        eprintln!("WARNING: Stage-end restart write failed at step {}: {}", step, e);
+    }
 }
 
 // ── Restart read ────────────────────────────────────────────────────────────

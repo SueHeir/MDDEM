@@ -6,12 +6,60 @@ use mddem_scheduler::prelude::*;
 use mddem_core::Atom;
 
 /// Registers initial and final integration systems for translational Velocity Verlet.
-pub struct VelocityVerletPlugin;
+///
+/// When `stage` is `None` (the default), systems run every stage.
+/// Use [`VelocityVerletPlugin::for_stage`] to restrict to a single `[[run]]` stage,
+/// e.g. when pairing with [`FireMinPlugin::for_stage`] in a multi-stage workflow.
+///
+/// # Examples
+///
+/// All stages (default):
+/// ```rust,ignore
+/// app.add_plugins(VelocityVerletPlugin::new());
+/// ```
+///
+/// Single stage:
+/// ```rust,ignore
+/// app.add_plugins(VelocityVerletPlugin::for_stage("cooling"));
+/// ```
+pub struct VelocityVerletPlugin {
+    /// If set, Verlet systems only run during this `[[run]]` stage name.
+    pub stage: Option<String>,
+}
+
+impl VelocityVerletPlugin {
+    /// Create a Verlet plugin that runs in all stages.
+    pub fn new() -> Self {
+        Self { stage: None }
+    }
+
+    /// Create a Verlet plugin that only runs during the named `[[run]]` stage.
+    pub fn for_stage(name: &str) -> Self {
+        Self { stage: Some(name.to_string()) }
+    }
+}
+
+impl Default for VelocityVerletPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Plugin for VelocityVerletPlugin {
     fn build(&self, app: &mut App) {
-        app.add_update_system(initial_integration, ScheduleSet::InitialIntegration)
-            .add_update_system(final_integration, ScheduleSet::FinalIntegration);
+        if let Some(ref stage_name) = self.stage {
+            app.add_update_system(
+                initial_integration.run_if(in_stage(stage_name)),
+                ScheduleSet::InitialIntegration,
+            )
+            .add_update_system(
+                final_integration.run_if(in_stage(stage_name)),
+                ScheduleSet::FinalIntegration,
+            );
+        } else {
+            app.add_update_system(initial_integration, ScheduleSet::InitialIntegration)
+                .add_update_system(final_integration, ScheduleSet::FinalIntegration);
+        }
     }
 }
 

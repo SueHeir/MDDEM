@@ -3,7 +3,7 @@ use mddem::prelude::*;
 fn main() {
     let mut app = App::new();
     app.add_plugins(CorePlugins)
-        .add_plugins(VelocityVerletPlugin)
+        .add_plugins(VelocityVerletPlugin::new())
         .add_plugins(LatticePlugin)
         .add_plugins(LJForcePlugin)
         .add_plugins(LangevinPlugin)

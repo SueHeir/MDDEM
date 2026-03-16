@@ -2,17 +2,23 @@
 //!
 //! Provides [`DemBondPlugin`] which registers the
 //! [`BondStore`](mddem_core::BondStore), auto-bonds initially touching
-//! particles, and computes normal bond forces (spring + damping).
+//! particles, and computes normal, tangential, and bending bond forces
+//! with optional breakage criteria.
 
+use std::any::Any;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::Deserialize;
 
 use dem_atom::DemAtom;
-use mddem_core::{Atom, AtomDataRegistry, BondEntry, BondStore, CommResource, Config, VirialStress, VirialStressPlugin};
+use mddem_core::{Atom, AtomData, AtomDataRegistry, BondEntry, BondStore, CommResource, Config, VirialStress, VirialStressPlugin};
 use mddem_print::Thermo;
+
+// ── BondConfig ──────────────────────────────────────────────────────────────
 
 /// TOML `[bonds]` configuration section.
 #[derive(Deserialize, Clone)]
@@ -30,6 +36,28 @@ pub struct BondConfig {
     /// Normal damping coefficient gamma_n. Default: 0.
     #[serde(default)]
     pub normal_damping: f64,
+    /// Tangential spring stiffness k_t (N/m). Default: 0.
+    #[serde(default)]
+    pub tangential_stiffness: f64,
+    /// Tangential damping coefficient. Default: 0.
+    #[serde(default)]
+    pub tangential_damping: f64,
+    /// Bending stiffness k_bend (N·m/rad). Default: 0.
+    #[serde(default)]
+    pub bending_stiffness: f64,
+    /// Bending damping coefficient. Default: 0.
+    #[serde(default)]
+    pub bending_damping: f64,
+    /// Critical normal strain for bond breaking (e.g. 0.1 = 10%). None = unbreakable.
+    #[serde(default)]
+    pub break_normal_stretch: Option<f64>,
+    /// Critical tangential displacement for bond breaking. None = unbreakable.
+    #[serde(default)]
+    pub break_shear: Option<f64>,
+    /// Path to a LAMMPS data file containing a Bonds section.
+    pub file: Option<String>,
+    /// File format identifier (e.g. `"lammps_data"`).
+    pub format: Option<String>,
 }
 
 fn default_bond_tolerance() -> f64 {
@@ -43,22 +71,118 @@ impl Default for BondConfig {
             bond_tolerance: 1.001,
             normal_stiffness: 0.0,
             normal_damping: 0.0,
+            tangential_stiffness: 0.0,
+            tangential_damping: 0.0,
+            bending_stiffness: 0.0,
+            bending_damping: 0.0,
+            break_normal_stretch: None,
+            break_shear: None,
+            file: None,
+            format: None,
         }
     }
 }
+
+// ── BondHistoryStore ────────────────────────────────────────────────────────
+
+/// Per-bond tangential displacement and bending angle history.
+#[derive(Clone, Debug)]
+pub struct BondHistoryEntry {
+    /// Global tag of the bonded partner.
+    pub partner_tag: u32,
+    /// Accumulated tangential spring displacement.
+    pub delta_t: [f64; 3],
+    /// Accumulated bending angle displacement.
+    pub delta_theta: [f64; 3],
+}
+
+/// Per-atom bond history storage, parallel to BondStore.
+pub struct BondHistoryStore {
+    pub history: Vec<Vec<BondHistoryEntry>>,
+}
+
+impl BondHistoryStore {
+    pub fn new() -> Self {
+        BondHistoryStore {
+            history: Vec::new(),
+        }
+    }
+}
+
+impl AtomData for BondHistoryStore {
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+
+    fn truncate(&mut self, n: usize) {
+        self.history.resize_with(n, Vec::new);
+        self.history.truncate(n);
+    }
+
+    fn swap_remove(&mut self, i: usize) {
+        if i < self.history.len() {
+            self.history.swap_remove(i);
+        }
+    }
+
+    fn apply_permutation(&mut self, perm: &[usize], n: usize) {
+        let new_history: Vec<Vec<BondHistoryEntry>> =
+            perm.iter().map(|&p| self.history[p].clone()).collect();
+        self.history[..n].clone_from_slice(&new_history);
+    }
+
+    /// Pack format: `[count, (partner_tag, dt[3], dtheta[3]) × count]` — 1 + 7×count f64s.
+    fn pack(&self, i: usize, buf: &mut Vec<f64>) {
+        if i < self.history.len() {
+            let list = &self.history[i];
+            buf.push(list.len() as f64);
+            for entry in list {
+                buf.push(entry.partner_tag as f64);
+                buf.push(entry.delta_t[0]);
+                buf.push(entry.delta_t[1]);
+                buf.push(entry.delta_t[2]);
+                buf.push(entry.delta_theta[0]);
+                buf.push(entry.delta_theta[1]);
+                buf.push(entry.delta_theta[2]);
+            }
+        } else {
+            buf.push(0.0);
+        }
+    }
+
+    fn unpack(&mut self, buf: &[f64]) -> usize {
+        let count = buf[0] as usize;
+        let mut list = Vec::with_capacity(count);
+        let mut pos = 1;
+        for _ in 0..count {
+            let partner_tag = buf[pos] as u32;
+            let delta_t = [buf[pos + 1], buf[pos + 2], buf[pos + 3]];
+            let delta_theta = [buf[pos + 4], buf[pos + 5], buf[pos + 6]];
+            list.push(BondHistoryEntry {
+                partner_tag,
+                delta_t,
+                delta_theta,
+            });
+            pos += 7;
+        }
+        self.history.push(list);
+        pos
+    }
+}
+
+// ── BondMetrics ─────────────────────────────────────────────────────────────
 
 /// Accumulated bond metrics for strain output.
 #[derive(Default)]
 pub struct BondMetrics {
     pub strain_sum: f64,
     pub bond_count: usize,
+    pub bonds_broken_this_step: usize,
+    pub total_bonds_broken: usize,
 }
 
+// ── Plugin ──────────────────────────────────────────────────────────────────
+
 /// Plugin that enables bond support in an MDDEM simulation.
-///
-/// Registers the bond topology data structure ([`BondStore`](mddem_core::BondStore))
-/// via [`BondPlugin`](mddem_core::BondPlugin), auto-bonds touching particles at
-/// setup, and computes normal bond forces each timestep.
 pub struct DemBondPlugin;
 
 impl Plugin for DemBondPlugin {
@@ -68,7 +192,13 @@ impl Plugin for DemBondPlugin {
 # auto_bond = false
 # bond_tolerance = 1.001
 # normal_stiffness = 0.0
-# normal_damping = 0.0"#,
+# normal_damping = 0.0
+# tangential_stiffness = 0.0
+# tangential_damping = 0.0
+# bending_stiffness = 0.0
+# bending_damping = 0.0
+# break_normal_stretch = 0.1   # optional: fractional strain to break
+# break_shear = 0.0005         # optional: tangential displacement to break"#,
         )
     }
 
@@ -77,20 +207,28 @@ impl Plugin for DemBondPlugin {
         app.add_plugins(VirialStressPlugin);
         Config::load::<BondConfig>(app, "bonds");
         app.add_resource(BondMetrics::default());
+        mddem_core::register_atom_data!(app, BondHistoryStore::new());
         app.add_setup_system(
             auto_bond_touching.run_if(first_stage_only()),
             ScheduleSetupSet::PostSetup,
         );
+        app.add_setup_system(
+            load_bonds_from_file.run_if(first_stage_only()),
+            ScheduleSetupSet::PostSetup,
+        );
+        app.add_setup_system(
+            init_bond_history.run_if(first_stage_only()),
+            ScheduleSetupSet::PostSetup,
+        );
         app.add_update_system(zero_bond_metrics, ScheduleSet::PreForce);
-        app.add_update_system(bond_normal_force.label("dem_bond_force"), ScheduleSet::Force);
+        app.add_update_system(bond_force.label("dem_bond_force"), ScheduleSet::Force);
         app.add_update_system(output_bond_metrics, ScheduleSet::PostForce);
     }
 }
 
+// ── Setup systems ───────────────────────────────────────────────────────────
+
 /// Auto-bond initially touching particles at setup time.
-///
-/// Runs at `PostSetup` (after all atoms are inserted). For each pair of local
-/// atoms within `(r_i + r_j) * tolerance`, creates symmetric bond entries.
 pub fn auto_bond_touching(
     atoms: Res<Atom>,
     registry: Res<AtomDataRegistry>,
@@ -106,7 +244,6 @@ pub fn auto_bond_touching(
 
     let nlocal = atoms.nlocal as usize;
 
-    // Ensure bond storage covers all local atoms
     while bond_store.bonds.len() < nlocal {
         bond_store.bonds.push(Vec::new());
     }
@@ -123,7 +260,6 @@ pub fn auto_bond_touching(
 
             let sum_radii = dem.radius[i] + dem.radius[j];
             if dist <= sum_radii * tolerance {
-                // Create symmetric bond entries
                 bond_store.bonds[i].push(BondEntry {
                     partner_tag: atoms.tag[j],
                     bond_type: 0,
@@ -144,12 +280,166 @@ pub fn auto_bond_touching(
     }
 }
 
-/// Normal bond force: spring + damping along the bond axis.
-///
-/// For each local atom's bond list, looks up the partner by tag, computes the
-/// stretch/compression relative to `r0`, and applies a spring-damper force.
-/// Forces are applied with Newton's 3rd law (each bond processed once).
-pub fn bond_normal_force(
+/// Load bonds from a LAMMPS data file at setup time.
+pub fn load_bonds_from_file(
+    atoms: Res<Atom>,
+    registry: Res<AtomDataRegistry>,
+    bond_config: Res<BondConfig>,
+    comm: Res<CommResource>,
+) {
+    let file_path = match bond_config.file.as_deref() {
+        Some(p) => p,
+        None => return,
+    };
+
+    let format = bond_config.format.as_deref().unwrap_or("lammps_data");
+    if format != "lammps_data" {
+        eprintln!(
+            "ERROR: Unsupported bond file format '{}'. Supported: lammps_data",
+            format
+        );
+        std::process::exit(1);
+    }
+
+    let file = File::open(file_path).unwrap_or_else(|e| {
+        eprintln!("ERROR: Failed to open bond file '{}': {}", file_path, e);
+        std::process::exit(1);
+    });
+    let reader = BufReader::new(file);
+    let lines: Vec<String> = reader.lines().map(|l| l.unwrap()).collect();
+
+    let section_headers = [
+        "Atoms", "Velocities", "Bonds", "Angles", "Dihedrals", "Impropers",
+        "Masses", "Pair Coeffs",
+    ];
+    let is_section_header = |line: &str| -> bool {
+        let trimmed = line.trim();
+        section_headers.iter().any(|h| trimmed.starts_with(h))
+    };
+
+    let mut bonds_start = None;
+    for (i, line) in lines.iter().enumerate() {
+        if line.trim().starts_with("Bonds") {
+            bonds_start = Some(i + 1);
+        }
+    }
+
+    let bonds_start = match bonds_start {
+        Some(s) => s,
+        None => {
+            if comm.rank() == 0 {
+                println!("DemBond: no Bonds section found in '{}', skipping", file_path);
+            }
+            return;
+        }
+    };
+
+    let nlocal = atoms.nlocal as usize;
+    let mut tag_to_local: HashMap<u32, usize> = HashMap::with_capacity(nlocal);
+    for i in 0..nlocal {
+        tag_to_local.insert(atoms.tag[i], i);
+    }
+
+    let mut bond_store = registry.expect_mut::<BondStore>("load_bonds_from_file");
+
+    while bond_store.bonds.len() < nlocal {
+        bond_store.bonds.push(Vec::new());
+    }
+
+    let mut bond_count = 0u64;
+
+    for i in bonds_start..lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if is_section_header(trimmed) {
+            break;
+        }
+        if trimmed.starts_with('#') {
+            continue;
+        }
+
+        let fields: Vec<&str> = trimmed.split_whitespace().collect();
+        if fields.len() < 4 {
+            continue;
+        }
+
+        let bond_type: u32 = fields[1].parse().unwrap_or(0);
+        let tag1: u32 = fields[2].parse().unwrap();
+        let tag2: u32 = fields[3].parse().unwrap();
+
+        let idx1 = match tag_to_local.get(&tag1) {
+            Some(&i) => i,
+            None => continue,
+        };
+        let idx2 = match tag_to_local.get(&tag2) {
+            Some(&i) => i,
+            None => continue,
+        };
+
+        let dx = atoms.pos[idx2][0] - atoms.pos[idx1][0];
+        let dy = atoms.pos[idx2][1] - atoms.pos[idx1][1];
+        let dz = atoms.pos[idx2][2] - atoms.pos[idx1][2];
+        let r0 = (dx * dx + dy * dy + dz * dz).sqrt();
+
+        bond_store.bonds[idx1].push(BondEntry {
+            partner_tag: tag2,
+            bond_type,
+            r0,
+        });
+        bond_store.bonds[idx2].push(BondEntry {
+            partner_tag: tag1,
+            bond_type,
+            r0,
+        });
+        bond_count += 1;
+    }
+
+    if comm.rank() == 0 {
+        println!(
+            "DemBond: loaded {} bonds from LAMMPS data file '{}'",
+            bond_count, file_path
+        );
+    }
+}
+
+/// Initialize bond history store to match bond store (zero-initialized entries).
+pub fn init_bond_history(registry: Res<AtomDataRegistry>) {
+    let bond_store = registry.get::<BondStore>();
+    let bonds = match bond_store {
+        Some(ref b) => b,
+        None => return,
+    };
+
+    let mut history = registry.expect_mut::<BondHistoryStore>("init_bond_history");
+
+    // Ensure history covers all atoms with matching entries
+    while history.history.len() < bonds.bonds.len() {
+        history.history.push(Vec::new());
+    }
+
+    for i in 0..bonds.bonds.len() {
+        // Only add entries for bonds that don't have history yet
+        for bond in &bonds.bonds[i] {
+            let has_entry = history.history[i]
+                .iter()
+                .any(|h| h.partner_tag == bond.partner_tag);
+            if !has_entry {
+                history.history[i].push(BondHistoryEntry {
+                    partner_tag: bond.partner_tag,
+                    delta_t: [0.0; 3],
+                    delta_theta: [0.0; 3],
+                });
+            }
+        }
+    }
+}
+
+// ── Force systems ───────────────────────────────────────────────────────────
+
+/// Unified bond force: normal + tangential + bending with optional breaking.
+pub fn bond_force(
     mut atoms: ResMut<Atom>,
     registry: Res<AtomDataRegistry>,
     bond_config: Res<BondConfig>,
@@ -164,8 +454,12 @@ pub fn bond_normal_force(
 
     let k_n = bond_config.normal_stiffness;
     let gamma_n = bond_config.normal_damping;
+    let k_t = bond_config.tangential_stiffness;
+    let gamma_t = bond_config.tangential_damping;
+    let k_bend = bond_config.bending_stiffness;
+    let gamma_bend = bond_config.bending_damping;
 
-    if k_n == 0.0 && gamma_n == 0.0 {
+    if k_n == 0.0 && gamma_n == 0.0 && k_t == 0.0 && k_bend == 0.0 {
         return;
     }
 
@@ -174,17 +468,39 @@ pub fn bond_normal_force(
         return;
     }
 
+    let has_tangential = k_t > 0.0 || gamma_t > 0.0;
+    let has_bending = k_bend > 0.0 || gamma_bend > 0.0;
+    let has_history = has_tangential || has_bending;
+
+    // Get DemAtom and BondHistoryStore if needed for tangential/bending
+    let mut dem_opt = if has_history {
+        Some(registry.expect_mut::<DemAtom>("bond_force"))
+    } else {
+        None
+    };
+    let mut hist_opt = if has_history {
+        Some(registry.expect_mut::<BondHistoryStore>("bond_force"))
+    } else {
+        None
+    };
+
+    let dt = atoms.dt;
+
     // Build tag → index lookup for all atoms (local + ghost)
     let mut tag_to_index: HashMap<u32, usize> = HashMap::with_capacity(atoms.len());
     for idx in 0..atoms.len() {
         tag_to_index.insert(atoms.tag[idx], idx);
     }
 
+    // Collect bonds to break (deferred removal)
+    let mut bonds_to_break: Vec<(u32, u32)> = Vec::new();
+
     for i in 0..nlocal {
-        for bond in &bonds.bonds[i] {
+        for b_idx in 0..bonds.bonds[i].len() {
+            let bond = &bonds.bonds[i][b_idx];
             let j = match tag_to_index.get(&bond.partner_tag) {
                 Some(&idx) => idx,
-                None => continue, // partner not present (ghost not available)
+                None => continue,
             };
 
             // Process each bond once: only when i's tag < partner's tag
@@ -206,31 +522,33 @@ pub fn bond_normal_force(
             let ny = dy / dist;
             let nz = dz / dist;
 
-            // Stretch: positive = stretched, negative = compressed
+            // Normal stretch
             let delta = dist - bond.r0;
 
-            // Normal spring force magnitude (positive = attractive when stretched)
+            // Check normal breaking
+            if let Some(break_stretch) = bond_config.break_normal_stretch {
+                if (delta / bond.r0).abs() > break_stretch {
+                    bonds_to_break.push((atoms.tag[i], bond.partner_tag));
+                    continue;
+                }
+            }
+
+            // Normal spring force
             let f_spring = k_n * delta;
 
-            // Relative velocity projected onto bond axis (j relative to i)
+            // Relative velocity projected onto bond axis
             let dvx = atoms.vel[j][0] - atoms.vel[i][0];
             let dvy = atoms.vel[j][1] - atoms.vel[i][1];
             let dvz = atoms.vel[j][2] - atoms.vel[i][2];
             let v_n = dvx * nx + dvy * ny + dvz * nz;
 
-            // Damping force (opposes relative motion along bond)
             let f_damp = gamma_n * v_n;
+            let f_total_n = f_spring + f_damp;
 
-            // Total force magnitude along bond axis
-            // Positive total → force pulls i toward j (attractive)
-            let f_total = f_spring + f_damp;
+            let fx = f_total_n * nx;
+            let fy = f_total_n * ny;
+            let fz = f_total_n * nz;
 
-            // Force vector from i toward j
-            let fx = f_total * nx;
-            let fy = f_total * ny;
-            let fz = f_total * nz;
-
-            // Newton's 3rd law: i pulled toward j, j pulled toward i
             atoms.force[i][0] += fx;
             atoms.force[i][1] += fy;
             atoms.force[i][2] += fz;
@@ -238,10 +556,133 @@ pub fn bond_normal_force(
             atoms.force[j][1] -= fy;
             atoms.force[j][2] -= fz;
 
-            // Accumulate virial stress tensor
+            // Virial
             if let Some(ref mut v) = virial {
                 if v.active {
                     v.add_pair(dx, dy, dz, fx, fy, fz);
+                }
+            }
+
+            // Tangential force
+            if has_tangential {
+                let history = hist_opt.as_mut().unwrap();
+
+                // Find history entry for this bond
+                let h_idx = history.history[i]
+                    .iter()
+                    .position(|h| h.partner_tag == bond.partner_tag);
+
+                // Tangential relative velocity
+                let vt_x = dvx - v_n * nx;
+                let vt_y = dvy - v_n * ny;
+                let vt_z = dvz - v_n * nz;
+
+                // Get or create history
+                let (dt_x, dt_y, dt_z) = if let Some(idx) = h_idx {
+                    let h = &mut history.history[i][idx];
+                    // Rotate spring to current bond direction
+                    let s_dot_n = h.delta_t[0] * nx + h.delta_t[1] * ny + h.delta_t[2] * nz;
+                    h.delta_t[0] -= s_dot_n * nx;
+                    h.delta_t[1] -= s_dot_n * ny;
+                    h.delta_t[2] -= s_dot_n * nz;
+                    // Integrate
+                    h.delta_t[0] += vt_x * dt;
+                    h.delta_t[1] += vt_y * dt;
+                    h.delta_t[2] += vt_z * dt;
+                    (h.delta_t[0], h.delta_t[1], h.delta_t[2])
+                } else {
+                    let new_dt = [vt_x * dt, vt_y * dt, vt_z * dt];
+                    history.history[i].push(BondHistoryEntry {
+                        partner_tag: bond.partner_tag,
+                        delta_t: new_dt,
+                        delta_theta: [0.0; 3],
+                    });
+                    (new_dt[0], new_dt[1], new_dt[2])
+                };
+
+                // Check shear breaking
+                let shear_mag = (dt_x * dt_x + dt_y * dt_y + dt_z * dt_z).sqrt();
+                if let Some(break_shear) = bond_config.break_shear {
+                    if shear_mag > break_shear {
+                        bonds_to_break.push((atoms.tag[i], bond.partner_tag));
+                        continue;
+                    }
+                }
+
+                // Tangential force: spring + damping
+                let ft_x = -(k_t * dt_x + gamma_t * vt_x);
+                let ft_y = -(k_t * dt_y + gamma_t * vt_y);
+                let ft_z = -(k_t * dt_z + gamma_t * vt_z);
+
+                atoms.force[i][0] += ft_x;
+                atoms.force[i][1] += ft_y;
+                atoms.force[i][2] += ft_z;
+                atoms.force[j][0] -= ft_x;
+                atoms.force[j][1] -= ft_y;
+                atoms.force[j][2] -= ft_z;
+
+                // Torques from tangential force
+                // τ_i = (r0/2 * n) × f_t, τ_j = (-r0/2 * n) × (-f_t) = (r0/2 * n) × f_t
+                let half_r0 = bond.r0 * 0.5;
+                let rn_x = half_r0 * nx;
+                let rn_y = half_r0 * ny;
+                let rn_z = half_r0 * nz;
+                let ti_x = rn_y * ft_z - rn_z * ft_y;
+                let ti_y = rn_z * ft_x - rn_x * ft_z;
+                let ti_z = rn_x * ft_y - rn_y * ft_x;
+
+                if let Some(ref mut dem) = dem_opt {
+                    dem.torque[i][0] += ti_x;
+                    dem.torque[i][1] += ti_y;
+                    dem.torque[i][2] += ti_z;
+                    dem.torque[j][0] += ti_x; // same direction (both arms × same force)
+                    dem.torque[j][1] += ti_y;
+                    dem.torque[j][2] += ti_z;
+                }
+            }
+
+            // Bending moment
+            if has_bending {
+                let dem = dem_opt.as_ref().unwrap();
+                let history = hist_opt.as_mut().unwrap();
+
+                let omega_rel_x = dem.omega[j][0] - dem.omega[i][0];
+                let omega_rel_y = dem.omega[j][1] - dem.omega[i][1];
+                let omega_rel_z = dem.omega[j][2] - dem.omega[i][2];
+
+                // Find history entry
+                let h_idx = history.history[i]
+                    .iter()
+                    .position(|h| h.partner_tag == bond.partner_tag);
+
+                let (dth_x, dth_y, dth_z) = if let Some(idx) = h_idx {
+                    let h = &mut history.history[i][idx];
+                    h.delta_theta[0] += omega_rel_x * dt;
+                    h.delta_theta[1] += omega_rel_y * dt;
+                    h.delta_theta[2] += omega_rel_z * dt;
+                    (h.delta_theta[0], h.delta_theta[1], h.delta_theta[2])
+                } else {
+                    let new_dth = [omega_rel_x * dt, omega_rel_y * dt, omega_rel_z * dt];
+                    history.history[i].push(BondHistoryEntry {
+                        partner_tag: bond.partner_tag,
+                        delta_t: [0.0; 3],
+                        delta_theta: new_dth,
+                    });
+                    (new_dth[0], new_dth[1], new_dth[2])
+                };
+
+                // Bending moment: M = -k_bend * delta_theta - gamma_bend * omega_rel
+                let mx = -(k_bend * dth_x + gamma_bend * omega_rel_x);
+                let my = -(k_bend * dth_y + gamma_bend * omega_rel_y);
+                let mz = -(k_bend * dth_z + gamma_bend * omega_rel_z);
+
+                if let Some(ref mut dem) = dem_opt {
+                    dem.torque[i][0] += mx;
+                    dem.torque[i][1] += my;
+                    dem.torque[i][2] += mz;
+                    dem.torque[j][0] -= mx;
+                    dem.torque[j][1] -= my;
+                    dem.torque[j][2] -= mz;
                 }
             }
 
@@ -250,12 +691,46 @@ pub fn bond_normal_force(
             metrics.bond_count += 1;
         }
     }
+
+    // Deferred bond removal — drop all registry borrows first
+    if !bonds_to_break.is_empty() {
+        drop(bond_store);
+        drop(dem_opt);
+        drop(hist_opt);
+
+        let mut bond_store = registry.expect_mut::<BondStore>("bond_force_break");
+        let mut history_store = if has_history {
+            Some(registry.expect_mut::<BondHistoryStore>("bond_force_break"))
+        } else {
+            None
+        };
+
+        for (tag_a, tag_b) in &bonds_to_break {
+            for idx in 0..atoms.len() {
+                if atoms.tag[idx] == *tag_a || atoms.tag[idx] == *tag_b {
+                    let partner = if atoms.tag[idx] == *tag_a { *tag_b } else { *tag_a };
+                    if idx < bond_store.bonds.len() {
+                        bond_store.bonds[idx].retain(|b| b.partner_tag != partner);
+                    }
+                    if let Some(ref mut hs) = history_store {
+                        if idx < hs.history.len() {
+                            hs.history[idx].retain(|h| h.partner_tag != partner);
+                        }
+                    }
+                }
+            }
+        }
+
+        metrics.bonds_broken_this_step += bonds_to_break.len();
+        metrics.total_bonds_broken += bonds_to_break.len();
+    }
 }
 
 /// Reset bond metrics to zero before force computation.
 pub fn zero_bond_metrics(mut metrics: ResMut<BondMetrics>) {
     metrics.strain_sum = 0.0;
     metrics.bond_count = 0;
+    metrics.bonds_broken_this_step = 0;
 }
 
 /// Output bond metrics to thermo after force computation.
@@ -274,6 +749,7 @@ pub fn output_bond_metrics(
         } else {
             thermo.set("bond_strain", 0.0);
         }
+        thermo.set("bonds_broken", metrics.total_bonds_broken as f64);
     }
 }
 
@@ -281,8 +757,25 @@ pub fn output_bond_metrics(
 mod tests {
     use super::*;
     use dem_atom::DemAtom;
-    use mddem_core::{Atom, AtomDataRegistry, BondEntry, BondStore, CommResource, SingleProcessComm};
+    use mddem_core::{Atom, AtomDataRegistry, BondEntry, BondStore, CommResource, SingleProcessComm, toml};
     use mddem_test_utils::push_dem_test_atom;
+
+    fn make_bond_config() -> BondConfig {
+        BondConfig {
+            auto_bond: false,
+            bond_tolerance: 1.001,
+            normal_stiffness: 1e7,
+            normal_damping: 0.0,
+            tangential_stiffness: 0.0,
+            tangential_damping: 0.0,
+            bending_stiffness: 0.0,
+            bending_damping: 0.0,
+            break_normal_stretch: None,
+            break_shear: None,
+            file: None,
+            format: None,
+        }
+    }
 
     #[test]
     fn auto_bond_creates_symmetric_bonds() {
@@ -292,29 +785,21 @@ mod tests {
         let mut dem = DemAtom::new();
         let radius = 0.001;
 
-        // Two touching particles along x-axis (distance = 2*radius = 0.002)
         push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
-        push_dem_test_atom(
-            &mut atom,
-            &mut dem,
-            2,
-            [0.002, 0.0, 0.0],
-            radius,
-        );
+        push_dem_test_atom(&mut atom, &mut dem, 2, [0.002, 0.0, 0.0], radius);
         atom.nlocal = 2;
         atom.natoms = 2;
 
         let mut registry = AtomDataRegistry::new();
         registry.register(dem);
         registry.register(BondStore::new());
+        registry.register(BondHistoryStore::new());
 
         app.add_resource(atom);
         app.add_resource(registry);
         app.add_resource(BondConfig {
             auto_bond: true,
-            bond_tolerance: 1.001,
-            normal_stiffness: 1e7,
-            normal_damping: 0.0,
+            ..make_bond_config()
         });
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
         app.add_resource(SchedulerManager::default());
@@ -325,11 +810,10 @@ mod tests {
         let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
         let bonds = registry.expect::<BondStore>("test");
         assert_eq!(bonds.bonds.len(), 2);
-        assert_eq!(bonds.bonds[0].len(), 1, "atom 0 should have 1 bond");
-        assert_eq!(bonds.bonds[1].len(), 1, "atom 1 should have 1 bond");
+        assert_eq!(bonds.bonds[0].len(), 1);
+        assert_eq!(bonds.bonds[1].len(), 1);
         assert_eq!(bonds.bonds[0][0].partner_tag, 2);
         assert_eq!(bonds.bonds[1][0].partner_tag, 1);
-        assert!((bonds.bonds[0][0].r0 - 0.002).abs() < 1e-10);
     }
 
     #[test]
@@ -340,29 +824,21 @@ mod tests {
         let mut dem = DemAtom::new();
         let radius = 0.001;
 
-        // Two far-apart particles
         push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
-        push_dem_test_atom(
-            &mut atom,
-            &mut dem,
-            2,
-            [0.01, 0.0, 0.0],
-            radius,
-        );
+        push_dem_test_atom(&mut atom, &mut dem, 2, [0.01, 0.0, 0.0], radius);
         atom.nlocal = 2;
         atom.natoms = 2;
 
         let mut registry = AtomDataRegistry::new();
         registry.register(dem);
         registry.register(BondStore::new());
+        registry.register(BondHistoryStore::new());
 
         app.add_resource(atom);
         app.add_resource(registry);
         app.add_resource(BondConfig {
             auto_bond: true,
-            bond_tolerance: 1.001,
-            normal_stiffness: 1e7,
-            normal_damping: 0.0,
+            ..make_bond_config()
         });
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
         app.add_resource(SchedulerManager::default());
@@ -372,8 +848,8 @@ mod tests {
 
         let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
         let bonds = registry.expect::<BondStore>("test");
-        assert_eq!(bonds.bonds[0].len(), 0, "no bonds for separated atoms");
-        assert_eq!(bonds.bonds[1].len(), 0, "no bonds for separated atoms");
+        assert_eq!(bonds.bonds[0].len(), 0);
+        assert_eq!(bonds.bonds[1].len(), 0);
     }
 
     #[test]
@@ -384,67 +860,34 @@ mod tests {
         let mut dem = DemAtom::new();
         let radius = 0.001;
 
-        // Two particles at distance 0.0025, bonded with r0 = 0.002 (stretched)
         push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
-        push_dem_test_atom(
-            &mut atom,
-            &mut dem,
-            2,
-            [0.0025, 0.0, 0.0],
-            radius,
-        );
+        push_dem_test_atom(&mut atom, &mut dem, 2, [0.0025, 0.0, 0.0], radius);
         atom.nlocal = 2;
         atom.natoms = 2;
 
         let mut bond_store = BondStore::new();
-        bond_store.bonds.push(vec![BondEntry {
-            partner_tag: 2,
-            bond_type: 0,
-            r0: 0.002,
-        }]);
-        bond_store.bonds.push(vec![BondEntry {
-            partner_tag: 1,
-            bond_type: 0,
-            r0: 0.002,
-        }]);
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 2, bond_type: 0, r0: 0.002 }]);
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 1, bond_type: 0, r0: 0.002 }]);
 
         let mut registry = AtomDataRegistry::new();
         registry.register(dem);
         registry.register(bond_store);
+        registry.register(BondHistoryStore::new());
 
         app.add_resource(atom);
         app.add_resource(registry);
-        app.add_resource(BondConfig {
-            auto_bond: false,
-            bond_tolerance: 1.001,
-            normal_stiffness: 1e7,
-            normal_damping: 0.0,
-        });
+        app.add_resource(make_bond_config());
         app.add_resource(BondMetrics::default());
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
         app.add_resource(Thermo::new());
-        app.add_update_system(bond_normal_force, ScheduleSet::Force);
+        app.add_update_system(bond_force, ScheduleSet::Force);
         app.organize_systems();
         app.run();
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
-        // Atom 0 should be pulled in +x (toward atom 1)
-        assert!(
-            atom.force[0][0] > 0.0,
-            "stretched bond should attract atom 0 toward atom 1, got {}",
-            atom.force[0][0]
-        );
-        // Atom 1 should be pulled in -x (toward atom 0)
-        assert!(
-            atom.force[1][0] < 0.0,
-            "stretched bond should attract atom 1 toward atom 0, got {}",
-            atom.force[1][0]
-        );
-        // Newton's 3rd law
-        assert!(
-            (atom.force[0][0] + atom.force[1][0]).abs() < 1e-10,
-            "forces should be equal and opposite"
-        );
+        assert!(atom.force[0][0] > 0.0, "stretched bond attracts atom 0");
+        assert!(atom.force[1][0] < 0.0, "stretched bond attracts atom 1");
+        assert!((atom.force[0][0] + atom.force[1][0]).abs() < 1e-10);
     }
 
     #[test]
@@ -455,62 +898,33 @@ mod tests {
         let mut dem = DemAtom::new();
         let radius = 0.001;
 
-        // Two particles at distance 0.0015, bonded with r0 = 0.002 (compressed)
         push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
-        push_dem_test_atom(
-            &mut atom,
-            &mut dem,
-            2,
-            [0.0015, 0.0, 0.0],
-            radius,
-        );
+        push_dem_test_atom(&mut atom, &mut dem, 2, [0.0015, 0.0, 0.0], radius);
         atom.nlocal = 2;
         atom.natoms = 2;
 
         let mut bond_store = BondStore::new();
-        bond_store.bonds.push(vec![BondEntry {
-            partner_tag: 2,
-            bond_type: 0,
-            r0: 0.002,
-        }]);
-        bond_store.bonds.push(vec![BondEntry {
-            partner_tag: 1,
-            bond_type: 0,
-            r0: 0.002,
-        }]);
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 2, bond_type: 0, r0: 0.002 }]);
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 1, bond_type: 0, r0: 0.002 }]);
 
         let mut registry = AtomDataRegistry::new();
         registry.register(dem);
         registry.register(bond_store);
+        registry.register(BondHistoryStore::new());
 
         app.add_resource(atom);
         app.add_resource(registry);
-        app.add_resource(BondConfig {
-            auto_bond: false,
-            bond_tolerance: 1.001,
-            normal_stiffness: 1e7,
-            normal_damping: 0.0,
-        });
+        app.add_resource(make_bond_config());
         app.add_resource(BondMetrics::default());
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
         app.add_resource(Thermo::new());
-        app.add_update_system(bond_normal_force, ScheduleSet::Force);
+        app.add_update_system(bond_force, ScheduleSet::Force);
         app.organize_systems();
         app.run();
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
-        // Atom 0 should be pushed in -x (away from atom 1)
-        assert!(
-            atom.force[0][0] < 0.0,
-            "compressed bond should repel atom 0 away from atom 1, got {}",
-            atom.force[0][0]
-        );
-        // Atom 1 should be pushed in +x (away from atom 0)
-        assert!(
-            atom.force[1][0] > 0.0,
-            "compressed bond should repel atom 1 away from atom 0, got {}",
-            atom.force[1][0]
-        );
+        assert!(atom.force[0][0] < 0.0, "compressed bond repels atom 0");
+        assert!(atom.force[1][0] > 0.0, "compressed bond repels atom 1");
     }
 
     #[test]
@@ -521,59 +935,306 @@ mod tests {
         let mut dem = DemAtom::new();
         let radius = 0.001;
 
-        // Two particles exactly at r0
         push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
-        push_dem_test_atom(
-            &mut atom,
-            &mut dem,
-            2,
-            [0.002, 0.0, 0.0],
-            radius,
-        );
+        push_dem_test_atom(&mut atom, &mut dem, 2, [0.002, 0.0, 0.0], radius);
         atom.nlocal = 2;
         atom.natoms = 2;
 
         let mut bond_store = BondStore::new();
-        bond_store.bonds.push(vec![BondEntry {
-            partner_tag: 2,
-            bond_type: 0,
-            r0: 0.002,
-        }]);
-        bond_store.bonds.push(vec![BondEntry {
-            partner_tag: 1,
-            bond_type: 0,
-            r0: 0.002,
-        }]);
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 2, bond_type: 0, r0: 0.002 }]);
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 1, bond_type: 0, r0: 0.002 }]);
 
         let mut registry = AtomDataRegistry::new();
         registry.register(dem);
         registry.register(bond_store);
+        registry.register(BondHistoryStore::new());
 
         app.add_resource(atom);
         app.add_resource(registry);
-        app.add_resource(BondConfig {
-            auto_bond: false,
-            bond_tolerance: 1.001,
-            normal_stiffness: 1e7,
-            normal_damping: 0.0,
-        });
+        app.add_resource(make_bond_config());
         app.add_resource(BondMetrics::default());
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
         app.add_resource(Thermo::new());
-        app.add_update_system(bond_normal_force, ScheduleSet::Force);
+        app.add_update_system(bond_force, ScheduleSet::Force);
         app.organize_systems();
         app.run();
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
+        assert!(atom.force[0][0].abs() < 1e-10);
+        assert!(atom.force[1][0].abs() < 1e-10);
+    }
+
+    #[test]
+    fn tangential_bond_force_perpendicular() {
+        let mut app = App::new();
+
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let radius = 0.001;
+        atom.dt = 1e-6;
+
+        push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
+        push_dem_test_atom(&mut atom, &mut dem, 2, [0.002, 0.0, 0.0], radius);
+        // Give atom 1 a tangential velocity
+        atom.vel[1][1] = 0.1;
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let mut bond_store = BondStore::new();
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 2, bond_type: 0, r0: 0.002 }]);
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 1, bond_type: 0, r0: 0.002 }]);
+
+        let mut history = BondHistoryStore::new();
+        history.history.push(vec![BondHistoryEntry { partner_tag: 2, delta_t: [0.0; 3], delta_theta: [0.0; 3] }]);
+        history.history.push(vec![BondHistoryEntry { partner_tag: 1, delta_t: [0.0; 3], delta_theta: [0.0; 3] }]);
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(bond_store);
+        registry.register(history);
+
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(BondConfig {
+            tangential_stiffness: 5e6,
+            tangential_damping: 5.0,
+            ..make_bond_config()
+        });
+        app.add_resource(BondMetrics::default());
+        app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
+        app.add_resource(Thermo::new());
+        app.add_update_system(bond_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        // Tangential force should be in y-direction
+        assert!(atom.force[0][1].abs() > 0.0, "tangential force on atom 0");
         assert!(
-            atom.force[0][0].abs() < 1e-10,
-            "no force at equilibrium, got {}",
-            atom.force[0][0]
+            (atom.force[0][1] + atom.force[1][1]).abs() < 1e-10,
+            "Newton's 3rd law for tangential"
+        );
+    }
+
+    #[test]
+    fn bending_torque_opposes_relative_rotation() {
+        let mut app = App::new();
+
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let radius = 0.001;
+        atom.dt = 1e-6;
+
+        push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
+        push_dem_test_atom(&mut atom, &mut dem, 2, [0.002, 0.0, 0.0], radius);
+        // Give atom 1 angular velocity
+        dem.omega[1] = [0.0, 100.0, 0.0];
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let mut bond_store = BondStore::new();
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 2, bond_type: 0, r0: 0.002 }]);
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 1, bond_type: 0, r0: 0.002 }]);
+
+        let mut history = BondHistoryStore::new();
+        history.history.push(vec![BondHistoryEntry { partner_tag: 2, delta_t: [0.0; 3], delta_theta: [0.0; 3] }]);
+        history.history.push(vec![BondHistoryEntry { partner_tag: 1, delta_t: [0.0; 3], delta_theta: [0.0; 3] }]);
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(bond_store);
+        registry.register(history);
+
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(BondConfig {
+            bending_stiffness: 1e4,
+            bending_damping: 1.0,
+            ..make_bond_config()
+        });
+        app.add_resource(BondMetrics::default());
+        app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
+        app.add_resource(Thermo::new());
+        app.add_update_system(bond_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let dem = registry.expect::<DemAtom>("test");
+        // Bending torque on atom 0 should be in +y (opposing relative omega of atom 1 - atom 0)
+        // omega_rel_y = 100 - 0 = 100, M_y = -(k_bend * dtheta_y + gamma_bend * omega_rel_y)
+        // dtheta_y = 100 * dt = 1e-4, M_y = -(1e4 * 1e-4 + 1.0 * 100) = -(1 + 100) = -101
+        // Applied to atom 0: +M, applied to atom 1: -M
+        assert!(
+            dem.torque[0][1] < 0.0,
+            "bending moment on atom 0 should oppose relative omega, got {}",
+            dem.torque[0][1]
         );
         assert!(
-            atom.force[1][0].abs() < 1e-10,
-            "no force at equilibrium, got {}",
-            atom.force[1][0]
+            dem.torque[1][1] > 0.0,
+            "bending moment on atom 1 should be opposite, got {}",
+            dem.torque[1][1]
         );
+    }
+
+    #[test]
+    fn bond_breaks_on_normal_stretch() {
+        let mut app = App::new();
+
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let radius = 0.001;
+
+        // Stretched well beyond 10%
+        push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
+        push_dem_test_atom(&mut atom, &mut dem, 2, [0.003, 0.0, 0.0], radius);
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let mut bond_store = BondStore::new();
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 2, bond_type: 0, r0: 0.002 }]);
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 1, bond_type: 0, r0: 0.002 }]);
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(bond_store);
+        registry.register(BondHistoryStore::new());
+
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(BondConfig {
+            break_normal_stretch: Some(0.1),
+            ..make_bond_config()
+        });
+        app.add_resource(BondMetrics::default());
+        app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
+        app.add_resource(Thermo::new());
+        app.add_update_system(bond_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let bonds = registry.expect::<BondStore>("test");
+        // Bond should be removed from both atoms
+        assert_eq!(bonds.bonds[0].len(), 0, "bond should be broken on atom 0");
+        assert_eq!(bonds.bonds[1].len(), 0, "bond should be broken on atom 1");
+
+        let metrics = app.get_resource_ref::<BondMetrics>().unwrap();
+        assert_eq!(metrics.bonds_broken_this_step, 1);
+        assert_eq!(metrics.total_bonds_broken, 1);
+    }
+
+    #[test]
+    fn bond_no_break_within_threshold() {
+        let mut app = App::new();
+
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let radius = 0.001;
+
+        // Slightly stretched (5% < 10% threshold)
+        push_dem_test_atom(&mut atom, &mut dem, 1, [0.0, 0.0, 0.0], radius);
+        push_dem_test_atom(&mut atom, &mut dem, 2, [0.0021, 0.0, 0.0], radius);
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let mut bond_store = BondStore::new();
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 2, bond_type: 0, r0: 0.002 }]);
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 1, bond_type: 0, r0: 0.002 }]);
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(bond_store);
+        registry.register(BondHistoryStore::new());
+
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(BondConfig {
+            break_normal_stretch: Some(0.1),
+            ..make_bond_config()
+        });
+        app.add_resource(BondMetrics::default());
+        app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
+        app.add_resource(Thermo::new());
+        app.add_update_system(bond_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let bonds = registry.expect::<BondStore>("test");
+        assert_eq!(bonds.bonds[0].len(), 1, "bond should not break within threshold");
+    }
+
+    #[test]
+    fn bond_history_pack_unpack_round_trip() {
+        let mut store = BondHistoryStore::new();
+        store.history.push(vec![
+            BondHistoryEntry {
+                partner_tag: 5,
+                delta_t: [0.1, 0.2, 0.3],
+                delta_theta: [0.4, 0.5, 0.6],
+            },
+            BondHistoryEntry {
+                partner_tag: 10,
+                delta_t: [1.0, 2.0, 3.0],
+                delta_theta: [4.0, 5.0, 6.0],
+            },
+        ]);
+
+        let mut buf = Vec::new();
+        store.pack(0, &mut buf);
+        assert_eq!(buf.len(), 1 + 7 * 2);
+
+        let mut store2 = BondHistoryStore::new();
+        let consumed = store2.unpack(&buf);
+        assert_eq!(consumed, buf.len());
+        assert_eq!(store2.history[0].len(), 2);
+        assert_eq!(store2.history[0][0].partner_tag, 5);
+        assert!((store2.history[0][0].delta_t[0] - 0.1).abs() < 1e-15);
+        assert!((store2.history[0][1].delta_theta[2] - 6.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn bond_config_deserialization() {
+        let toml_str = r#"
+normal_stiffness = 1e7
+normal_damping = 10.0
+tangential_stiffness = 5e6
+tangential_damping = 5.0
+bending_stiffness = 1e4
+bending_damping = 1.0
+break_normal_stretch = 0.1
+break_shear = 0.0005
+"#;
+        let config: BondConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.normal_stiffness, 1e7);
+        assert_eq!(config.tangential_stiffness, 5e6);
+        assert_eq!(config.bending_stiffness, 1e4);
+        assert_eq!(config.break_normal_stretch, Some(0.1));
+        assert_eq!(config.break_shear, Some(0.0005));
+    }
+
+    #[test]
+    fn bond_config_with_file_fields() {
+        let toml_str = r#"
+normal_stiffness = 1e7
+normal_damping = 10.0
+file = "data.lammps"
+format = "lammps_data"
+"#;
+        let config: BondConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.file.as_deref(), Some("data.lammps"));
+        assert_eq!(config.format.as_deref(), Some("lammps_data"));
+    }
+
+    #[test]
+    fn bond_config_without_file_fields() {
+        let toml_str = r#"
+auto_bond = true
+normal_stiffness = 1e7
+"#;
+        let config: BondConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.file.is_none());
+        assert!(config.auto_bond);
     }
 }

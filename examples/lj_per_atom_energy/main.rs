@@ -1,4 +1,4 @@
-use mddem::md_lj;
+use mddem::md_lj::{self, LJPairTable};
 use mddem::prelude::*;
 use mddem_derive::AtomData;
 
@@ -39,7 +39,11 @@ impl Plugin for LJAtomEnergyPlugin {
         Config::load::<md_lj::LJConfig>(app, "lj");
 
         app.add_plugins(VirialStressPlugin);
+        let mut default_table = PairCoeffTable::new(1, md_lj::LJPairCoeffs::default());
+        default_table.set(0, 0, md_lj::LJPairCoeffs::from_params(1.0, 1.0, 2.5));
+        app.add_resource(LJPairTable(default_table));
         app.add_resource(md_lj::LJTailCorrections::default())
+            .add_setup_system(md_lj::build_lj_pair_table, ScheduleSetupSet::Setup)
             .add_setup_system(md_lj::setup_lj_tails, ScheduleSetupSet::PostSetup)
             .add_update_system(
                 lj_force_with_energy.label("lj"),

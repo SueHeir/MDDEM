@@ -61,7 +61,7 @@ impl PluginGroup for GranularDefaultPlugins {
         PluginGroupBuilder::start::<Self>()
             .add(DemAtomPlugin)
             .add(DemAtomInsertPlugin)
-            .add(VelocityVerletPlugin)
+            .add(VelocityVerletPlugin::new())
             .add(HertzMindlinContactPlugin)
             .add(RotationalDynamicsPlugin)
             .add(GranularTempPlugin)

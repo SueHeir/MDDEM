@@ -1,0 +1,55 @@
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+# Periodic cube — Haff's cooling needs periodic boundaries
+[domain]
+x_low = 0.0
+x_high = 0.01
+y_low = 0.0
+y_high = 0.01
+z_low = 0.0
+z_high = 0.01
+periodic_x = true
+periodic_y = true
+periodic_z = true
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.003
+
+# Soft material so FIRE converges quickly
+[[dem.materials]]
+name = "soft"
+youngs_mod = 1e7
+poisson_ratio = 0.3
+restitution = 0.5
+friction = 0.3
+
+# ~20 particles at r=0.001 in a 0.01^3 box — low density for quick convergence
+[[particles.insert]]
+material = "soft"
+count = 20
+radius = 0.001
+density = 2500.0
+
+[fire]
+ftol = 1e-2
+dt_max_factor = 10.0
+stop_on_converge = true
+
+# Stage 1: FIRE minimization to remove overlaps (exits early on convergence)
+[[run]]
+name = "minimize"
+steps = 50000
+dt = 1e-6
+thermo = 1000
+save_at_end = true
+
+# Stage 2: Haff's cooling — free dissipative granular gas
+[[run]]
+name = "cooling"
+steps = 10000
+dt = 1e-6
+thermo = 500

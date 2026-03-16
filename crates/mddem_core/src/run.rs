@@ -33,6 +33,12 @@ pub struct StageConfig {
     /// Override VTP interval for this stage (None = use global).
     #[serde(default)]
     pub vtp_interval: Option<usize>,
+    /// Skip this stage entirely (e.g. already completed, load from restart).
+    #[serde(default)]
+    pub skip: bool,
+    /// Write dump + restart files when this stage finishes.
+    #[serde(default)]
+    pub save_at_end: bool,
     /// Arbitrary config overrides for this stage (e.g. `thermostat.temperature = 1.2`).
     /// Captured via `#[serde(flatten)]` — any keys not matched above land here.
     #[serde(flatten)]
@@ -48,6 +54,8 @@ impl Default for StageConfig {
             dump_interval: None,
             restart_interval: None,
             vtp_interval: None,
+            skip: false,
+            save_at_end: false,
             overrides: toml::Table::new(),
         }
     }
@@ -81,7 +89,7 @@ impl Default for RunConfig {
 pub struct RunState {
     pub total_cycle: usize,
     pub cycle_count: Vec<u32>,
-    cycle_remaining: Vec<u32>,
+    pub cycle_remaining: Vec<u32>,
 }
 
 impl Default for RunState {
@@ -114,6 +122,8 @@ thermo = 100
 # dump_interval = 0          # override dump interval for this stage
 # restart_interval = 0       # override restart interval for this stage
 # vtp_interval = 0           # override VTP interval for this stage
+# skip = false               # skip this stage entirely
+# save_at_end = false        # dump + restart when stage finishes
 
 # Multi-stage run (use [[run]] instead of [run]):
 # [[run]]
@@ -138,7 +148,7 @@ thermo = 100
         app.add_resource(RunState::new())
             .add_setup_system(set_stage_name, ScheduleSetupSet::PreSetup)
             .add_setup_system(run_read_input, ScheduleSetupSet::Setup)
-            .add_update_system(update_cycle, ScheduleSet::PostFinalIntegration);
+            .add_update_system(update_cycle.label("update_cycle"), ScheduleSet::PostFinalIntegration);
 
         // If StageAdvancePlugin registered StageNames, add validation
         if app
@@ -167,6 +177,15 @@ pub fn run_read_input(
     let stage = config.current_stage(index);
     let stage_label = stage.name.as_deref().unwrap_or("(unnamed)");
 
+    if stage.skip {
+        if comm.rank() == 0 {
+            println!("Skipping stage {} [{}]", index, stage_label);
+        }
+        run_state.cycle_count.push(0);
+        run_state.cycle_remaining.push(0);
+        return;
+    }
+
     if comm.rank() == 0 {
         if config.num_stages() > 1 {
             println!(
@@ -187,6 +206,21 @@ pub fn update_cycle(
     run_config: Res<RunConfig>,
 ) {
     let index = scheduler_manager.index;
+    let remaining = run_state.cycle_remaining[index];
+
+    // Skipped stage (remaining == 0): advance immediately without running physics.
+    // Clear advance_requested in case another system (e.g. FIRE) set it during
+    // the ghost update iteration that runs before this check.
+    if remaining == 0 {
+        scheduler_manager.advance_requested = false;
+        scheduler_manager.index += 1;
+        scheduler_manager.state = SchedulerState::Setup;
+        if scheduler_manager.index >= run_config.num_stages() {
+            scheduler_manager.state = SchedulerState::End;
+        }
+        return;
+    }
+
     run_state.cycle_count[index] += 1;
     run_state.total_cycle += 1;
 

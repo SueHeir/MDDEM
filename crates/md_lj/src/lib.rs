@@ -105,7 +105,7 @@ impl Default for LJPairCoeffs {
 }
 
 impl LJPairCoeffs {
-    fn from_params(epsilon: f64, sigma: f64, cutoff_sigma: f64) -> Self {
+    pub fn from_params(epsilon: f64, sigma: f64, cutoff_sigma: f64) -> Self {
         let sigma6 = (sigma * sigma).powi(3);
         LJPairCoeffs {
             lj1: 48.0 * epsilon * sigma6 * sigma6,
@@ -175,7 +175,7 @@ cutoff = 2.5     # in sigma units"#,
 
 // ── Pair table construction ─────────────────────────────────────────────────
 
-fn build_lj_pair_table(
+pub fn build_lj_pair_table(
     lj: Res<LJConfig>,
     mut atoms: ResMut<Atom>,
     comm: Res<CommResource>,
