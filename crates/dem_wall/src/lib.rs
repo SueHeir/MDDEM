@@ -1,4 +1,5 @@
-//! Plane wall contact forces for DEM particles (Hertz normal + Coulomb friction).
+//! Wall contact forces for DEM particles (Hertz normal + Coulomb friction).
+//! Supports plane, cylinder, sphere, and region-surface walls.
 //! Supports static, constant-velocity, oscillating, and servo-controlled walls.
 
 use mddem_app::prelude::*;
@@ -6,6 +7,7 @@ use mddem_scheduler::prelude::*;
 use serde::Deserialize;
 
 use dem_atom::{DemAtom, MaterialTable, SQRT_5_3};
+use mddem_core::region::Region;
 use mddem_core::{Atom, AtomDataRegistry, Config};
 
 fn default_neg_inf() -> f64 {
@@ -101,6 +103,9 @@ pub struct WallDef {
     /// Servo control: adjust velocity to reach target force.
     #[serde(default)]
     pub servo: Option<ServoDef>,
+    /// Region definition for type = "region" walls.
+    #[serde(default)]
+    pub region: Option<Region>,
 }
 
 // ── Runtime types ───────────────────────────────────────────────────────────
@@ -184,7 +189,18 @@ pub struct WallSphere {
     pub force_accumulator: f64,
 }
 
-/// Collection of wall planes with per-wall active/inactive flags.
+/// Runtime region wall: uses a `Region` surface for contact detection.
+pub struct WallRegion {
+    /// The region whose surface acts as the wall.
+    pub region: Region,
+    /// If true, particles are inside the region (normal points inward).
+    pub inside: bool,
+    pub material_index: usize,
+    pub name: Option<String>,
+    pub force_accumulator: f64,
+}
+
+/// Collection of all wall types with per-wall active/inactive flags.
 pub struct Walls {
     pub planes: Vec<WallPlane>,
     pub active: Vec<bool>,
@@ -192,6 +208,8 @@ pub struct Walls {
     pub cylinder_active: Vec<bool>,
     pub spheres: Vec<WallSphere>,
     pub sphere_active: Vec<bool>,
+    pub regions: Vec<WallRegion>,
+    pub region_active: Vec<bool>,
     /// Elapsed simulation time (for oscillation phase tracking).
     pub time: f64,
 }
@@ -211,6 +229,11 @@ impl Walls {
         for (i, wall) in self.spheres.iter().enumerate() {
             if wall.name.as_deref() == Some(name) {
                 self.sphere_active[i] = false;
+            }
+        }
+        for (i, wall) in self.regions.iter().enumerate() {
+            if wall.name.as_deref() == Some(name) {
+                self.region_active[i] = false;
             }
         }
     }
@@ -290,6 +313,7 @@ impl Plugin for WallPlugin {
             let mut planes = Vec::new();
             let mut cylinders = Vec::new();
             let mut spheres = Vec::new();
+            let mut regions: Vec<WallRegion> = Vec::new();
 
             for w in &wall_defs {
                 let mat_idx = match material_table.find_material(&w.material) {
@@ -349,6 +373,20 @@ impl Plugin for WallPlugin {
                         spheres.push(WallSphere {
                             center,
                             radius,
+                            inside,
+                            material_index: mat_idx,
+                            name: w.name.clone(),
+                            force_accumulator: 0.0,
+                        });
+                    }
+                    "region" => {
+                        let region = w.region.clone().unwrap_or_else(|| {
+                            eprintln!("ERROR: region wall requires a 'region' field");
+                            std::process::exit(1);
+                        });
+                        let inside = w.inside.unwrap_or(false);
+                        regions.push(WallRegion {
+                            region,
                             inside,
                             material_index: mat_idx,
                             name: w.name.clone(),
@@ -418,6 +456,7 @@ impl Plugin for WallPlugin {
             let np = planes.len();
             let nc = cylinders.len();
             let ns = spheres.len();
+            let nr = regions.len();
             Walls {
                 planes,
                 active: vec![true; np],
@@ -425,6 +464,8 @@ impl Plugin for WallPlugin {
                 cylinder_active: vec![true; nc],
                 spheres,
                 sphere_active: vec![true; ns],
+                regions,
+                region_active: vec![true; nr],
                 time: 0.0,
             }
         };
@@ -498,6 +539,9 @@ pub fn wall_zero_force_accumulators(mut walls: ResMut<Walls>) {
         wall.force_accumulator = 0.0;
     }
     for wall in &mut walls.spheres {
+        wall.force_accumulator = 0.0;
+    }
+    for wall in &mut walls.regions {
         wall.force_accumulator = 0.0;
     }
 }
@@ -819,12 +863,86 @@ pub fn wall_contact_force(
     for (idx, &f) in sph_forces.iter().enumerate() {
         walls.spheres[idx].force_accumulator += f;
     }
+
+    // ── Region walls ────────────────────────────────────────────────────
+    let nreg = walls.regions.len();
+    let mut reg_forces = vec![0.0f64; nreg];
+    for (reg_idx, reg) in walls.regions.iter().enumerate() {
+        if !walls.region_active[reg_idx] {
+            continue;
+        }
+        let wall_mat = reg.material_index;
+        for i in 0..nlocal {
+            let pos = atoms.pos[i];
+            let radius = dem.radius[i];
+            let mat_i = atoms.atom_type[i] as usize;
+
+            let sr = reg.region.closest_point_on_surface(&pos);
+
+            // Compute gap: distance from particle surface to region surface.
+            // If inside=true, particles live inside the region, so the wall
+            // surface is the region boundary and the gap shrinks as the particle
+            // approaches the boundary from inside.
+            // sr.distance is positive outside, negative inside.
+            let gap = if reg.inside {
+                // Particle inside: gap = |signed_dist| when signed_dist < 0 (inside)
+                // and gap = -signed_dist (positive when inside, wall distance shrinks to 0)
+                -sr.distance
+            } else {
+                // Particle outside: gap = signed_dist (positive when outside)
+                sr.distance
+            };
+
+            let delta = radius - gap;
+            if delta <= 0.0 {
+                continue;
+            }
+            let delta = delta.min(0.5 * radius);
+
+            // Normal direction: points from wall surface toward particle center
+            let (nx, ny, nz) = if reg.inside {
+                // Inside: normal points inward (toward particle, away from surface)
+                (-sr.normal[0], -sr.normal[1], -sr.normal[2])
+            } else {
+                // Outside: normal is already outward (toward particle)
+                (sr.normal[0], sr.normal[1], sr.normal[2])
+            };
+
+            let r_eff = radius;
+            let e_eff = material_table.e_eff_ij[mat_i][wall_mat];
+            let sdr = (delta * r_eff).sqrt();
+            let k_n = 4.0 / 3.0 * e_eff * sdr;
+            let s_n = 2.0 * e_eff * sdr;
+            let m_r = atoms.mass[i];
+            let v_n = atoms.vel[i][0] * nx + atoms.vel[i][1] * ny + atoms.vel[i][2] * nz;
+            let beta = material_table.beta_ij[mat_i][wall_mat];
+            let cohesion_energy = material_table.cohesion_energy_ij[mat_i][wall_mat];
+
+            let f_net = if cohesion_energy > 0.0 {
+                let f_diss = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
+                let f_cohesion = cohesion_energy * std::f64::consts::PI * delta * r_eff;
+                k_n * delta - f_diss - f_cohesion
+            } else {
+                let f_diss = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
+                (k_n * delta - f_diss).max(0.0)
+            };
+
+            atoms.force[i][0] += f_net * nx;
+            atoms.force[i][1] += f_net * ny;
+            atoms.force[i][2] += f_net * nz;
+            reg_forces[reg_idx] += f_net;
+        }
+    }
+    for (idx, &f) in reg_forces.iter().enumerate() {
+        walls.regions[idx].force_accumulator += f;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use dem_atom::DemAtom;
+    use mddem_core::region::Region;
     use mddem_core::{Atom, AtomDataRegistry};
     use mddem_test_utils::{make_material_table, push_dem_test_atom};
 
@@ -868,6 +986,8 @@ mod tests {
             cylinder_active: Vec::new(),
             spheres: Vec::new(),
             sphere_active: Vec::new(),
+            regions: Vec::new(),
+            region_active: Vec::new(),
             time: 0.0,
         }
     }
@@ -1233,6 +1353,8 @@ mod tests {
             cylinder_active: vec![true],
             spheres: Vec::new(),
             sphere_active: Vec::new(),
+            regions: Vec::new(),
+            region_active: Vec::new(),
             time: 0.0,
         }
     }
@@ -1245,6 +1367,22 @@ mod tests {
             cylinder_active: Vec::new(),
             spheres: vec![sph],
             sphere_active: vec![true],
+            regions: Vec::new(),
+            region_active: Vec::new(),
+            time: 0.0,
+        }
+    }
+
+    fn make_walls_with_region(reg: WallRegion) -> Walls {
+        Walls {
+            planes: Vec::new(),
+            active: Vec::new(),
+            cylinders: Vec::new(),
+            cylinder_active: Vec::new(),
+            spheres: Vec::new(),
+            sphere_active: Vec::new(),
+            regions: vec![reg],
+            region_active: vec![true],
             time: 0.0,
         }
     }
@@ -1635,7 +1773,7 @@ mod tests {
     fn wall_zero_force_at_exact_contact() {
         let radius = 0.001;
 
-        // Place particle center at exactly radius from wall → delta = 0
+        // Place particle center at exactly radius from wall -> delta = 0
         let mut atom = Atom::new();
         let mut dem = DemAtom::new();
         push_dem_test_atom(&mut atom, &mut dem, 0, [0.01, 0.01, radius], radius);
@@ -1710,6 +1848,263 @@ mod tests {
                 rel_err < 0.01,
                 "Wall Hertz scaling: delta ratio {:.1}, expected F ratio {:.4}, got {:.4} (rel err {:.4})",
                 deltas[i] / deltas[0], expected_ratio, actual_ratio, rel_err
+            );
+        }
+    }
+
+    // ── Region wall tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn region_sphere_inside_repels() {
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let radius = 0.001;
+
+        // Particle near sphere wall surface (inside sphere of radius 0.004)
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.005 + 0.0035, 0.005, 0.005], radius);
+        atom.nlocal = 1;
+        atom.natoms = 1;
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+
+        let walls = make_walls_with_region(WallRegion {
+            region: Region::Sphere {
+                center: [0.005, 0.005, 0.005],
+                radius: 0.004,
+            },
+            inside: true,
+            material_index: 0,
+            name: None,
+            force_accumulator: 0.0,
+        });
+
+        let mut app = App::new();
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(make_material_table());
+        app.add_resource(walls);
+        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        assert!(
+            atom.force[0][0] < 0.0,
+            "region sphere wall should push particle toward center, got fx={}",
+            atom.force[0][0]
+        );
+        assert!((atom.force[0][1]).abs() < 1e-15, "no y force");
+        assert!((atom.force[0][2]).abs() < 1e-15, "no z force");
+    }
+
+    #[test]
+    fn region_sphere_no_force_when_far() {
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let radius = 0.001;
+
+        // Particle at center of sphere (far from wall)
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.005, 0.005, 0.005], radius);
+        atom.nlocal = 1;
+        atom.natoms = 1;
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+
+        let walls = make_walls_with_region(WallRegion {
+            region: Region::Sphere {
+                center: [0.005, 0.005, 0.005],
+                radius: 0.004,
+            },
+            inside: true,
+            material_index: 0,
+            name: None,
+            force_accumulator: 0.0,
+        });
+
+        let mut app = App::new();
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(make_material_table());
+        app.add_resource(walls);
+        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        let f_mag = (atom.force[0][0].powi(2) + atom.force[0][1].powi(2) + atom.force[0][2].powi(2)).sqrt();
+        assert!(f_mag < 1e-15, "no force when far from region wall, got {}", f_mag);
+    }
+
+    #[test]
+    fn region_block_inside_repels() {
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let radius = 0.001;
+
+        // Particle near the +z face of a block (inside, close to top)
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.005, 0.005, 0.0095], radius);
+        atom.nlocal = 1;
+        atom.natoms = 1;
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+
+        let walls = make_walls_with_region(WallRegion {
+            region: Region::Block {
+                min: [0.0, 0.0, 0.0],
+                max: [0.01, 0.01, 0.01],
+            },
+            inside: true,
+            material_index: 0,
+            name: None,
+            force_accumulator: 0.0,
+        });
+
+        let mut app = App::new();
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(make_material_table());
+        app.add_resource(walls);
+        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        // Should be pushed away from the +z face (downward)
+        assert!(
+            atom.force[0][2] < 0.0,
+            "region block wall should push particle away from +z face, got fz={}",
+            atom.force[0][2]
+        );
+    }
+
+    #[test]
+    fn region_cone_inside_repels() {
+        use mddem_core::region::Axis;
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let radius = 0.0005;
+
+        // Cone: z-axis, rad_lo=0.004 at z=0, rad_hi=0.002 at z=0.01
+        // At z=0.005, radius = 0.003
+        // Place particle at radial distance 0.0028 from axis (gap = 0.003 - 0.0028 = 0.0002 < radius)
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.005 + 0.0028, 0.005, 0.005], radius);
+        atom.nlocal = 1;
+        atom.natoms = 1;
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+
+        let walls = make_walls_with_region(WallRegion {
+            region: Region::Cone {
+                center: [0.005, 0.005],
+                axis: Axis::Z,
+                rad_lo: 0.004,
+                rad_hi: 0.002,
+                lo: 0.0,
+                hi: 0.01,
+            },
+            inside: true,
+            material_index: 0,
+            name: None,
+            force_accumulator: 0.0,
+        });
+
+        let mut app = App::new();
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(make_material_table());
+        app.add_resource(walls);
+        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        // Force should push toward center (negative x direction)
+        assert!(
+            atom.force[0][0] < 0.0,
+            "cone wall should push particle toward center, got fx={}",
+            atom.force[0][0]
+        );
+    }
+
+    #[test]
+    fn region_wall_force_matches_dedicated_sphere() {
+        // Verify that a region sphere wall produces the same force as the dedicated sphere wall
+        let radius = 0.001;
+        let sphere_center = [0.005, 0.005, 0.005];
+        let sphere_radius = 0.004;
+        let particle_pos = [0.005 + 0.0035, 0.005, 0.005];
+
+        // Run with dedicated sphere wall
+        let f_dedicated = {
+            let mut atom = Atom::new();
+            let mut dem = DemAtom::new();
+            push_dem_test_atom(&mut atom, &mut dem, 0, particle_pos, radius);
+            atom.nlocal = 1;
+            atom.natoms = 1;
+            let mut registry = AtomDataRegistry::new();
+            registry.register(dem);
+            let walls = make_walls_with_sphere(WallSphere {
+                center: sphere_center,
+                radius: sphere_radius,
+                inside: true,
+                material_index: 0,
+                name: None,
+                force_accumulator: 0.0,
+            });
+            let mut app = App::new();
+            app.add_resource(atom);
+            app.add_resource(registry);
+            app.add_resource(make_material_table());
+            app.add_resource(walls);
+            app.add_update_system(wall_contact_force, ScheduleSet::Force);
+            app.organize_systems();
+            app.run();
+            let atom = app.get_resource_ref::<Atom>().unwrap();
+            [atom.force[0][0], atom.force[0][1], atom.force[0][2]]
+        };
+
+        // Run with region sphere wall
+        let f_region = {
+            let mut atom = Atom::new();
+            let mut dem = DemAtom::new();
+            push_dem_test_atom(&mut atom, &mut dem, 0, particle_pos, radius);
+            atom.nlocal = 1;
+            atom.natoms = 1;
+            let mut registry = AtomDataRegistry::new();
+            registry.register(dem);
+            let walls = make_walls_with_region(WallRegion {
+                region: Region::Sphere {
+                    center: sphere_center,
+                    radius: sphere_radius,
+                },
+                inside: true,
+                material_index: 0,
+                name: None,
+                force_accumulator: 0.0,
+            });
+            let mut app = App::new();
+            app.add_resource(atom);
+            app.add_resource(registry);
+            app.add_resource(make_material_table());
+            app.add_resource(walls);
+            app.add_update_system(wall_contact_force, ScheduleSet::Force);
+            app.organize_systems();
+            app.run();
+            let atom = app.get_resource_ref::<Atom>().unwrap();
+            [atom.force[0][0], atom.force[0][1], atom.force[0][2]]
+        };
+
+        for d in 0..3 {
+            assert!(
+                (f_dedicated[d] - f_region[d]).abs() < 1e-6 * f_dedicated[d].abs().max(1e-15),
+                "force mismatch in dim {}: dedicated={}, region={}",
+                d,
+                f_dedicated[d],
+                f_region[d]
             );
         }
     }

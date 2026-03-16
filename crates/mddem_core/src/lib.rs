@@ -25,7 +25,7 @@ pub use domain::*;
 pub use group::{group_includes, Group, GroupDef, GroupPlugin, GroupRegistry};
 pub use input::{load_toml, print_banner, Config, Input, InputPlugin};
 pub use pair_coeff::{MixingRule, PairCoeffTable};
-pub use region::{Axis, Region};
+pub use region::{Axis, Region, SurfaceResult};
 pub use run::*;
 pub use virial::*;
 
