@@ -1,0 +1,56 @@
+# DEM Performance Benchmark
+# ~10k particles in a periodic box, 1000 steps.
+# Reports steps/second via thermo output.
+#
+# Usage:
+#   cargo run --example dem_benchmark --release --no-default-features -- examples/dem_benchmark/config.toml
+#
+# Expected hot-path breakdown (from profiling):
+#   ~64% contact force computation
+#   ~29% neighbor list build
+#   ~7%  integration + comm + overhead
+
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.005
+every = 10
+check = true
+rebuild_on_pbc_wrap = true
+
+[domain]
+x_low = 0.0
+x_high = 0.10
+y_low = 0.0
+y_high = 0.10
+z_low = 0.0
+z_high = 0.10
+periodic_x = true
+periodic_y = true
+periodic_z = true
+
+[[dem.materials]]
+name = "glass"
+youngs_mod = 8.7e9
+poisson_ratio = 0.3
+restitution = 0.95
+friction = 0.4
+
+# 10,000 particles for meaningful benchmark
+[[particles.insert]]
+material = "glass"
+count = 10000
+radius = 0.001
+density = 2500.0
+velocity = 0.5
+
+[output]
+dir = "examples/dem_benchmark/output"
+
+[run]
+thermo = 100
+steps = 1000

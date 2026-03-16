@@ -94,6 +94,10 @@ path = "examples/granular_gas_vdist/main.rs"
 name = "polymer_chain"
 path = "examples/polymer_chain/main.rs"
 
+[[example]]
+name = "dem_benchmark"
+path = "examples/dem_benchmark/main.rs"
+
 
 [profile.release]
 opt-level = 3
