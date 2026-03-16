@@ -29,6 +29,7 @@ md_type_rdf = { path = "../md_type_rdf", version = "0.1.3" }
 md_thermostat = { path = "../md_thermostat", version = "0.1.3" }
 md_lattice = { path = "../md_lattice", version = "0.1.3" }
 md_measure = { path = "../md_measure", version = "0.1.3" }
+md_msd = { path = "../md_msd", version = "0.1.3" }
 md_bond = { path = "../md_bond", version = "0.1.3" }
 md_polymer = { path = "../md_polymer", version = "0.1.3" }
 mddem_derive = { path = "../mddem_derive", version = "0.1.3" }

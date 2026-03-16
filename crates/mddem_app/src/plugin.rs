@@ -29,6 +29,21 @@ pub trait Plugin: Downcast + Any + Send + Sync {
     fn default_config(&self) -> Option<&str> {
         None
     }
+
+    /// Return the names of plugins that must be registered before this one.
+    ///
+    /// Override this to declare dependencies. The app will validate that all
+    /// listed plugins have been registered before this plugin's `build()` runs,
+    /// and produce a clear error message if any are missing.
+    ///
+    /// ```rust,ignore
+    /// fn dependencies(&self) -> Vec<&str> {
+    ///     vec!["dem_wall::WallPlugin", "dem_atom::DemAtomPlugin"]
+    /// }
+    /// ```
+    fn dependencies(&self) -> Vec<&str> {
+        Vec::new()
+    }
 }
 
 impl_downcast!(Plugin);
@@ -173,7 +188,8 @@ pub trait Plugins<Marker>: sealed::Plugins<Marker> {}
 impl<Marker, T> Plugins<Marker> for T where T: sealed::Plugins<Marker> {}
 
 pub(crate) mod sealed {
-    use crate::{App, AppError, Plugin, PluginGroup};
+    use crate::app::AppError;
+    use crate::{App, Plugin, PluginGroup};
 
     pub trait Plugins<Marker> {
         fn add_to_app(self, app: &mut App);
@@ -185,10 +201,34 @@ pub(crate) mod sealed {
     impl<P: Plugin> Plugins<PluginMarker> for P {
         #[track_caller]
         fn add_to_app(self, app: &mut App) {
-            if let Err(AppError::DuplicatePlugin { plugin_name }) =
-                app.add_boxed_plugin(Box::new(self))
-            {
-                panic!("Error adding plugin {plugin_name}: plugin was already added in application")
+            match app.add_boxed_plugin(Box::new(self)) {
+                Err(AppError::DuplicatePlugin { plugin_name }) => {
+                    panic!(
+                        "Error adding plugin {plugin_name}: plugin was already added in application"
+                    )
+                }
+                Err(AppError::MissingDependencies {
+                    plugin_name,
+                    missing,
+                }) => {
+                    eprintln!();
+                    eprintln!("ERROR: Plugin `{}` is missing required dependencies:", plugin_name);
+                    for dep in &missing {
+                        eprintln!("  - {}", dep);
+                    }
+                    eprintln!();
+                    eprintln!("  Hint: Add the missing plugin(s) before `{}`.", plugin_name);
+                    eprintln!("  Example plugin registration order:");
+                    for dep in &missing {
+                        eprintln!("    app.add_plugins({});", dep.rsplit("::").next().unwrap_or(dep));
+                    }
+                    eprintln!("    app.add_plugins({});", plugin_name.rsplit("::").next().unwrap_or(&plugin_name));
+                    panic!(
+                        "Missing plugin dependencies for `{}`: {:?}",
+                        plugin_name, missing
+                    );
+                }
+                Ok(_) => {}
             }
         }
     }

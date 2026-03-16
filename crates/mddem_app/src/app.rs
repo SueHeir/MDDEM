@@ -54,13 +54,48 @@ impl App {
             });
         }
 
+        // Validate plugin dependencies before building
+        let deps = plugin.dependencies();
+        if !deps.is_empty() {
+            let mut missing: Vec<&str> = Vec::new();
+            for dep in &deps {
+                // Check if any registered plugin name contains the dependency string.
+                // This allows matching both full paths ("dem_atom::DemAtomPlugin")
+                // and short names ("DemAtomPlugin").
+                let found = self
+                    .main()
+                    .plugin_names
+                    .iter()
+                    .any(|name| name.contains(dep) || dep.contains(name.as_str()));
+                if !found {
+                    missing.push(dep);
+                }
+            }
+            if !missing.is_empty() {
+                return Err(AppError::MissingDependencies {
+                    plugin_name: plugin.name().to_string(),
+                    missing: missing.iter().map(|s| s.to_string()).collect(),
+                });
+            }
+        }
+
+        // Record the plugin name *before* build so that nested add_plugins calls
+        // within build() can see this plugin as registered (prevents false-positive
+        // dependency errors when a plugin group adds a dependency and its dependent
+        // in sequence).
+        self.main_mut()
+            .plugin_names
+            .insert(plugin.name().to_string());
+
         plugin.build(self);
 
         if let Some(snippet) = plugin.default_config() {
             let snippet = snippet.to_string();
             if let Some(cell) = self.get_mut_resource(TypeId::of::<ConfigSnippets>()) {
                 let mut borrow = cell.borrow_mut();
-                let snippets = borrow.downcast_mut::<ConfigSnippets>().unwrap();
+                let snippets = borrow
+                    .downcast_mut::<ConfigSnippets>()
+                    .expect("ConfigSnippets resource has wrong type — this is a bug in MDDEM");
                 snippets.snippets.push(snippet);
             } else {
                 self.add_resource(ConfigSnippets {
@@ -179,4 +214,8 @@ impl App {
 #[derive(Debug)]
 pub(crate) enum AppError {
     DuplicatePlugin { plugin_name: String },
+    MissingDependencies {
+        plugin_name: String,
+        missing: Vec<String>,
+    },
 }

@@ -15,7 +15,7 @@ use std::fs;
 use std::io::Write;
 
 use mddem_app::prelude::*;
-use mddem_core::{Atom, AtomDataRegistry, BondEntry, BondStore, CommResource, Config, Domain, Input, RunState};
+use mddem_core::{AngleEntry, AngleStore, Atom, AtomDataRegistry, BondEntry, BondStore, CommResource, Config, Domain, Input, RunState};
 use mddem_scheduler::prelude::*;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
@@ -463,6 +463,35 @@ pub fn init_polymer_chains(
         }
     }
 
+    // Populate angle topology if AngleStore is registered
+    if let Some(mut angle_store) = registry.get_mut::<AngleStore>() {
+        while angle_store.angles.len() < n {
+            angle_store.angles.push(Vec::new());
+        }
+
+        let mut total_angles = 0usize;
+        for chain_tags in &stats_data.chain_tags {
+            // For each triple of consecutive beads (i, j, k), store angle on central atom j
+            if chain_tags.len() >= 3 {
+                for w in chain_tags.windows(3) {
+                    let tag_i = w[0];
+                    let tag_j = w[1];
+                    let tag_k = w[2];
+                    angle_store.angles[tag_j as usize].push(AngleEntry {
+                        tag_i,
+                        tag_k,
+                        angle_type: 0,
+                    });
+                    total_angles += 1;
+                }
+            }
+        }
+
+        if comm.rank() == 0 && total_angles > 0 {
+            println!("Polymer init: created {} bond angles", total_angles);
+        }
+    }
+
     // Mark topology as known
     stats_data.discovered = true;
 
@@ -837,5 +866,225 @@ mod tests {
             rg2,
             expected_rg2
         );
+    }
+
+    // ── Freely-jointed chain: <R_ee²> = N * b² ────────────────────────────
+
+    #[test]
+    fn freely_jointed_chain_ree_squared_scaling() {
+        // For a freely-jointed chain (FJC) with N bonds of length b,
+        // the mean-square end-to-end distance is <R_ee²> = N * b².
+        //
+        // We generate many random-walk chains and verify the statistical
+        // average converges to Nb² within expected sampling error.
+        use rand::Rng;
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha8Rng;
+
+        let n_bonds = 50; // N bonds => N+1 beads
+        let b = 1.0;      // bond length
+        let n_chains = 10_000; // number of independent chains to average
+        let expected_ree2 = n_bonds as f64 * b * b;
+
+        let mut rng = ChaCha8Rng::seed_from_u64(12345);
+        let mut ree2_sum = 0.0;
+
+        for _ in 0..n_chains {
+            let mut pos = [0.0_f64; 3];
+            for _ in 0..n_bonds {
+                // Random direction on unit sphere (uniform)
+                let theta = std::f64::consts::PI * rng.random::<f64>();
+                let phi = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+                pos[0] += b * theta.sin() * phi.cos();
+                pos[1] += b * theta.sin() * phi.sin();
+                pos[2] += b * theta.cos();
+            }
+            let ree2 = pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2];
+            ree2_sum += ree2;
+        }
+
+        let ree2_avg = ree2_sum / n_chains as f64;
+
+        // For a random walk, <R²> = N*b² = 50.
+        // Standard error of <R²> is roughly sqrt(Var(R²)/n_chains).
+        // For FJC, Var(R²) ~ (2/3)*(Nb²)² for large N, so SE ~ Nb²*sqrt(2/(3*n_chains)).
+        // With n_chains=10000, SE ~ 50 * sqrt(2/30000) ≈ 0.41
+        // Allow 5 standard errors (≈ 2.0).
+        let tolerance = 3.0;
+        assert!(
+            (ree2_avg - expected_ree2).abs() < tolerance,
+            "<R_ee²>={:.2} should be close to N*b²={:.2} (tolerance={:.2})",
+            ree2_avg, expected_ree2, tolerance
+        );
+    }
+
+    #[test]
+    fn freely_jointed_chain_ree_rg_ratio() {
+        // For a freely-jointed chain, <R_ee²> / <R_g²> = 6 (in the large-N limit).
+        // This is a fundamental result of polymer physics.
+        use rand::Rng;
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha8Rng;
+
+        let n_bonds = 100;
+        let b = 1.0;
+        let n_chains = 5_000;
+
+        let mut rng = ChaCha8Rng::seed_from_u64(54321);
+        let mut ree2_sum = 0.0;
+        let mut rg2_sum = 0.0;
+
+        for _ in 0..n_chains {
+            let mut positions = Vec::with_capacity(n_bonds + 1);
+            positions.push([0.0_f64, 0.0, 0.0]);
+
+            for _ in 0..n_bonds {
+                let prev = *positions.last().unwrap();
+                let theta = std::f64::consts::PI * rng.random::<f64>();
+                let phi = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+                positions.push([
+                    prev[0] + b * theta.sin() * phi.cos(),
+                    prev[1] + b * theta.sin() * phi.sin(),
+                    prev[2] + b * theta.cos(),
+                ]);
+            }
+
+            // R_ee²
+            let first = positions[0];
+            let last = positions[n_bonds];
+            let ree2 = (last[0] - first[0]).powi(2)
+                + (last[1] - first[1]).powi(2)
+                + (last[2] - first[2]).powi(2);
+            ree2_sum += ree2;
+
+            // R_g²
+            let n = positions.len() as f64;
+            let mut com = [0.0; 3];
+            for p in &positions {
+                com[0] += p[0];
+                com[1] += p[1];
+                com[2] += p[2];
+            }
+            com[0] /= n;
+            com[1] /= n;
+            com[2] /= n;
+
+            let mut rg2 = 0.0;
+            for p in &positions {
+                rg2 += (p[0] - com[0]).powi(2)
+                    + (p[1] - com[1]).powi(2)
+                    + (p[2] - com[2]).powi(2);
+            }
+            rg2 /= n;
+            rg2_sum += rg2;
+        }
+
+        let ree2_avg = ree2_sum / n_chains as f64;
+        let rg2_avg = rg2_sum / n_chains as f64;
+        let ratio = ree2_avg / rg2_avg;
+
+        // Expected ratio is 6.0 for large N
+        assert!(
+            (ratio - 6.0).abs() < 0.5,
+            "<R_ee²>/<R_g²>={:.3}, expected 6.0 (polymer physics universal ratio)",
+            ratio
+        );
+    }
+
+    // ── Chain discovery from bonds ─────────────────────────────────────────
+
+    #[test]
+    fn discover_chains_finds_linear_chain() {
+        // Create a linear chain of 5 atoms with bonds: 0-1-2-3-4
+        let mut atom = Atom::new();
+        for i in 0..5u32 {
+            atom.push_test_atom(i, [i as f64, 0.0, 0.0], 0.5, 1.0);
+        }
+        atom.nlocal = 5;
+        atom.natoms = 5;
+
+        let mut bond_store = BondStore::new();
+        for _ in 0..5 {
+            bond_store.bonds.push(Vec::new());
+        }
+        // Add bonds: 0-1, 1-2, 2-3, 3-4
+        for i in 0..4u32 {
+            bond_store.bonds[i as usize].push(BondEntry {
+                partner_tag: i + 1,
+                bond_type: 0,
+                r0: 1.0,
+            });
+            bond_store.bonds[(i + 1) as usize].push(BondEntry {
+                partner_tag: i,
+                bond_type: 0,
+                r0: 1.0,
+            });
+        }
+
+        let registry = {
+            let mut r = mddem_core::AtomDataRegistry::new();
+            r.register(bond_store);
+            r
+        };
+
+        let chains = discover_chains_from_bonds(&atom, &registry);
+        assert_eq!(chains.len(), 1, "Should discover exactly 1 chain");
+        assert_eq!(chains[0].len(), 5, "Chain should have 5 beads");
+        // Chain should start from one endpoint (0 or 4) and end at the other
+        assert!(
+            (chains[0][0] == 0 && chains[0][4] == 4) || (chains[0][0] == 4 && chains[0][4] == 0),
+            "Chain should go from endpoint to endpoint: {:?}",
+            chains[0]
+        );
+    }
+
+    #[test]
+    fn discover_chains_finds_two_separate_chains() {
+        // Two separate chains: 0-1-2 and 3-4-5
+        let mut atom = Atom::new();
+        for i in 0..6u32 {
+            atom.push_test_atom(i, [i as f64, 0.0, 0.0], 0.5, 1.0);
+        }
+        atom.nlocal = 6;
+        atom.natoms = 6;
+
+        let mut bond_store = BondStore::new();
+        for _ in 0..6 {
+            bond_store.bonds.push(Vec::new());
+        }
+        // Chain 1: 0-1-2
+        for &(a, b) in &[(0u32, 1u32), (1, 2)] {
+            bond_store.bonds[a as usize].push(BondEntry { partner_tag: b, bond_type: 0, r0: 1.0 });
+            bond_store.bonds[b as usize].push(BondEntry { partner_tag: a, bond_type: 0, r0: 1.0 });
+        }
+        // Chain 2: 3-4-5
+        for &(a, b) in &[(3u32, 4u32), (4, 5)] {
+            bond_store.bonds[a as usize].push(BondEntry { partner_tag: b, bond_type: 0, r0: 1.0 });
+            bond_store.bonds[b as usize].push(BondEntry { partner_tag: a, bond_type: 0, r0: 1.0 });
+        }
+
+        let registry = {
+            let mut r = mddem_core::AtomDataRegistry::new();
+            r.register(bond_store);
+            r
+        };
+
+        let chains = discover_chains_from_bonds(&atom, &registry);
+        assert_eq!(chains.len(), 2, "Should discover 2 chains, got {}", chains.len());
+    }
+
+    // ── Wrap coordinate edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn wrap_coord_exactly_at_boundary() {
+        // Atom exactly at the upper boundary should wrap to lower
+        assert!((wrap_coord(10.0, 0.0, 10.0, true) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn wrap_coord_far_outside() {
+        // Atom far outside the box
+        assert!((wrap_coord(25.5, 0.0, 10.0, true) - 5.5).abs() < 1e-10);
+        assert!((wrap_coord(-15.3, 0.0, 10.0, true) - 4.7).abs() < 1e-10);
     }
 }
