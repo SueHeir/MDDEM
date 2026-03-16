@@ -29,6 +29,7 @@ md_type_rdf = { path = "../md_type_rdf", version = "0.1.3" }
 md_thermostat = { path = "../md_thermostat", version = "0.1.3" }
 md_lattice = { path = "../md_lattice", version = "0.1.3" }
 md_measure = { path = "../md_measure", version = "0.1.3" }
+md_msd = { path = "../md_msd", version = "0.1.3" }
 md_bond = { path = "../md_bond", version = "0.1.3" }
 md_polymer = { path = "../md_polymer", version = "0.1.3" }
 mddem_derive = { path = "../mddem_derive", version = "0.1.3" }
@@ -37,3 +38,4 @@ mddem_fixes = { path = "../mddem_fixes", version = "0.1.3" }
 dem_thermal = { path = "../dem_thermal", version = "0.1.3" }
 dem_measure_plane = { path = "../dem_measure_plane", version = "0.1.3" }
 mddem_velocity_distribution = { path = "../mddem_velocity_distribution", version = "0.1.3" }
+dem_contact_analysis = { path = "../dem_contact_analysis", version = "0.1.3" }

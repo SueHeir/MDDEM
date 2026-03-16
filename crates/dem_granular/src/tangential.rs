@@ -11,12 +11,15 @@ use crate::{SQRT_5_3, TANGENTIAL_EPSILON};
 
 // ── ContactHistoryStore ─────────────────────────────────────────────────────
 
-/// Stores per-atom tangential spring displacement history for Mindlin contacts.
+/// Stores per-atom contact history for Mindlin tangential, SDS rolling, and SDS twisting models.
+///
+/// Each contact stores 7 displacement values in canonical form (lower tag's perspective):
+/// - `[0..3]`: tangential spring displacement (Mindlin)
+/// - `[3..6]`: rolling spring displacement (SDS rolling, zero if constant model)
+/// - `[6]`: twisting spring displacement (SDS twisting, zero if constant model)
 pub struct ContactHistoryStore {
-    /// Per-atom list of (partner_tag, spring_displacement, active_flag).
-    /// The spring displacement is stored in canonical form (lower tag's perspective).
-    /// The bool flag is transient — set to false at start of step, true when contact is touched.
-    pub contacts: Vec<Vec<(u32, [f64; 3], bool)>>,
+    /// Per-atom list of (partner_tag, spring_displacement[7], active_flag).
+    pub contacts: Vec<Vec<(u32, [f64; 7], bool)>>,
 }
 
 impl ContactHistoryStore {
@@ -48,7 +51,7 @@ impl AtomData for ContactHistoryStore {
     }
 
     fn apply_permutation(&mut self, perm: &[usize], n: usize) {
-        let new_contacts: Vec<Vec<(u32, [f64; 3], bool)>> =
+        let new_contacts: Vec<Vec<(u32, [f64; 7], bool)>> =
             perm.iter().map(|&p| self.contacts[p].clone()).collect();
         self.contacts[..n].clone_from_slice(&new_contacts);
     }
@@ -62,6 +65,10 @@ impl AtomData for ContactHistoryStore {
                 buf.push(s[0]);
                 buf.push(s[1]);
                 buf.push(s[2]);
+                buf.push(s[3]);
+                buf.push(s[4]);
+                buf.push(s[5]);
+                buf.push(s[6]);
             }
         } else {
             buf.push(0.0); // no contacts
@@ -74,9 +81,12 @@ impl AtomData for ContactHistoryStore {
         let mut pos = 1;
         for _ in 0..count {
             let tag = buf[pos] as u32;
-            let s = [buf[pos + 1], buf[pos + 2], buf[pos + 3]];
+            let s = [
+                buf[pos + 1], buf[pos + 2], buf[pos + 3],
+                buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7],
+            ];
             list.push((tag, s, false));
-            pos += 4;
+            pos += 8;
         }
         self.contacts.push(list);
         pos
@@ -197,7 +207,7 @@ pub fn mindlin_tangential_force(
                 .position(|(t, _, _)| *t == tag_j);
             let stored = match entry_idx {
                 Some(idx) => history.contacts[i][idx].1,
-                None => [0.0; 3],
+                None => [0.0; 7],
             };
 
             let mut sx = sign * stored[0];
@@ -248,7 +258,8 @@ pub fn mindlin_tangential_force(
             dem.torque[j][2] += tj_z;
 
             // Store updated spring back (canonical form) and mark active
-            let new_spring = [sign * sx, sign * sy, sign * sz];
+            // Only tangential spring is used in standalone mode; rolling/twisting slots zeroed.
+            let new_spring = [sign * sx, sign * sy, sign * sz, 0.0, 0.0, 0.0, 0.0];
             match entry_idx {
                 Some(idx) => {
                     history.contacts[i][idx].1 = new_spring;

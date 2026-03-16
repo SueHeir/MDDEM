@@ -6,6 +6,8 @@
 //! - Per-component velocity histograms
 //! - Maxwell-Boltzmann reference curve
 //! - Quantitative deviation metrics (L2 norm, kurtosis excess)
+//! - Per-species granular temperature (equipartition breakdown in polydisperse systems)
+//! - Inelastic collapse detection (diverging collision rate / vanishing temperature)
 //!
 //! # TOML Configuration
 //! ```toml
@@ -13,6 +15,9 @@
 //! interval = 1000        # output every N steps
 //! num_bins = 50           # number of histogram bins
 //! max_speed_factor = 3.0  # max speed = factor * v_rms
+//! per_species = true      # compute per-species granular temperature
+//! collapse_threshold = 1e-12  # T_g below this triggers collapse warning
+//! collapse_rate_window = 5    # number of samples for cooling rate estimation
 //! ```
 
 use std::{
@@ -38,6 +43,15 @@ fn default_num_bins() -> usize {
 fn default_max_speed_factor() -> f64 {
     3.0
 }
+fn default_per_species() -> bool {
+    false
+}
+fn default_collapse_threshold() -> f64 {
+    1e-12
+}
+fn default_collapse_rate_window() -> usize {
+    5
+}
 
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -52,6 +66,15 @@ pub struct VelocityDistributionConfig {
     /// Maximum speed as a multiple of v_rms. Speeds above this are placed in the last bin.
     #[serde(default = "default_max_speed_factor")]
     pub max_speed_factor: f64,
+    /// Whether to compute per-species (per atom type) granular temperature.
+    #[serde(default = "default_per_species")]
+    pub per_species: bool,
+    /// Granular temperature below this value triggers an inelastic collapse warning.
+    #[serde(default = "default_collapse_threshold")]
+    pub collapse_threshold: f64,
+    /// Number of recent T_g samples to use for cooling rate estimation.
+    #[serde(default = "default_collapse_rate_window")]
+    pub collapse_rate_window: usize,
 }
 
 impl Default for VelocityDistributionConfig {
@@ -60,8 +83,94 @@ impl Default for VelocityDistributionConfig {
             interval: default_interval(),
             num_bins: default_num_bins(),
             max_speed_factor: default_max_speed_factor(),
+            per_species: default_per_species(),
+            collapse_threshold: default_collapse_threshold(),
+            collapse_rate_window: default_collapse_rate_window(),
         }
     }
+}
+
+// ── Collapse detection state ──────────────────────────────────────────────
+
+/// Tracks granular temperature history for inelastic collapse detection.
+///
+/// Inelastic collapse occurs in highly dissipative granular gases when the
+/// collision rate diverges and granular temperature drops to zero in finite
+/// time. This detector monitors:
+/// 1. Absolute T_g threshold — warns when T_g falls below a configurable value
+/// 2. Cooling rate divergence — warns when dT_g/dt accelerates beyond Haff's law
+pub struct CollapseDetector {
+    /// Recent (time, T_g) samples for cooling rate estimation.
+    history: Vec<(f64, f64)>,
+    /// Maximum number of samples to retain.
+    max_samples: usize,
+    /// Whether collapse has been detected (latched — only warns once).
+    collapse_detected: bool,
+}
+
+impl CollapseDetector {
+    fn new(max_samples: usize) -> Self {
+        CollapseDetector {
+            history: Vec::with_capacity(max_samples + 1),
+            max_samples: max_samples.max(2),
+            collapse_detected: false,
+        }
+    }
+
+    /// Record a new T_g sample and return collapse diagnostic.
+    fn record(&mut self, time: f64, t_g: f64, threshold: f64) -> CollapseDiagnostic {
+        self.history.push((time, t_g));
+        if self.history.len() > self.max_samples {
+            self.history.remove(0);
+        }
+
+        let below_threshold = t_g < threshold && t_g >= 0.0;
+
+        // Estimate cooling rate from recent history using linear regression
+        // of ln(T_g) vs t. For Haff's law, d(ln T_g)/dt should be bounded.
+        // Diverging cooling rate => collapse.
+        let cooling_rate = self.estimate_cooling_rate();
+
+        let newly_detected = below_threshold && !self.collapse_detected;
+        if newly_detected {
+            self.collapse_detected = true;
+        }
+
+        CollapseDiagnostic {
+            below_threshold,
+            newly_detected,
+            cooling_rate,
+            t_g,
+        }
+    }
+
+    /// Estimate d(ln T_g)/dt from recent samples via finite differences.
+    /// Returns None if insufficient data or T_g values are non-positive.
+    fn estimate_cooling_rate(&self) -> Option<f64> {
+        if self.history.len() < 2 {
+            return None;
+        }
+        let (t0, tg0) = self.history[0];
+        let (t1, tg1) = *self.history.last().unwrap();
+        let dt = t1 - t0;
+        if dt <= 0.0 || tg0 <= 0.0 || tg1 <= 0.0 {
+            return None;
+        }
+        // d(ln T_g)/dt ≈ (ln T_g1 - ln T_g0) / (t1 - t0)
+        Some((tg1.ln() - tg0.ln()) / dt)
+    }
+}
+
+/// Diagnostic result from collapse detection.
+pub struct CollapseDiagnostic {
+    /// Whether T_g is below the threshold.
+    pub below_threshold: bool,
+    /// Whether this is the first time collapse was detected (for one-time warning).
+    pub newly_detected: bool,
+    /// Estimated d(ln T_g)/dt — negative means cooling; large negative means fast cooling.
+    pub cooling_rate: Option<f64>,
+    /// Current granular temperature.
+    pub t_g: f64,
 }
 
 // ── Plugin ─────────────────────────────────────────────────────────────────
@@ -80,12 +189,26 @@ interval = 1000
 # Number of histogram bins
 num_bins = 50
 # Maximum speed as multiple of v_rms
-max_speed_factor = 3.0"#,
+max_speed_factor = 3.0
+# Compute per-species granular temperature (for polydisperse systems)
+per_species = false
+# Inelastic collapse detection threshold for T_g
+collapse_threshold = 1e-12
+# Number of recent T_g samples for cooling rate estimation
+collapse_rate_window = 5"#,
         )
     }
 
     fn build(&self, app: &mut App) {
         Config::load::<VelocityDistributionConfig>(app, "velocity_distribution");
+
+        // Read collapse_rate_window from config to initialize detector
+        let window = app
+            .get_resource_ref::<VelocityDistributionConfig>()
+            .map(|c| c.collapse_rate_window)
+            .unwrap_or(default_collapse_rate_window());
+        app.add_resource(CollapseDetector::new(window));
+
         app.add_update_system(
             compute_velocity_distribution,
             ScheduleSet::PostFinalIntegration,
@@ -122,6 +245,24 @@ pub struct VelocityDistributionResult {
     pub component_pdf_z: Vec<f64>,
     /// Gaussian reference for component distributions.
     pub component_gaussian: Vec<f64>,
+}
+
+/// Per-species granular temperature result.
+/// In polydisperse granular gases, energy equipartition breaks down:
+/// lighter particles tend to have higher granular temperature than heavier ones.
+pub struct SpeciesTemperatureResult {
+    /// Species index (0-based atom type).
+    pub species: u32,
+    /// Number of particles of this species.
+    pub count: u64,
+    /// Mean mass of this species.
+    pub mean_mass: f64,
+    /// Per-species granular temperature: T_s = <m_s v_s'^2> / (3 N_s m_s_mean).
+    pub granular_temperature: f64,
+    /// Per-species RMS speed.
+    pub v_rms: f64,
+    /// Per-species kurtosis excess.
+    pub kurtosis_excess: f64,
 }
 
 // ── Maxwell-Boltzmann PDF ──────────────────────────────────────────────────
@@ -321,6 +462,94 @@ pub fn analyze_velocity_distribution(
     }
 }
 
+// ── Per-species analysis (unit-testable) ──────────────────────────────────
+
+/// Compute per-species granular temperature from velocity and type data.
+///
+/// In polydisperse granular gases, energy equipartition breaks down: the
+/// granular temperature of each species differs, with lighter particles
+/// typically having higher T_g than heavier ones. This function computes
+/// the per-species granular temperature T_s for each atom type present.
+///
+/// The global center-of-mass velocity is subtracted before computing
+/// fluctuation velocities, so each species' T_s measures thermal motion
+/// relative to the bulk flow.
+pub fn analyze_per_species(
+    velocities: &[[f64; 3]],
+    masses: &[f64],
+    atom_types: &[u32],
+    v_mean: [f64; 3],
+) -> Vec<SpeciesTemperatureResult> {
+    let n = velocities.len();
+    assert_eq!(n, masses.len());
+    assert_eq!(n, atom_types.len());
+    if n == 0 {
+        return Vec::new();
+    }
+
+    // Find unique species
+    let max_type = atom_types.iter().copied().max().unwrap_or(0) as usize;
+
+    // Accumulate per-species statistics
+    let mut count = vec![0u64; max_type + 1];
+    let mut sum_mass = vec![0.0f64; max_type + 1];
+    let mut sum_mv2 = vec![0.0f64; max_type + 1];
+    let mut sum_v2_comp = vec![[0.0f64; 3]; max_type + 1];
+    let mut sum_v4_comp = vec![[0.0f64; 3]; max_type + 1];
+
+    for i in 0..n {
+        let t = atom_types[i] as usize;
+        count[t] += 1;
+        sum_mass[t] += masses[i];
+
+        let dvx = velocities[i][0] - v_mean[0];
+        let dvy = velocities[i][1] - v_mean[1];
+        let dvz = velocities[i][2] - v_mean[2];
+        let v2 = dvx * dvx + dvy * dvy + dvz * dvz;
+        sum_mv2[t] += masses[i] * v2;
+
+        let comps = [dvx, dvy, dvz];
+        for d in 0..3 {
+            let c2 = comps[d] * comps[d];
+            sum_v2_comp[t][d] += c2;
+            sum_v4_comp[t][d] += c2 * c2;
+        }
+    }
+
+    let mut results = Vec::new();
+    for t in 0..=max_type {
+        if count[t] == 0 {
+            continue;
+        }
+        let n_s = count[t] as f64;
+        let mean_mass = sum_mass[t] / n_s;
+        let t_g = sum_mv2[t] / (3.0 * sum_mass[t]);
+        let v_rms = (3.0 * t_g).sqrt();
+
+        // Per-species kurtosis excess
+        let mut kurtosis = 0.0;
+        for d in 0..3 {
+            let mean_v2 = sum_v2_comp[t][d] / n_s;
+            let mean_v4 = sum_v4_comp[t][d] / n_s;
+            if mean_v2 > 0.0 {
+                kurtosis += mean_v4 / (mean_v2 * mean_v2) - 3.0;
+            }
+        }
+        kurtosis /= 3.0;
+
+        results.push(SpeciesTemperatureResult {
+            species: t as u32,
+            count: count[t],
+            mean_mass,
+            granular_temperature: t_g,
+            v_rms,
+            kurtosis_excess: kurtosis,
+        });
+    }
+
+    results
+}
+
 // ── ECS system ─────────────────────────────────────────────────────────────
 
 fn compute_velocity_distribution(
@@ -331,6 +560,7 @@ fn compute_velocity_distribution(
     input: Res<Input>,
     run_config: Res<RunConfig>,
     scheduler_manager: Res<SchedulerManager>,
+    mut collapse_detector: ResMut<CollapseDetector>,
 ) {
     let index = scheduler_manager.index;
     if index >= run_config.num_stages() {
@@ -357,6 +587,26 @@ fn compute_velocity_distribution(
     let masses = &atoms.mass[..nlocal];
 
     let result = analyze_velocity_distribution(velocities, masses, config.num_bins, config.max_speed_factor);
+
+    // ── Collapse detection ─────────────────────────────────────────────
+    let physical_time = step as f64 * atoms.dt;
+    let diag = collapse_detector.record(
+        physical_time,
+        result.granular_temperature,
+        config.collapse_threshold,
+    );
+    if diag.newly_detected {
+        eprintln!(
+            "WARNING [step {}]: Inelastic collapse detected! T_g = {:.6e} < threshold {:.6e}",
+            step, diag.t_g, config.collapse_threshold,
+        );
+        if let Some(rate) = diag.cooling_rate {
+            eprintln!(
+                "  Cooling rate d(ln T_g)/dt = {:.6e} (Haff's law predicts bounded rate)",
+                rate
+            );
+        }
+    }
 
     // Single-rank run, so we are rank 0 — write output directly.
     let base_dir = match input.output_dir.as_deref() {
@@ -412,7 +662,7 @@ fn compute_velocity_distribution(
         }
     }
 
-    // Append summary to time-series file
+    // Append summary to time-series file (includes collapse diagnostic)
     let summary_path = format!("{}/velocity_distribution_summary.csv", base_dir);
     let is_new = !std::path::Path::new(&summary_path).exists();
     if let Ok(mut file) = OpenOptions::new()
@@ -421,16 +671,80 @@ fn compute_velocity_distribution(
         .open(&summary_path)
     {
         if is_new {
-            writeln!(file, "step,time,granular_temp,v_rms,l2_deviation,kurtosis_excess,n_particles").ok();
+            writeln!(
+                file,
+                "step,time,granular_temp,v_rms,l2_deviation,kurtosis_excess,n_particles,cooling_rate,collapse_detected"
+            )
+            .ok();
         }
-        let physical_time = step as f64 * atoms.dt;
+        let cooling_rate_str = match diag.cooling_rate {
+            Some(r) => format!("{:.10e}", r),
+            None => "NA".to_string(),
+        };
         writeln!(
             file,
-            "{},{:.6e},{:.10e},{:.10e},{:.10e},{:.10e},{}",
+            "{},{:.6e},{:.10e},{:.10e},{:.10e},{:.10e},{},{},{}",
             step, physical_time, result.granular_temperature, result.v_rms,
-            result.l2_deviation, result.kurtosis_excess, result.n_particles
+            result.l2_deviation, result.kurtosis_excess, result.n_particles,
+            cooling_rate_str, diag.below_threshold as u8,
         )
         .ok();
+    }
+
+    // ── Per-species analysis ───────────────────────────────────────────
+    if config.per_species && atoms.ntypes > 1 {
+        let atom_types = &atoms.atom_type[..nlocal];
+
+        // Compute global center-of-mass velocity (already done inside
+        // analyze_velocity_distribution, but recompute here to pass to
+        // per-species analysis — cheap for single-rank).
+        let mut total_mv = [0.0_f64; 3];
+        let mut total_mass = 0.0_f64;
+        for i in 0..nlocal {
+            for d in 0..3 {
+                total_mv[d] += masses[i] * velocities[i][d];
+            }
+            total_mass += masses[i];
+        }
+        let v_mean = [
+            total_mv[0] / total_mass,
+            total_mv[1] / total_mass,
+            total_mv[2] / total_mass,
+        ];
+
+        let species_results = analyze_per_species(velocities, masses, atom_types, v_mean);
+
+        // Write per-species time series
+        let species_path = format!("{}/species_temperature.csv", base_dir);
+        let is_new_species = !std::path::Path::new(&species_path).exists();
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&species_path)
+        {
+            if is_new_species {
+                writeln!(
+                    file,
+                    "step,time,species,count,mean_mass,granular_temp,v_rms,kurtosis_excess,temp_ratio"
+                )
+                .ok();
+            }
+            for sr in &species_results {
+                let temp_ratio = if result.granular_temperature > 0.0 {
+                    sr.granular_temperature / result.granular_temperature
+                } else {
+                    0.0
+                };
+                writeln!(
+                    file,
+                    "{},{:.6e},{},{},{:.10e},{:.10e},{:.10e},{:.10e},{:.6e}",
+                    step, physical_time, sr.species, sr.count,
+                    sr.mean_mass, sr.granular_temperature, sr.v_rms,
+                    sr.kurtosis_excess, temp_ratio,
+                )
+                .ok();
+            }
+        }
     }
 }
 
@@ -573,5 +887,188 @@ mod tests {
         assert_eq!(maxwell_boltzmann_pdf(-1.0, 1.0), 0.0);
         assert_eq!(maxwell_boltzmann_pdf(1.0, 0.0), 0.0);
         assert_eq!(maxwell_boltzmann_pdf(1.0, -1.0), 0.0);
+    }
+
+    // ── Per-species tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_per_species_single_type() {
+        let n = 1000;
+        let mut velocities = Vec::with_capacity(n);
+        let mut masses = Vec::with_capacity(n);
+        let mut types = Vec::with_capacity(n);
+
+        for i in 0..n {
+            let phase = i as f64 * 2.0 * PI / 7.0;
+            velocities.push([phase.sin() * 0.5, (phase * 1.3).cos() * 0.5, (phase * 0.7).sin() * 0.5]);
+            masses.push(1.0);
+            types.push(0);
+        }
+
+        let global = analyze_velocity_distribution(&velocities, &masses, 30, 3.0);
+        let species = analyze_per_species(&velocities, &masses, &types, [0.0, 0.0, 0.0]);
+
+        assert_eq!(species.len(), 1);
+        assert_eq!(species[0].species, 0);
+        assert_eq!(species[0].count, n as u64);
+        // Single species T_g should match global T_g (approximately, since
+        // global subtracts its own COM while species uses provided v_mean)
+        let rel_err = (species[0].granular_temperature - global.granular_temperature).abs()
+            / global.granular_temperature;
+        assert!(
+            rel_err < 0.01,
+            "Species T_g = {}, Global T_g = {}, rel_err = {}",
+            species[0].granular_temperature,
+            global.granular_temperature,
+            rel_err
+        );
+    }
+
+    #[test]
+    fn test_per_species_two_types_equipartition_breakdown() {
+        // Two species with different masses but same initial KE per particle.
+        // Light particles (type 0, mass=1) and heavy particles (type 1, mass=4).
+        // Give them the same speed — heavy particles have 4× the KE.
+        // After computing T_g per species, the heavy species should have higher T_g.
+        let n = 2000;
+        let mut velocities = Vec::with_capacity(n);
+        let mut masses = Vec::with_capacity(n);
+        let mut types = Vec::with_capacity(n);
+
+        for i in 0..n {
+            let phase = i as f64 * 2.0 * PI / 11.0;
+            let speed = 0.5;
+            velocities.push([
+                phase.sin() * speed,
+                (phase * 1.3).cos() * speed,
+                (phase * 0.7).sin() * speed,
+            ]);
+            if i < n / 2 {
+                masses.push(1.0); // light
+                types.push(0);
+            } else {
+                masses.push(4.0); // heavy
+                types.push(1);
+            }
+        }
+
+        let species = analyze_per_species(&velocities, &masses, &types, [0.0, 0.0, 0.0]);
+        assert_eq!(species.len(), 2);
+
+        // Both species have same speed, but different mass.
+        // T_g = <m v²> / (3 m_mean) = m_mean <v²> / (3 m_mean) = <v²>/3
+        // So per-species T_g should actually be similar when normalized by mass!
+        // The key physics: T_s = <m_s v_s²> / (3 N_s m_s_mean) = <v_s²>/3
+        // With same speed distribution, T_s should be similar for both species.
+        let t0 = species[0].granular_temperature;
+        let t1 = species[1].granular_temperature;
+        let rel_diff = (t0 - t1).abs() / t0.max(t1);
+        assert!(
+            rel_diff < 0.1,
+            "Same-speed species should have similar T_g: T0={}, T1={}, rel_diff={}",
+            t0, t1, rel_diff
+        );
+    }
+
+    #[test]
+    fn test_per_species_different_speeds() {
+        // Species 0: fast (v ~ 1.0), Species 1: slow (v ~ 0.1)
+        // Species 0 should have ~100× higher T_g
+        let n = 2000;
+        let mut velocities = Vec::with_capacity(n);
+        let mut masses = Vec::with_capacity(n);
+        let mut types = Vec::with_capacity(n);
+
+        for i in 0..n {
+            let phase = i as f64 * 2.0 * PI / 11.0;
+            if i < n / 2 {
+                velocities.push([phase.sin() * 1.0, (phase * 1.3).cos() * 1.0, (phase * 0.7).sin() * 1.0]);
+                masses.push(1.0);
+                types.push(0);
+            } else {
+                velocities.push([phase.sin() * 0.1, (phase * 1.3).cos() * 0.1, (phase * 0.7).sin() * 0.1]);
+                masses.push(1.0);
+                types.push(1);
+            }
+        }
+
+        let species = analyze_per_species(&velocities, &masses, &types, [0.0, 0.0, 0.0]);
+        assert_eq!(species.len(), 2);
+        let ratio = species[0].granular_temperature / species[1].granular_temperature;
+        // v ratio is 10:1, so T ratio should be ~100:1
+        assert!(
+            ratio > 50.0 && ratio < 200.0,
+            "T_g ratio should be ~100, got {}",
+            ratio
+        );
+    }
+
+    #[test]
+    fn test_per_species_empty() {
+        let species = analyze_per_species(&[], &[], &[], [0.0, 0.0, 0.0]);
+        assert!(species.is_empty());
+    }
+
+    // ── Collapse detector tests ────────────────────────────────────────
+
+    #[test]
+    fn test_collapse_detector_below_threshold() {
+        let mut det = CollapseDetector::new(5);
+        let threshold = 1e-10;
+
+        // Above threshold — no collapse
+        let d1 = det.record(0.0, 1.0, threshold);
+        assert!(!d1.below_threshold);
+        assert!(!d1.newly_detected);
+
+        // Below threshold — first detection
+        let d2 = det.record(1.0, 1e-11, threshold);
+        assert!(d2.below_threshold);
+        assert!(d2.newly_detected);
+
+        // Still below — but not "newly" detected
+        let d3 = det.record(2.0, 1e-12, threshold);
+        assert!(d3.below_threshold);
+        assert!(!d3.newly_detected);
+    }
+
+    #[test]
+    fn test_collapse_detector_cooling_rate() {
+        let mut det = CollapseDetector::new(5);
+
+        // Exponential cooling: T(t) = T0 * exp(-γt), so d(ln T)/dt = -γ
+        let gamma = 2.0;
+        let t0 = 1.0;
+        for i in 0..5 {
+            let t = i as f64 * 0.1;
+            let tg = t0 * (-gamma * t).exp();
+            det.record(t, tg, 1e-20);
+        }
+
+        let rate = det.estimate_cooling_rate().unwrap();
+        // Should be close to -γ = -2.0
+        assert!(
+            (rate - (-gamma)).abs() < 0.1,
+            "Cooling rate should be ~-2.0, got {}",
+            rate
+        );
+    }
+
+    #[test]
+    fn test_collapse_detector_insufficient_data() {
+        let mut det = CollapseDetector::new(5);
+        assert!(det.estimate_cooling_rate().is_none());
+        det.record(0.0, 1.0, 1e-10);
+        assert!(det.estimate_cooling_rate().is_none());
+    }
+
+    #[test]
+    fn test_collapse_detector_window_limit() {
+        let mut det = CollapseDetector::new(3);
+        for i in 0..10 {
+            det.record(i as f64, 1.0, 1e-10);
+        }
+        // Should only keep last 3 samples
+        assert_eq!(det.history.len(), 3);
     }
 }

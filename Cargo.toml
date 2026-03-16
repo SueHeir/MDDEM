@@ -91,6 +91,10 @@ name = "granular_gas_vdist"
 path = "examples/granular_gas_vdist/main.rs"
 
 [[example]]
+name = "granular_gas_polydisperse"
+path = "examples/granular_gas_polydisperse/main.rs"
+
+[[example]]
 name = "polymer_chain"
 path = "examples/polymer_chain/main.rs"
 
@@ -98,6 +102,29 @@ path = "examples/polymer_chain/main.rs"
 name = "dem_triaxial"
 path = "examples/dem_triaxial/main.rs"
 
+[[example]]
+name = "shrink_wrap_demo"
+path = "examples/shrink_wrap_demo/main.rs"
+
+[[example]]
+name = "dem_benchmark"
+path = "examples/dem_benchmark/main.rs"
+
+[[example]]
+name = "polymer_melt"
+path = "examples/polymer_melt/main.rs"
+
+[[example]]
+name = "lj_binary"
+path = "examples/lj_binary/main.rs"
+
+[[example]]
+name = "example_template"
+path = "examples/example_template/main.rs"
+
+[[example]]
+name = "cone_hopper"
+path = "examples/cone_hopper/main.rs"
 
 [profile.release]
 opt-level = 3
@@ -109,6 +136,7 @@ panic = "abort"
 mddem = { path = "./crates/mddem", default-features = false }
 dem_measure_plane = { path = "./crates/dem_measure_plane" }
 md_type_rdf = { path = "./crates/md_type_rdf" }
+md_msd = { path = "./crates/md_msd" }
 mddem_derive = { path = "./crates/mddem_derive" }
 mddem_fire = { path = "./crates/mddem_fire" }
 mddem_velocity_distribution = { path = "./crates/mddem_velocity_distribution" }

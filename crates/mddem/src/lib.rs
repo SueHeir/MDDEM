@@ -4,6 +4,7 @@
 
 pub use dem_atom;
 pub use dem_bond;
+pub use dem_contact_analysis;
 pub use dem_measure_plane;
 pub use dem_granular;
 pub use dem_thermal;
@@ -13,6 +14,7 @@ pub use md_lattice;
 pub use md_lj;
 pub use md_bond;
 pub use md_measure;
+pub use md_msd;
 pub use md_type_rdf;
 pub use md_polymer;
 pub use md_thermostat;
@@ -98,12 +100,14 @@ pub mod prelude {
     pub use mddem_velocity_distribution::VelocityDistributionPlugin;
     pub use mddem_fixes::{GravityConfig, GravityPlugin};
     pub use dem_thermal::{ThermalConfig, ThermalPlugin};
+    pub use dem_contact_analysis::{ContactAnalysisConfig, ContactAnalysisPlugin};
     pub use dem_measure_plane::{MeasurePlaneDef, MeasurePlanePlugin, MeasurePlanes};
     pub use dem_wall::{WallDef, WallPlane, WallPlugin, Walls};
     pub use md_lattice::{LatticeConfig, LatticePlugin};
     pub use md_lj::{LJConfig, LJForcePlugin, LJPairTable, LJTailCorrections};
     pub use md_bond::{MdBondConfig, MdBondPlugin};
     pub use md_measure::{MeasureConfig, MeasurePlugin};
+    pub use md_msd::{MsdConfig, TypeMsdPlugin};
     pub use md_type_rdf::{TypeRdfConfig, TypeRdfPlugin};
     pub use md_polymer::{ChainStatsConfig, ChainStatsPlugin, PolymerConfig, PolymerInitConfig, PolymerInitPlugin, PolymerPlugin};
     pub use md_thermostat::{LangevinConfig, LangevinPlugin, LangevinState, NoseHooverPlugin, NoseHooverState, ThermostatConfig};

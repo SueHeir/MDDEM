@@ -41,6 +41,15 @@ pub struct LatticeConfig {
     /// Interaction skin distance (neighbor list cutoff parameter).
     #[serde(default = "default_skin")]
     pub skin: f64,
+    /// Cumulative type fractions for multi-type initialization.
+    /// E.g., `[0.8, 1.0]` → 80% type 0, 20% type 1.
+    /// If absent or empty, all atoms are type 0.
+    #[serde(default)]
+    pub type_fractions: Option<Vec<f64>>,
+    /// Per-type masses. If present, overrides the global `mass` for each type.
+    /// Index corresponds to atom type (0, 1, 2, ...).
+    #[serde(default)]
+    pub type_masses: Option<Vec<f64>>,
 }
 
 fn default_style() -> String {
@@ -55,6 +64,8 @@ impl Default for LatticeConfig {
             temperature: 0.85,
             mass: 1.0,
             skin: 1.25,
+            type_fractions: None,
+            type_masses: None,
         }
     }
 }
@@ -150,9 +161,42 @@ pub fn fcc_insert(
     let y0 = domain.boundaries_low[1];
     let z0 = domain.boundaries_low[2];
 
+    // Build cumulative fraction thresholds for type assignment
+    let fractions: Vec<f64> = match &lattice.type_fractions {
+        Some(f) if !f.is_empty() => f.clone(),
+        _ => vec![1.0], // all type 0
+    };
+
+    // Build per-type mass table
+    let type_masses: Vec<f64> = match &lattice.type_masses {
+        Some(m) if !m.is_empty() => m.clone(),
+        _ => vec![mass; fractions.len()],
+    };
+
     let mut max_tag = atom.get_max_tag();
     let start_idx = atom.len();
 
+    // Count total atoms first, then assign types deterministically
+    let total_to_insert = 4 * nx * ny * nz;
+    // Precompute type assignments based on cumulative fractions
+    let mut type_counts = vec![0usize; fractions.len()];
+    let mut type_assignments = Vec::with_capacity(total_to_insert);
+    for idx in 0..total_to_insert {
+        let frac = (idx as f64 + 0.5) / total_to_insert as f64;
+        let mut atype = 0u32;
+        for (t, &threshold) in fractions.iter().enumerate() {
+            if frac < threshold {
+                atype = t as u32;
+                break;
+            }
+            // If past last threshold, use last type
+            atype = t as u32;
+        }
+        type_assignments.push(atype);
+        type_counts[atype as usize] += 1;
+    }
+
+    let mut atom_idx = 0usize;
     for ix in 0..nx {
         for iy in 0..ny {
             for iz in 0..nz {
@@ -161,19 +205,23 @@ pub fn fcc_insert(
                     let y = y0 + (iy as f64 + b[1]) * ay;
                     let z = z0 + (iz as f64 + b[2]) * az;
 
+                    let atype = type_assignments[atom_idx];
+                    let m = type_masses.get(atype as usize).copied().unwrap_or(mass);
+
                     atom.tag.push(max_tag);
-                    atom.atom_type.push(0);
+                    atom.atom_type.push(atype);
                     atom.origin_index.push(0);
                     atom.pos.push([x, y, z]);
                     atom.vel.push([0.0; 3]);
                     atom.force.push([0.0; 3]);
-                    atom.mass.push(mass);
-                    atom.inv_mass.push(1.0 / mass);
+                    atom.mass.push(m);
+                    atom.inv_mass.push(1.0 / m);
                     atom.cutoff_radius.push(lattice.skin);
                     atom.is_ghost.push(false);
                     max_tag += 1;
                     atom.nlocal += 1;
                     atom.natoms += 1;
+                    atom_idx += 1;
                 }
             }
         }
@@ -181,20 +229,21 @@ pub fn fcc_insert(
 
     let n_inserted = atom.len() - start_idx;
 
-    // Assign Maxwell-Boltzmann velocities
-    if mass <= 0.0 {
-        eprintln!("ERROR: lattice mass must be positive, got {}", mass);
-        std::process::exit(1);
-    }
+    // Assign Maxwell-Boltzmann velocities (per-atom mass-dependent)
     if temp < 0.0 {
         eprintln!("ERROR: lattice temperature must be non-negative, got {}", temp);
         std::process::exit(1);
     }
-    let sigma_v = (temp / mass).sqrt();
-    let normal = Normal::new(0.0, sigma_v).unwrap();
     let mut rng = rand::rng();
 
     for i in start_idx..atom.len() {
+        let m = atom.mass[i];
+        if m <= 0.0 {
+            eprintln!("ERROR: lattice mass must be positive, got {}", m);
+            std::process::exit(1);
+        }
+        let sigma_v = (temp / m).sqrt();
+        let normal = Normal::new(0.0, sigma_v).unwrap();
         atom.vel[i][0] = normal.sample(&mut rng);
         atom.vel[i][1] = normal.sample(&mut rng);
         atom.vel[i][2] = normal.sample(&mut rng);
@@ -225,7 +274,7 @@ pub fn fcc_insert(
     if ndof > 0.0 {
         let mut ke = 0.0;
         for i in start_idx..atom.len() {
-            ke += mass
+            ke += atom.mass[i]
                 * (atom.vel[i][0].powi(2) + atom.vel[i][1].powi(2) + atom.vel[i][2].powi(2));
         }
         ke *= 0.5;
@@ -251,6 +300,16 @@ pub fn fcc_insert(
         az,
         n_inserted as f64 / domain.volume
     );
+    if fractions.len() > 1 {
+        for (t, &count) in type_counts.iter().enumerate() {
+            println!(
+                "  Type {}: {} atoms ({:.1}%)",
+                t,
+                count,
+                100.0 * count as f64 / n_inserted as f64
+            );
+        }
+    }
 }
 
 /// Set timestep for LJ reduced units (default dt=0.005)
@@ -282,6 +341,8 @@ mod tests {
             temperature: 0.85,
             mass: 1.0,
             skin: 1.25,
+            type_fractions: None,
+            type_masses: None,
         };
         app.add_resource(lattice);
 
