@@ -1,12 +1,11 @@
 [package]
-name = "md_thermostat"
+name = "md_msd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-readme = "README.md"
-description = "Nose-Hoover NVT thermostat for MDDEM"
-keywords = ["thermostat", "nose-hoover", "nvt", "molecular-dynamics"]
+description = "Per-type mean-squared displacement (MSD) plugin for MDDEM with diffusion coefficient output"
+keywords = ["msd", "diffusion", "molecular-dynamics", "simulation"]
 categories = ["simulation", "science"]
 
 [dependencies]
@@ -14,9 +13,3 @@ mddem_core = { path = "../mddem_core", version = "0.1.3", default-features = fal
 mddem_app = { path = "../mddem_app", version = "0.1.3" }
 mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.3" }
 serde = { version = "1", features = ["derive"] }
-rand = "0.9"
-rand_chacha = "0.9"
-
-[dev-dependencies]
-mddem_test_utils = { path = "../mddem_test_utils", version = "0.1.3" }
-mddem_verlet = { path = "../mddem_verlet", version = "0.1.3" }

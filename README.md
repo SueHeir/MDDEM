@@ -221,6 +221,7 @@ cargo run --release -- config.toml --schedule
 | [hopper](examples/hopper/) | 2D slot hopper with named stages (`StageEnum`), KE-based state transitions | `cargo run --example hopper -- examples/hopper/config.toml` |
 | [dem_compression](examples/dem_compression/) | 3-stage DEM compression (insert → relax → compress) with per-stage config overrides | `cargo run --example dem_compression -- examples/dem_compression/config.toml` |
 | [bond_basic](examples/bond_basic/) | Bonded particle model with auto-bonding and breakage | `cargo run --example bond_basic -- examples/bond_basic/config.toml` |
+| [dem_benchmark](examples/dem_benchmark/) | 10k-particle DEM performance benchmark (steps/second) | `cargo run --release --example dem_benchmark -- examples/dem_benchmark/config.toml` |
 | [fire_packing](examples/fire_packing/) | FIRE energy minimization for particle packing | `cargo run --example fire_packing -- examples/fire_packing/config.toml` |
 | [lj_argon](examples/lj_argon/) | LJ fluid validated against liquid Argon (RDF, MSD, pressure) | `cargo run --release --example lj_argon -- examples/lj_argon/config.toml` |
 | [lj_langevin](examples/lj_langevin/) | LJ fluid with Langevin thermostat | `cargo run --release --example lj_langevin -- examples/lj_langevin/config.toml` |

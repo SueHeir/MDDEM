@@ -24,7 +24,9 @@ macro_rules! register_atom_data {
     ($app:expr, $value:expr) => {
         if let Some(cell) = $app.get_mut_resource(::std::any::TypeId::of::<$crate::AtomDataRegistry>()) {
             let mut binder = cell.borrow_mut();
-            binder.downcast_mut::<$crate::AtomDataRegistry>().unwrap().register($value);
+            binder.downcast_mut::<$crate::AtomDataRegistry>()
+                .expect("Failed to downcast AtomDataRegistry — this is a bug in MDDEM")
+                .register($value);
         } else {
             panic!("AtomDataRegistry not found — AtomPlugin must be added first");
         }
