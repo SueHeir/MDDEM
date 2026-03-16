@@ -87,6 +87,7 @@ pub struct MaterialTable {
     pub friction: Vec<f64>,
     pub restitution: Vec<f64>,
     pub rolling_friction: Vec<f64>,
+    pub twisting_friction: Vec<f64>,
     pub cohesion_energy: Vec<f64>,
     pub surface_energy: Vec<f64>,
     pub beta_ij: Vec<Vec<f64>>,
@@ -128,6 +129,7 @@ impl MaterialTable {
             friction: Vec::new(),
             restitution: Vec::new(),
             rolling_friction: Vec::new(),
+            twisting_friction: Vec::new(),
             cohesion_energy: Vec::new(),
             surface_energy: Vec::new(),
             beta_ij: Vec::new(),
@@ -170,6 +172,26 @@ impl MaterialTable {
         cohesion_energy: f64,
         surface_energy: f64,
     ) -> u32 {
+        self.add_material_extended(
+            name, youngs_mod, poisson_ratio, restitution, friction,
+            rolling_friction, cohesion_energy, surface_energy, 0.0, 0.0, 0.0,
+        )
+    }
+
+    pub fn add_material_extended(
+        &mut self,
+        name: &str,
+        youngs_mod: f64,
+        poisson_ratio: f64,
+        restitution: f64,
+        friction: f64,
+        rolling_friction: f64,
+        cohesion_energy: f64,
+        surface_energy: f64,
+        twisting_friction: f64,
+        kn: f64,
+        kt: f64,
+    ) -> u32 {
         if cohesion_energy > 0.0 && surface_energy > 0.0 {
             eprintln!(
                 "ERROR: material '{}' has both cohesion_energy and surface_energy > 0. Use only one.",
@@ -184,8 +206,11 @@ impl MaterialTable {
         self.restitution.push(restitution);
         self.friction.push(friction);
         self.rolling_friction.push(rolling_friction);
+        self.twisting_friction.push(twisting_friction);
         self.cohesion_energy.push(cohesion_energy);
         self.surface_energy.push(surface_energy);
+        self.kn.push(kn);
+        self.kt.push(kt);
         idx
     }
 
@@ -202,9 +227,21 @@ impl MaterialTable {
         self.surface_energy_ij = vec![vec![0.0; n]; n];
         self.e_eff_ij = vec![vec![0.0; n]; n];
         self.g_eff_ij = vec![vec![0.0; n]; n];
-        // Pad surface_energy if add_material (old API) was used
+        self.twisting_friction_ij = vec![vec![0.0; n]; n];
+        self.kn_ij = vec![vec![0.0; n]; n];
+        self.kt_ij = vec![vec![0.0; n]; n];
+        // Pad optional fields if old API was used
         while self.surface_energy.len() < n {
             self.surface_energy.push(0.0);
+        }
+        while self.twisting_friction.len() < n {
+            self.twisting_friction.push(0.0);
+        }
+        while self.kn.len() < n {
+            self.kn.push(0.0);
+        }
+        while self.kt.len() < n {
+            self.kt.push(0.0);
         }
         for i in 0..n {
             for j in 0..n {
@@ -228,6 +265,10 @@ impl MaterialTable {
                 self.surface_energy_ij[i][j] =
                     (self.surface_energy[i] * self.surface_energy[j]).sqrt();
 
+                // Geometric mean mixing for twisting friction
+                self.twisting_friction_ij[i][j] =
+                    (self.twisting_friction[i].max(0.0) * self.twisting_friction[j].max(0.0)).sqrt();
+
                 // Effective Young's modulus (Hertz)
                 let nu_i = self.poisson_ratio[i];
                 let nu_j = self.poisson_ratio[j];
@@ -239,6 +280,22 @@ impl MaterialTable {
                 self.g_eff_ij[i][j] = 1.0
                     / (2.0 * (2.0 - nu_i) * (1.0 + nu_i) / self.youngs_mod[i]
                         + 2.0 * (2.0 - nu_j) * (1.0 + nu_j) / self.youngs_mod[j]);
+
+                // Harmonic mean mixing for Hooke stiffness
+                let ki = self.kn[i];
+                let kj = self.kn[j];
+                self.kn_ij[i][j] = if ki > 0.0 && kj > 0.0 {
+                    2.0 * ki * kj / (ki + kj)
+                } else {
+                    0.0
+                };
+                let kti = self.kt[i];
+                let ktj = self.kt[j];
+                self.kt_ij[i][j] = if kti > 0.0 && ktj > 0.0 {
+                    2.0 * kti * ktj / (kti + ktj)
+                } else {
+                    0.0
+                };
             }
         }
     }
@@ -320,9 +377,11 @@ friction = 0.4
         // Build MaterialTable from config at plugin build time
         let mut material_table = MaterialTable::new();
 
+        material_table.contact_model = dem_config.contact_model.clone();
+
         if let Some(ref materials) = dem_config.materials {
             for mat in materials {
-                material_table.add_material_full(
+                material_table.add_material_extended(
                     &mat.name,
                     mat.youngs_mod,
                     mat.poisson_ratio,
@@ -331,6 +390,9 @@ friction = 0.4
                     mat.rolling_friction,
                     mat.cohesion_energy,
                     mat.surface_energy,
+                    mat.twisting_friction,
+                    mat.kn,
+                    mat.kt,
                 );
             }
             material_table.build_pair_tables();

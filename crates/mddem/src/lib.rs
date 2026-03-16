@@ -5,6 +5,7 @@
 pub use dem_atom;
 pub use dem_bond;
 pub use dem_granular;
+pub use dem_thermal;
 pub use dem_wall;
 pub use md_lattice;
 pub use md_lj;
@@ -89,12 +90,13 @@ pub mod prelude {
     pub use dem_bond::DemBondPlugin;
     pub use dem_granular::GranularDefaultPlugins;
     pub use mddem_fixes::{GravityConfig, GravityPlugin};
+    pub use dem_thermal::{ThermalConfig, ThermalPlugin};
     pub use dem_wall::{WallDef, WallPlane, WallPlugin, Walls};
     pub use md_lattice::{LatticeConfig, LatticePlugin};
     pub use md_lj::{LJConfig, LJForcePlugin, LJPairTable, LJTailCorrections};
     pub use md_measure::{MeasureConfig, MeasurePlugin};
     pub use md_thermostat::{LangevinConfig, LangevinPlugin, LangevinState, NoseHooverPlugin, NoseHooverState, ThermostatConfig};
-    pub use mddem_fixes::{AddForceDef, FixesPlugin, FixesRegistry, FreezeDef, MoveLinearDef, SetForceDef};
+    pub use mddem_fixes::{AddForceDef, FixesPlugin, FixesRegistry, FreezeDef, MoveLinearDef, SetForceDef, ViscousDef};
     pub use mddem_app::prelude::*;
     pub use mddem_derive::StageEnum;
     pub use mddem_core::*;

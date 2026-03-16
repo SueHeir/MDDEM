@@ -43,6 +43,12 @@ pub enum Region {
         point: [f64; 3],
         normal: [f64; 3],
     },
+    Union {
+        regions: Vec<Region>,
+    },
+    Intersect {
+        regions: Vec<Region>,
+    },
 }
 
 impl Region {
@@ -88,6 +94,8 @@ impl Region {
                 let dz = pos[2] - point[2];
                 dx * normal[0] + dy * normal[1] + dz * normal[2] >= 0.0
             }
+            Region::Union { regions } => regions.iter().any(|r| r.contains(pos)),
+            Region::Intersect { regions } => regions.iter().all(|r| r.contains(pos)),
         }
     }
 
@@ -142,6 +150,30 @@ impl Region {
             }
             Region::Plane { .. } => {
                 panic!("Cannot generate random point inside a Plane region (unbounded)");
+            }
+            Region::Union { regions } => {
+                if regions.is_empty() {
+                    panic!("Cannot generate random point inside empty Union");
+                }
+                // Pick a random child region and sample from it
+                loop {
+                    let idx = rng.random_range(0..regions.len());
+                    let pt = regions[idx].random_point_inside(rng);
+                    // Point from any child is valid for union
+                    return pt;
+                }
+            }
+            Region::Intersect { regions } => {
+                if regions.is_empty() {
+                    panic!("Cannot generate random point inside empty Intersect");
+                }
+                // Rejection sampling: sample from first child, accept if in all
+                loop {
+                    let pt = regions[0].random_point_inside(rng);
+                    if regions.iter().all(|r| r.contains(&pt)) {
+                        return pt;
+                    }
+                }
             }
         }
     }
@@ -310,6 +342,85 @@ mod tests {
             let p = r.random_point_inside(&mut rng);
             assert!(r.contains(&p), "random point {:?} not in Y-cylinder", p);
         }
+    }
+
+    #[test]
+    fn test_union_or_logic() {
+        let r = Region::Union {
+            regions: vec![
+                Region::Sphere { center: [0.0, 0.0, 0.0], radius: 1.0 },
+                Region::Sphere { center: [3.0, 0.0, 0.0], radius: 1.0 },
+            ],
+        };
+        // In first sphere
+        assert!(r.contains(&[0.0, 0.0, 0.0]));
+        // In second sphere
+        assert!(r.contains(&[3.0, 0.0, 0.0]));
+        // In neither
+        assert!(!r.contains(&[1.5, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn test_intersect_and_logic() {
+        let r = Region::Intersect {
+            regions: vec![
+                Region::Sphere { center: [0.0, 0.0, 0.0], radius: 2.0 },
+                Region::Sphere { center: [1.0, 0.0, 0.0], radius: 2.0 },
+            ],
+        };
+        // In both spheres
+        assert!(r.contains(&[0.5, 0.0, 0.0]));
+        // In first only
+        assert!(!r.contains(&[-1.5, 0.0, 0.0]));
+        // In second only
+        assert!(!r.contains(&[2.5, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn test_union_random_point() {
+        let r = Region::Union {
+            regions: vec![
+                Region::Block { min: [0.0, 0.0, 0.0], max: [1.0, 1.0, 1.0] },
+                Region::Block { min: [5.0, 5.0, 5.0], max: [6.0, 6.0, 6.0] },
+            ],
+        };
+        let mut rng = rand::rng();
+        for _ in 0..100 {
+            let p = r.random_point_inside(&mut rng);
+            assert!(r.contains(&p), "random point {:?} not in union", p);
+        }
+    }
+
+    #[test]
+    fn test_intersect_random_point() {
+        let r = Region::Intersect {
+            regions: vec![
+                Region::Block { min: [0.0, 0.0, 0.0], max: [2.0, 2.0, 2.0] },
+                Region::Block { min: [1.0, 1.0, 1.0], max: [3.0, 3.0, 3.0] },
+            ],
+        };
+        let mut rng = rand::rng();
+        for _ in 0..100 {
+            let p = r.random_point_inside(&mut rng);
+            assert!(r.contains(&p), "random point {:?} not in intersect", p);
+            // Should be in the overlap: [1,1,1] to [2,2,2]
+            assert!(p[0] >= 1.0 && p[0] <= 2.0);
+            assert!(p[1] >= 1.0 && p[1] <= 2.0);
+            assert!(p[2] >= 1.0 && p[2] <= 2.0);
+        }
+    }
+
+    #[test]
+    fn test_union_deserialization() {
+        let toml_str = r#"type = "union"
+regions = [
+    { type = "sphere", center = [0, 0, 0], radius = 1.0 },
+    { type = "sphere", center = [2, 0, 0], radius = 1.0 }
+]"#;
+        let r: Region = toml::from_str(toml_str).unwrap();
+        assert!(r.contains(&[0.0, 0.0, 0.0]));
+        assert!(r.contains(&[2.0, 0.0, 0.0]));
+        assert!(!r.contains(&[4.0, 0.0, 0.0]));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # dem_granular
 
-Granular physics for [MDDEM](https://github.com/SueHeir/MDDEM): Hertz-Mindlin contact with rolling resistance and cohesion, rotational dynamics, and granular temperature.
+Granular physics for [MDDEM](https://github.com/SueHeir/MDDEM): Hertz-Mindlin and Hooke contact models with rolling resistance, twisting friction, and cohesion, rotational dynamics, and granular temperature.
 
 ## Physics Models
 
@@ -38,9 +38,36 @@ Fused normal + tangential + rolling resistance contact force in a single pair lo
 - Rolling torque magnitude: `tau = mu_r * |F_n| * R*`
 - Applied equally and oppositely to both particles
 
+**Twisting friction** (when `twisting_friction > 0`):
+- Resistance to relative spin about the contact normal
+- Extracts twist component: `twist = omega_rel · n`
+- Torque magnitude: `tau = mu_twist * |F_n| * R*`
+- Applied as opposing torque along the contact normal to both particles
+
 Contact forces contribute to the shared `VirialStress` tensor for stress analysis.
 
 The separate `HertzNormalForcePlugin` and `MindlinTangentialForcePlugin` are also available for custom configurations, but `GranularDefaultPlugins` uses the fused plugin for better performance.
+
+### Hooke Contact Model
+
+Linear spring contact as an alternative to Hertz. Enabled by setting `contact_model = "hooke"` in `[dem]` config.
+
+- Normal force: `F_n = kn * delta` (linear in overlap, vs Hertz's `delta^(3/2)`)
+- Damping: `gamma = 2 * beta * sqrt(kn * m_r)`
+- Tangential, rolling resistance, twisting friction, and friction cap are identical to Hertz-Mindlin
+- Per-material `kn`/`kt` stiffnesses with harmonic-mean mixing for cross-type pairs
+
+```toml
+[dem]
+contact_model = "hooke"
+
+[[dem.materials]]
+name = "glass"
+kn = 1e5
+kt = 1e4
+restitution = 0.95
+friction = 0.4
+```
 
 ### Rotational Dynamics (`RotationalDynamicsPlugin`)
 
@@ -69,6 +96,7 @@ poisson_ratio = 0.3
 restitution = 0.95
 friction = 0.4
 rolling_friction = 0.1       # rolling resistance coefficient (default 0.0)
+# twisting_friction = 0.01    # twisting resistance coefficient (default 0.0)
 # cohesion_energy = 0.05      # SJKR cohesion J/m² (default 0.0)
 # surface_energy = 0.05       # JKR adhesion J/m² (default 0.0)
 ```

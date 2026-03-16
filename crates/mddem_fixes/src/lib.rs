@@ -54,6 +54,13 @@ pub struct FreezeDef {
     pub group: String,
 }
 
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ViscousDef {
+    pub group: String,
+    pub gamma: f64,
+}
+
 // ── Registry ───────────────────────────────────────────────────────────────
 
 pub struct FixesRegistry {
@@ -61,6 +68,7 @@ pub struct FixesRegistry {
     pub set_forces: Vec<SetForceDef>,
     pub move_linears: Vec<MoveLinearDef>,
     pub freezes: Vec<FreezeDef>,
+    pub viscous: Vec<ViscousDef>,
 }
 
 // ── Plugin ─────────────────────────────────────────────────────────────────
@@ -103,6 +111,7 @@ impl Plugin for FixesPlugin {
             set_forces: config.parse_array::<SetForceDef>("setforce"),
             move_linears: config.parse_array::<MoveLinearDef>("move_linear"),
             freezes: config.parse_array::<FreezeDef>("freeze"),
+            viscous: config.parse_array::<ViscousDef>("viscous"),
         };
 
         drop(config);
@@ -110,7 +119,8 @@ impl Plugin for FixesPlugin {
         let has_any = !registry.add_forces.is_empty()
             || !registry.set_forces.is_empty()
             || !registry.move_linears.is_empty()
-            || !registry.freezes.is_empty();
+            || !registry.freezes.is_empty()
+            || !registry.viscous.is_empty();
 
         if !has_any {
             app.add_resource(registry);
@@ -121,6 +131,7 @@ impl Plugin for FixesPlugin {
         let has_add = !registry.add_forces.is_empty();
         let has_set = !registry.set_forces.is_empty();
         let has_freeze = !registry.freezes.is_empty();
+        let has_viscous = !registry.viscous.is_empty();
 
         app.add_resource(registry)
             .add_setup_system(setup_fixes, ScheduleSetupSet::PostSetup);
@@ -137,6 +148,9 @@ impl Plugin for FixesPlugin {
         }
         if has_freeze {
             app.add_update_system(apply_freeze, ScheduleSet::PostForce);
+        }
+        if has_viscous {
+            app.add_update_system(apply_viscous, ScheduleSet::PostForce);
         }
     }
 }
@@ -156,6 +170,9 @@ fn setup_fixes(registry: Res<FixesRegistry>, comm: Res<CommResource>, groups: Re
     }
     for f in &registry.freezes {
         groups.validate_name(&f.group, "fix freeze");
+    }
+    for f in &registry.viscous {
+        groups.validate_name(&f.group, "fix viscous");
     }
 
     if comm.rank() != 0 {
@@ -181,6 +198,9 @@ fn setup_fixes(registry: Res<FixesRegistry>, comm: Res<CommResource>, groups: Re
     }
     for f in &registry.freezes {
         println!("Fix freeze: group='{}'", f.group);
+    }
+    for f in &registry.viscous {
+        println!("Fix viscous: group='{}', gamma={}", f.group, f.gamma);
     }
 }
 
@@ -282,6 +302,26 @@ fn apply_move_linear_post(
     }
 }
 
+/// Apply velocity-proportional damping: F = -gamma * v.
+fn apply_viscous(
+    mut atoms: ResMut<Atom>,
+    registry: Res<FixesRegistry>,
+    groups: Res<GroupRegistry>,
+) {
+    let nlocal = atoms.nlocal as usize;
+    for def in &registry.viscous {
+        let group = groups.expect(&def.group);
+        let gamma = def.gamma;
+        for i in 0..nlocal {
+            if group.mask[i] {
+                atoms.force[i][0] -= gamma * atoms.vel[i][0];
+                atoms.force[i][1] -= gamma * atoms.vel[i][1];
+                atoms.force[i][2] -= gamma * atoms.vel[i][2];
+            }
+        }
+    }
+}
+
 // ── Gravity ─────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone)]
@@ -362,6 +402,7 @@ mod tests {
             set_forces: vec![],
             move_linears: vec![],
             freezes: vec![],
+            viscous: vec![],
         };
 
         // Set some initial force
@@ -402,6 +443,7 @@ mod tests {
             }],
             move_linears: vec![],
             freezes: vec![],
+            viscous: vec![],
         };
 
         let mut app = App::new();
@@ -436,6 +478,7 @@ mod tests {
             freezes: vec![FreezeDef {
                 group: "frozen".to_string(),
             }],
+            viscous: vec![],
         };
 
         let mut app = App::new();
@@ -469,6 +512,7 @@ mod tests {
                 vz: -0.5,
             }],
             freezes: vec![],
+            viscous: vec![],
         };
 
         // Pre step: sets velocity
@@ -486,6 +530,70 @@ mod tests {
         assert!((a.vel[1][2]).abs() < 1e-12); // not in group
         assert!((a.force[0][0]).abs() < 1e-12); // force zeroed by post
         assert!((a.force[0][2]).abs() < 1e-12);
+    }
+
+    // ── Viscous tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_viscous_opposes_velocity() {
+        let mut atoms = make_atoms(2);
+        atoms.vel[0][0] = 1.0;
+        atoms.vel[0][1] = -2.0;
+        atoms.vel[0][2] = 0.5;
+
+        let groups = make_group_registry("all", vec![true, true]);
+        let registry = FixesRegistry {
+            add_forces: vec![],
+            set_forces: vec![],
+            move_linears: vec![],
+            freezes: vec![],
+            viscous: vec![ViscousDef {
+                group: "all".to_string(),
+                gamma: 0.1,
+            }],
+        };
+
+        let mut app = App::new();
+        app.add_resource(atoms);
+        app.add_resource(groups);
+        app.add_resource(registry);
+        app.add_update_system(apply_viscous, ScheduleSet::PostForce);
+        app.organize_systems();
+        app.run();
+
+        let a = app.get_resource_ref::<Atom>().unwrap();
+        assert!((a.force[0][0] - (-0.1)).abs() < 1e-12, "fx = -gamma*vx");
+        assert!((a.force[0][1] - 0.2).abs() < 1e-12, "fy = -gamma*vy");
+        assert!((a.force[0][2] - (-0.05)).abs() < 1e-12, "fz = -gamma*vz");
+    }
+
+    #[test]
+    fn test_viscous_zero_at_rest() {
+        let atoms = make_atoms(2); // velocities are 0
+        let groups = make_group_registry("all", vec![true, true]);
+        let registry = FixesRegistry {
+            add_forces: vec![],
+            set_forces: vec![],
+            move_linears: vec![],
+            freezes: vec![],
+            viscous: vec![ViscousDef {
+                group: "all".to_string(),
+                gamma: 0.1,
+            }],
+        };
+
+        let mut app = App::new();
+        app.add_resource(atoms);
+        app.add_resource(groups);
+        app.add_resource(registry);
+        app.add_update_system(apply_viscous, ScheduleSet::PostForce);
+        app.organize_systems();
+        app.run();
+
+        let a = app.get_resource_ref::<Atom>().unwrap();
+        assert!((a.force[0][0]).abs() < 1e-15);
+        assert!((a.force[0][1]).abs() < 1e-15);
+        assert!((a.force[0][2]).abs() < 1e-15);
     }
 
     // ── Gravity tests ──────────────────────────────────────────────────────

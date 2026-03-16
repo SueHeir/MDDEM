@@ -24,10 +24,27 @@ impl Plugin for HertzMindlinContactPlugin {
         app.add_plugins(VirialStressPlugin);
         // Register ContactHistoryStore
         register_atom_data!(app, ContactHistoryStore::new());
-        app.add_update_system(
-            hertz_mindlin_contact_force.label("hertz_mindlin_contact"),
-            ScheduleSet::Force,
-        );
+
+        let contact_model = {
+            let mt = app.get_resource_ref::<MaterialTable>()
+                .expect("MaterialTable must exist before HertzMindlinContactPlugin");
+            mt.contact_model.clone()
+        };
+
+        match contact_model.as_str() {
+            "hooke" => {
+                app.add_update_system(
+                    hooke_contact_force.label("hertz_mindlin_contact"),
+                    ScheduleSet::Force,
+                );
+            }
+            "hertz" | _ => {
+                app.add_update_system(
+                    hertz_mindlin_contact_force.label("hertz_mindlin_contact"),
+                    ScheduleSet::Force,
+                );
+            }
+        }
     }
 }
 
@@ -148,6 +165,7 @@ pub fn hertz_mindlin_contact_force(
         let beta = material_table.beta_ij[mat_i][mat_j];
         let mu = material_table.friction_ij[mat_i][mat_j];
         let mu_r = material_table.rolling_friction_ij[mat_i][mat_j];
+        let mu_tw = material_table.twisting_friction_ij[mat_i][mat_j];
         let cohesion_energy = material_table.cohesion_energy_ij[mat_i][mat_j];
 
         // JKR adhesion-only regime: gap exists but within pull-off distance
@@ -337,6 +355,27 @@ pub fn hertz_mindlin_contact_force(
             }
         }
 
+        // ── Twisting friction torque ─────────────────────────────────────
+        if mu_tw > 0.0 {
+            let or_x = omega_ix - omega_jx;
+            let or_y = omega_iy - omega_jy;
+            let or_z = omega_iz - omega_jz;
+            let twist = or_x * nx + or_y * ny + or_z * nz;
+            if twist.abs() > 1e-30 {
+                let tau = mu_tw * f_n_mag.abs() * r_eff;
+                let sign_tw = if twist > 0.0 { -1.0 } else { 1.0 };
+                let tt_x = sign_tw * tau * nx;
+                let tt_y = sign_tw * tau * ny;
+                let tt_z = sign_tw * tau * nz;
+                dem.torque[i][0] += tt_x;
+                dem.torque[i][1] += tt_y;
+                dem.torque[i][2] += tt_z;
+                dem.torque[j][0] -= tt_x;
+                dem.torque[j][1] -= tt_y;
+                dem.torque[j][2] -= tt_z;
+            }
+        }
+
         // Virial: force on i from j = (-fn + ft)
         if let Some(ref mut v) = virial {
             if v.active {
@@ -382,6 +421,282 @@ pub fn hertz_mindlin_contact_force(
                 sum_f, sum_fx, sum_fy, sum_fz
             );
         }
+    }
+}
+
+/// Hooke (linear spring) contact force — alternative to Hertz-Mindlin.
+///
+/// Normal: `f_n = kn * delta`, tangential uses `kt` directly.
+/// Damping: `gamma = 2 * beta * sqrt(kn_ij * m_r)`.
+/// All other features (friction, rolling, twisting, cohesion, JKR) reused.
+pub fn hooke_contact_force(
+    mut atoms: ResMut<Atom>,
+    neighbor: Res<Neighbor>,
+    registry: Res<AtomDataRegistry>,
+    material_table: Res<MaterialTable>,
+    mut virial: Option<ResMut<VirialStress>>,
+) {
+    let mut dem = registry.expect_mut::<DemAtom>("hooke_contact_force");
+    let mut history = registry.expect_mut::<ContactHistoryStore>("hooke_contact_force");
+    let bond_store = registry.get::<BondStore>();
+    let dt = atoms.dt;
+
+    while history.contacts.len() < atoms.len() {
+        history.contacts.push(Vec::new());
+    }
+
+    let nlocal = atoms.nlocal as usize;
+    let mut overlap_warnings = 0usize;
+
+    for i in 0..nlocal {
+        for entry in &mut history.contacts[i] {
+            entry.2 = false;
+        }
+    }
+
+    for (i, j) in neighbor.pairs(nlocal) {
+        if let Some(ref bonds) = bond_store {
+            if bonds.are_excluded(i, j, &atoms.tag) {
+                continue;
+            }
+        }
+
+        let r1 = dem.radius[i];
+        let r2 = dem.radius[j];
+
+        let dx = atoms.pos[j][0] - atoms.pos[i][0];
+        let dy = atoms.pos[j][1] - atoms.pos[i][1];
+        let dz = atoms.pos[j][2] - atoms.pos[i][2];
+        let dist_sq = dx * dx + dy * dy + dz * dz;
+        let sum_r = r1 + r2;
+
+        if dist_sq >= sum_r * sum_r {
+            continue;
+        }
+
+        let distance = dist_sq.sqrt();
+        if distance == 0.0 {
+            continue;
+        }
+
+        let delta = sum_r - distance;
+        if delta <= 0.0 {
+            continue;
+        }
+
+        if distance / sum_r < LARGE_OVERLAP_WARN_THRESHOLD {
+            overlap_warnings += 1;
+            if overlap_warnings > MAX_OVERLAP_WARNINGS {
+                panic!("Over {} excessive overlaps this step — aborting.", MAX_OVERLAP_WARNINGS);
+            }
+            continue;
+        }
+
+        let inv_dist = 1.0 / distance;
+        let nx = dx * inv_dist;
+        let ny = dy * inv_dist;
+        let nz = dz * inv_dist;
+
+        let mat_i = atoms.atom_type[i] as usize;
+        let mat_j = atoms.atom_type[j] as usize;
+        let r_eff = (r1 * r2) / sum_r;
+        let m_r = 1.0 / (atoms.inv_mass[i] + atoms.inv_mass[j]);
+        let beta = material_table.beta_ij[mat_i][mat_j];
+        let mu = material_table.friction_ij[mat_i][mat_j];
+        let mu_r = material_table.rolling_friction_ij[mat_i][mat_j];
+        let mu_tw = material_table.twisting_friction_ij[mat_i][mat_j];
+        let cohesion_energy = material_table.cohesion_energy_ij[mat_i][mat_j];
+
+        let kn = material_table.kn_ij[mat_i][mat_j];
+        let kt = material_table.kt_ij[mat_i][mat_j];
+
+        // Hooke normal: f_n = kn * delta
+        // Damping: gamma_n = 2 * beta * sqrt(kn * m_r)
+        let gamma_n = 2.0 * beta * (kn * m_r).sqrt();
+
+        // Relative velocity
+        let omega_ix = dem.omega[i][0];
+        let omega_iy = dem.omega[i][1];
+        let omega_iz = dem.omega[i][2];
+        let omega_jx = dem.omega[j][0];
+        let omega_jy = dem.omega[j][1];
+        let omega_jz = dem.omega[j][2];
+
+        let r1n_x = r1 * nx;
+        let r1n_y = r1 * ny;
+        let r1n_z = r1 * nz;
+        let vc_ix = atoms.vel[i][0] + (omega_iy * r1n_z - omega_iz * r1n_y);
+        let vc_iy = atoms.vel[i][1] + (omega_iz * r1n_x - omega_ix * r1n_z);
+        let vc_iz = atoms.vel[i][2] + (omega_ix * r1n_y - omega_iy * r1n_x);
+
+        let r2n_x = r2 * nx;
+        let r2n_y = r2 * ny;
+        let r2n_z = r2 * nz;
+        let vc_jx = atoms.vel[j][0] + (-omega_jy * r2n_z + omega_jz * r2n_y);
+        let vc_jy = atoms.vel[j][1] + (-omega_jz * r2n_x + omega_jx * r2n_z);
+        let vc_jz = atoms.vel[j][2] + (-omega_jx * r2n_y + omega_jy * r2n_x);
+
+        let vr_x = vc_jx - vc_ix;
+        let vr_y = vc_jy - vc_iy;
+        let vr_z = vc_jz - vc_iz;
+        let v_n = vr_x * nx + vr_y * ny + vr_z * nz;
+
+        // Normal force
+        let f_n_mag = if cohesion_energy > 0.0 {
+            let f_cohesion = cohesion_energy * std::f64::consts::PI * delta * r_eff;
+            kn * delta - gamma_n * v_n - f_cohesion
+        } else {
+            (kn * delta - gamma_n * v_n).max(0.0)
+        };
+
+        let fn_x = f_n_mag * nx;
+        let fn_y = f_n_mag * ny;
+        let fn_z = f_n_mag * nz;
+
+        atoms.force[i][0] -= fn_x;
+        atoms.force[i][1] -= fn_y;
+        atoms.force[i][2] -= fn_z;
+        atoms.force[j][0] += fn_x;
+        atoms.force[j][1] += fn_y;
+        atoms.force[j][2] += fn_z;
+
+        // Tangential force
+        let vt_x = vr_x - v_n * nx;
+        let vt_y = vr_y - v_n * ny;
+        let vt_z = vr_z - v_n * nz;
+
+        let tag_i = atoms.tag[i];
+        let tag_j = atoms.tag[j];
+        let sign: f64 = if tag_i < tag_j { 1.0 } else { -1.0 };
+
+        let entry_idx = history.contacts[i]
+            .iter()
+            .position(|(t, _, _)| *t == tag_j);
+        let stored_spring = match entry_idx {
+            Some(idx) => history.contacts[i][idx].1,
+            None => [0.0; 3],
+        };
+
+        let mut sx = sign * stored_spring[0];
+        let mut sy = sign * stored_spring[1];
+        let mut sz = sign * stored_spring[2];
+        let s_dot_n = sx * nx + sy * ny + sz * nz;
+        sx -= s_dot_n * nx;
+        sy -= s_dot_n * ny;
+        sz -= s_dot_n * nz;
+        sx += vt_x * dt;
+        sy += vt_y * dt;
+        sz += vt_z * dt;
+
+        let s_mag = (sx * sx + sy * sy + sz * sz).sqrt();
+        let f_t_spring_mag = kt * s_mag;
+        let f_t_max = mu * f_n_mag.abs();
+        if f_t_spring_mag > f_t_max && f_t_spring_mag > TANGENTIAL_EPSILON {
+            let scale = f_t_max / f_t_spring_mag;
+            sx *= scale;
+            sy *= scale;
+            sz *= scale;
+        }
+
+        let gamma_t = 2.0 * SQRT_5_3 * beta * (kt * m_r).sqrt();
+        let mut ft_x = kt * sx - gamma_t * vt_x;
+        let mut ft_y = kt * sy - gamma_t * vt_y;
+        let mut ft_z = kt * sz - gamma_t * vt_z;
+
+        let f_t_mag = (ft_x * ft_x + ft_y * ft_y + ft_z * ft_z).sqrt();
+        if f_t_mag > f_t_max && f_t_mag > TANGENTIAL_EPSILON {
+            let scale = f_t_max / f_t_mag;
+            ft_x *= scale;
+            ft_y *= scale;
+            ft_z *= scale;
+        }
+
+        // Torques
+        let ti_x = r1n_y * ft_z - r1n_z * ft_y;
+        let ti_y = r1n_z * ft_x - r1n_x * ft_z;
+        let ti_z = r1n_x * ft_y - r1n_y * ft_x;
+        let tj_x = r2n_y * ft_z - r2n_z * ft_y;
+        let tj_y = r2n_z * ft_x - r2n_x * ft_z;
+        let tj_z = r2n_x * ft_y - r2n_y * ft_x;
+
+        atoms.force[i][0] += ft_x;
+        atoms.force[i][1] += ft_y;
+        atoms.force[i][2] += ft_z;
+        atoms.force[j][0] -= ft_x;
+        atoms.force[j][1] -= ft_y;
+        atoms.force[j][2] -= ft_z;
+        dem.torque[i][0] += ti_x;
+        dem.torque[i][1] += ti_y;
+        dem.torque[i][2] += ti_z;
+        dem.torque[j][0] += tj_x;
+        dem.torque[j][1] += tj_y;
+        dem.torque[j][2] += tj_z;
+
+        // Rolling resistance
+        if mu_r > 0.0 {
+            let or_x = omega_ix - omega_jx;
+            let or_y = omega_iy - omega_jy;
+            let or_z = omega_iz - omega_jz;
+            let or_dot_n = or_x * nx + or_y * ny + or_z * nz;
+            let roll_x = or_x - or_dot_n * nx;
+            let roll_y = or_y - or_dot_n * ny;
+            let roll_z = or_z - or_dot_n * nz;
+            let roll_mag = (roll_x * roll_x + roll_y * roll_y + roll_z * roll_z).sqrt();
+            if roll_mag > 1e-30 {
+                let tau_mag = mu_r * f_n_mag.abs() * r_eff;
+                let inv_roll = tau_mag / roll_mag;
+                let tr_x = -inv_roll * roll_x;
+                let tr_y = -inv_roll * roll_y;
+                let tr_z = -inv_roll * roll_z;
+                dem.torque[i][0] += tr_x;
+                dem.torque[i][1] += tr_y;
+                dem.torque[i][2] += tr_z;
+                dem.torque[j][0] -= tr_x;
+                dem.torque[j][1] -= tr_y;
+                dem.torque[j][2] -= tr_z;
+            }
+        }
+
+        // Twisting friction
+        if mu_tw > 0.0 {
+            let or_x = omega_ix - omega_jx;
+            let or_y = omega_iy - omega_jy;
+            let or_z = omega_iz - omega_jz;
+            let twist = or_x * nx + or_y * ny + or_z * nz;
+            if twist.abs() > 1e-30 {
+                let tau = mu_tw * f_n_mag.abs() * r_eff;
+                let sign_tw = if twist > 0.0 { -1.0 } else { 1.0 };
+                let tt_x = sign_tw * tau * nx;
+                let tt_y = sign_tw * tau * ny;
+                let tt_z = sign_tw * tau * nz;
+                dem.torque[i][0] += tt_x;
+                dem.torque[i][1] += tt_y;
+                dem.torque[i][2] += tt_z;
+                dem.torque[j][0] -= tt_x;
+                dem.torque[j][1] -= tt_y;
+                dem.torque[j][2] -= tt_z;
+            }
+        }
+
+        // Virial
+        if let Some(ref mut v) = virial {
+            if v.active {
+                v.add_pair(dx, dy, dz, -fn_x + ft_x, -fn_y + ft_y, -fn_z + ft_z);
+            }
+        }
+
+        let new_spring = [sign * sx, sign * sy, sign * sz];
+        match entry_idx {
+            Some(idx) => {
+                history.contacts[i][idx].1 = new_spring;
+                history.contacts[i][idx].2 = true;
+            }
+            None => history.contacts[i].push((tag_j, new_spring, true)),
+        }
+    }
+
+    for i in 0..nlocal {
+        history.contacts[i].retain(|(_, _, active)| *active);
     }
 }
 
@@ -804,6 +1119,184 @@ mod tests {
 
         let atom = app.get_resource_ref::<Atom>().unwrap();
         assert!(atom.force[0][0].abs() < 1e-20, "no force beyond pull-off distance");
+    }
+
+    fn make_material_table_hooke() -> MaterialTable {
+        let mut mt = MaterialTable::new();
+        mt.add_material_extended("glass", 8.7e9, 0.3, 0.95, 0.4, 0.0, 0.0, 0.0, 0.0, 1e6, 5e5);
+        mt.contact_model = "hooke".to_string();
+        mt.build_pair_tables();
+        mt
+    }
+
+    fn make_material_table_twisting() -> MaterialTable {
+        let mut mt = MaterialTable::new();
+        mt.add_material_extended("glass", 8.7e9, 0.3, 0.95, 0.4, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0);
+        mt.build_pair_tables();
+        mt
+    }
+
+    #[test]
+    fn hooke_force_linear_in_delta() {
+        let radius = 0.001;
+        let run = |sep: f64| -> f64 {
+            let mut app = App::new();
+            let mut atom = Atom::new();
+            let mut dem = DemAtom::new();
+            let mut hist = ContactHistoryStore::new();
+            atom.dt = 1e-7;
+            push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
+            push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 1, [sep, 0.0, 0.0], radius);
+            atom.nlocal = 2;
+            atom.natoms = 2;
+            let mut neighbor = Neighbor::new();
+            neighbor.neighbor_offsets = vec![0, 1, 1];
+            neighbor.neighbor_indices = vec![1];
+            let mut registry = AtomDataRegistry::new();
+            registry.register(dem);
+            registry.register(hist);
+            app.add_resource(atom);
+            app.add_resource(neighbor);
+            app.add_resource(registry);
+            app.add_resource(make_material_table_hooke());
+            app.add_update_system(hooke_contact_force, ScheduleSet::Force);
+            app.organize_systems();
+            app.run();
+            let atom = app.get_resource_ref::<Atom>().unwrap();
+            atom.force[0][0]
+        };
+
+        // delta1 = 2*r - sep1, delta2 = 2*r - sep2
+        let sep1 = 0.00195; // delta = 0.00005
+        let sep2 = 0.0019;  // delta = 0.0001
+        let f1 = run(sep1);
+        let f2 = run(sep2);
+
+        // Hooke: force proportional to delta → f2/f1 ≈ 2.0 (linear)
+        let ratio = f2 / f1;
+        assert!(
+            (ratio - 2.0).abs() < 0.15,
+            "Hooke force should be linear in delta, got ratio {} (expected ~2.0)",
+            ratio
+        );
+    }
+
+    #[test]
+    fn hooke_no_force_beyond_contact() {
+        let mut app = App::new();
+        let radius = 0.001;
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let mut hist = ContactHistoryStore::new();
+        atom.dt = 1e-7;
+
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 1, [0.003, 0.0, 0.0], radius);
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let mut neighbor = Neighbor::new();
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(hist);
+
+        app.add_resource(atom);
+        app.add_resource(neighbor);
+        app.add_resource(registry);
+        app.add_resource(make_material_table_hooke());
+        app.add_update_system(hooke_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        assert!(atom.force[0][0].abs() < 1e-20, "no force beyond contact distance");
+    }
+
+    #[test]
+    fn twisting_friction_opposes_spin() {
+        let mut app = App::new();
+        let radius = 0.001;
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let mut hist = ContactHistoryStore::new();
+        atom.dt = 1e-7;
+
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 1, [0.0019, 0.0, 0.0], radius);
+        // Spin about contact normal (x-axis)
+        dem.omega[0] = [100.0, 0.0, 0.0];
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let mut neighbor = Neighbor::new();
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(hist);
+
+        app.add_resource(atom);
+        app.add_resource(neighbor);
+        app.add_resource(registry);
+        app.add_resource(make_material_table_twisting());
+        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let dem = registry.expect::<DemAtom>("test");
+        // Twisting torque on atom 0 should oppose its spin about x (negative x torque)
+        assert!(
+            dem.torque[0][0] < 0.0,
+            "twisting torque should oppose omega_x, got {}",
+            dem.torque[0][0]
+        );
+    }
+
+    #[test]
+    fn twisting_friction_zero_when_no_spin() {
+        let mut app = App::new();
+        let radius = 0.001;
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let mut hist = ContactHistoryStore::new();
+        atom.dt = 1e-7;
+
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 1, [0.0019, 0.0, 0.0], radius);
+        // No angular velocity at all
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let mut neighbor = Neighbor::new();
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(hist);
+
+        app.add_resource(atom);
+        app.add_resource(neighbor);
+        app.add_resource(registry);
+        app.add_resource(make_material_table_twisting());
+        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let dem = registry.expect::<DemAtom>("test");
+        // No twisting torque when there's no angular velocity
+        let torque_mag = (dem.torque[0][0].powi(2) + dem.torque[0][1].powi(2) + dem.torque[0][2].powi(2)).sqrt();
+        assert!(
+            torque_mag < 1e-20,
+            "no twisting torque when no spin, got {}",
+            torque_mag
+        );
     }
 
     #[test]

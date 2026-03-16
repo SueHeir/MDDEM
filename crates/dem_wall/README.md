@@ -1,16 +1,18 @@
 # dem_wall
 
-General plane wall contact forces for [MDDEM](https://github.com/SueHeir/MDDEM) simulations. Walls are defined by a point and normal vector, supporting both axis-aligned and angled walls.
+Wall contact forces for [MDDEM](https://github.com/SueHeir/MDDEM) simulations. Supports plane, cylinder, and sphere wall geometries.
 
 ## Features
 
 - Hertz elastic contact with viscoelastic damping (same model as particle-particle contacts)
 - JKR adhesion and SJKR cohesion support (reads `surface_energy` / `cohesion_energy` from `MaterialTable`)
-- General plane geometry — any orientation, not just axis-aligned
-- Optional bounding box to clip walls to finite regions
+- Twisting friction support (reads `twisting_friction` from `MaterialTable`)
+- **Plane walls** — general plane geometry, any orientation, optional bounding box
+- **Cylinder walls** — axis-aligned cylindrical containers/pipes with inside/outside contact
+- **Sphere walls** — spherical containers with inside/outside contact
 - Named walls with runtime toggling via `walls.deactivate_by_name("blocker")`
 - Multiple walls per simulation
-- Wall motion: static, constant velocity, oscillating (sinusoidal), and servo-controlled
+- Wall motion: static, constant velocity, oscillating (sinusoidal), and servo-controlled (plane walls)
 
 ## Wall Motion
 
@@ -85,7 +87,34 @@ normal_z = -1.0
 material = "glass"
 name = "servo_top"
 servo = { target_force = 50.0, max_velocity = 0.01, gain = 0.0001 }
+
+# Cylindrical container (particles inside)
+[[wall]]
+type = "cylinder"
+axis = "z"
+center = [0.005, 0.005]
+radius = 0.004
+lo = 0.0
+hi = 0.01
+material = "glass"
+inside = true
+
+# Spherical container (particles inside)
+[[wall]]
+type = "sphere"
+center = [0.005, 0.005, 0.005]
+radius = 0.004
+material = "glass"
+inside = true
 ```
+
+### Cylinder Walls
+
+Axis-aligned cylindrical walls defined by an axis (`"x"`, `"y"`, or `"z"`), center (2D, perpendicular to axis), radius, and optional axial bounds (`lo`/`hi`). When `inside = true`, particles are contained inside the cylinder and the normal points inward. When `inside = false` (default), particles interact with the outside surface.
+
+### Sphere Walls
+
+Spherical walls defined by a 3D center and radius. When `inside = true`, particles are contained inside the sphere. When `inside = false` (default), particles interact with the outside surface.
 
 ## Runtime Wall Control
 

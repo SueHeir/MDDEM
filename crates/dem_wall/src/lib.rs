@@ -14,6 +14,9 @@ fn default_neg_inf() -> f64 {
 fn default_pos_inf() -> f64 {
     f64::INFINITY
 }
+fn default_wall_type() -> String {
+    "plane".to_string()
+}
 
 // ── Config structs ──────────────────────────────────────────────────────────
 
@@ -35,15 +38,45 @@ pub struct ServoDef {
 }
 
 #[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-/// TOML definition of a wall plane: point, normal, material, and optional bounding box.
+/// TOML definition of a wall: plane, cylinder, or sphere.
 pub struct WallDef {
+    /// Wall type: "plane" (default), "cylinder", or "sphere".
+    #[serde(default = "default_wall_type", rename = "type")]
+    pub wall_type: String,
+    // ── Plane fields ──
+    #[serde(default)]
     pub point_x: f64,
+    #[serde(default)]
     pub point_y: f64,
+    #[serde(default)]
     pub point_z: f64,
+    #[serde(default)]
     pub normal_x: f64,
+    #[serde(default)]
     pub normal_y: f64,
+    #[serde(default)]
     pub normal_z: f64,
+    // ── Cylinder/sphere fields ──
+    /// Cylinder axis: "x", "y", or "z".
+    #[serde(default)]
+    pub axis: Option<String>,
+    /// Center [x, y] for cylinder (in the 2D plane perpendicular to axis),
+    /// or [x, y, z] for sphere.
+    #[serde(default)]
+    pub center: Option<Vec<f64>>,
+    /// Radius of the cylinder or sphere wall.
+    #[serde(default)]
+    pub radius: Option<f64>,
+    /// Axial lo bound for cylinder.
+    #[serde(default)]
+    pub lo: Option<f64>,
+    /// Axial hi bound for cylinder.
+    #[serde(default)]
+    pub hi: Option<f64>,
+    /// If true, particles are inside the wall (normal points inward).
+    #[serde(default)]
+    pub inside: Option<bool>,
+    // ── Common fields ──
     pub material: String,
     #[serde(default)]
     pub name: Option<String>,
@@ -119,10 +152,46 @@ impl WallPlane {
     }
 }
 
+/// Runtime cylinder wall.
+pub struct WallCylinder {
+    /// Axis: 0=X, 1=Y, 2=Z.
+    pub axis: usize,
+    /// Center in the 2D plane perpendicular to axis [c0, c1].
+    pub center: [f64; 2],
+    /// Cylinder radius.
+    pub radius: f64,
+    /// Axial lo bound.
+    pub lo: f64,
+    /// Axial hi bound.
+    pub hi: f64,
+    /// If true, particles inside (normal points inward, delta = wall_radius - dist).
+    pub inside: bool,
+    pub material_index: usize,
+    pub name: Option<String>,
+    pub force_accumulator: f64,
+}
+
+/// Runtime sphere wall.
+pub struct WallSphere {
+    /// Sphere center [x, y, z].
+    pub center: [f64; 3],
+    /// Sphere radius.
+    pub radius: f64,
+    /// If true, particles inside (normal points inward).
+    pub inside: bool,
+    pub material_index: usize,
+    pub name: Option<String>,
+    pub force_accumulator: f64,
+}
+
 /// Collection of wall planes with per-wall active/inactive flags.
 pub struct Walls {
     pub planes: Vec<WallPlane>,
     pub active: Vec<bool>,
+    pub cylinders: Vec<WallCylinder>,
+    pub cylinder_active: Vec<bool>,
+    pub spheres: Vec<WallSphere>,
+    pub sphere_active: Vec<bool>,
     /// Elapsed simulation time (for oscillation phase tracking).
     pub time: f64,
 }
@@ -132,6 +201,16 @@ impl Walls {
         for (i, wall) in self.planes.iter().enumerate() {
             if wall.name.as_deref() == Some(name) {
                 self.active[i] = false;
+            }
+        }
+        for (i, wall) in self.cylinders.iter().enumerate() {
+            if wall.name.as_deref() == Some(name) {
+                self.cylinder_active[i] = false;
+            }
+        }
+        for (i, wall) in self.spheres.iter().enumerate() {
+            if wall.name.as_deref() == Some(name) {
+                self.sphere_active[i] = false;
             }
         }
     }
@@ -204,7 +283,10 @@ impl Plugin for WallPlugin {
                 .get_resource_ref::<MaterialTable>()
                 .expect("MaterialTable must exist before WallPlugin — add DemAtomPlugin first");
 
-            let mut planes = Vec::with_capacity(wall_defs.len());
+            let mut planes = Vec::new();
+            let mut cylinders = Vec::new();
+            let mut spheres = Vec::new();
+
             for w in &wall_defs {
                 let mat_idx = match material_table.find_material(&w.material) {
                     Some(idx) => idx as usize,
@@ -216,68 +298,129 @@ impl Plugin for WallPlugin {
                         std::process::exit(1);
                     }
                 };
-                let mag =
-                    (w.normal_x * w.normal_x + w.normal_y * w.normal_y + w.normal_z * w.normal_z)
-                        .sqrt();
-                if mag <= 1e-15 {
-                    eprintln!("ERROR: wall normal vector must be non-zero (wall material '{}')", w.material);
-                    std::process::exit(1);
+
+                match w.wall_type.as_str() {
+                    "cylinder" => {
+                        let axis_str = w.axis.as_deref().unwrap_or("z");
+                        let axis = match axis_str {
+                            "x" | "X" => 0,
+                            "y" | "Y" => 1,
+                            "z" | "Z" => 2,
+                            _ => {
+                                eprintln!("ERROR: cylinder wall axis must be x, y, or z, got '{}'", axis_str);
+                                std::process::exit(1);
+                            }
+                        };
+                        let center_vec = w.center.as_ref().expect("cylinder wall requires 'center' [c0, c1]");
+                        if center_vec.len() < 2 {
+                            eprintln!("ERROR: cylinder wall 'center' must have 2 elements");
+                            std::process::exit(1);
+                        }
+                        let center = [center_vec[0], center_vec[1]];
+                        let radius = w.radius.expect("cylinder wall requires 'radius'");
+                        let lo = w.lo.unwrap_or(f64::NEG_INFINITY);
+                        let hi = w.hi.unwrap_or(f64::INFINITY);
+                        let inside = w.inside.unwrap_or(false);
+                        cylinders.push(WallCylinder {
+                            axis,
+                            center,
+                            radius,
+                            lo,
+                            hi,
+                            inside,
+                            material_index: mat_idx,
+                            name: w.name.clone(),
+                            force_accumulator: 0.0,
+                        });
+                    }
+                    "sphere" => {
+                        let center_vec = w.center.as_ref().expect("sphere wall requires 'center' [x, y, z]");
+                        if center_vec.len() < 3 {
+                            eprintln!("ERROR: sphere wall 'center' must have 3 elements");
+                            std::process::exit(1);
+                        }
+                        let center = [center_vec[0], center_vec[1], center_vec[2]];
+                        let radius = w.radius.expect("sphere wall requires 'radius'");
+                        let inside = w.inside.unwrap_or(false);
+                        spheres.push(WallSphere {
+                            center,
+                            radius,
+                            inside,
+                            material_index: mat_idx,
+                            name: w.name.clone(),
+                            force_accumulator: 0.0,
+                        });
+                    }
+                    "plane" | _ => {
+                        let mag =
+                            (w.normal_x * w.normal_x + w.normal_y * w.normal_y + w.normal_z * w.normal_z)
+                                .sqrt();
+                        if mag <= 1e-15 {
+                            eprintln!("ERROR: wall normal vector must be non-zero (wall material '{}')", w.material);
+                            std::process::exit(1);
+                        }
+                        let nx = w.normal_x / mag;
+                        let ny = w.normal_y / mag;
+                        let nz = w.normal_z / mag;
+
+                        let (motion, velocity) = if let Some(ref osc) = w.oscillate {
+                            (
+                                WallMotion::Oscillate {
+                                    amplitude: osc.amplitude,
+                                    frequency: osc.frequency,
+                                },
+                                [0.0; 3],
+                            )
+                        } else if let Some(ref srv) = w.servo {
+                            (
+                                WallMotion::Servo {
+                                    target_force: srv.target_force,
+                                    max_velocity: srv.max_velocity,
+                                    gain: srv.gain,
+                                },
+                                [0.0; 3],
+                            )
+                        } else if let Some(vel) = w.velocity {
+                            (WallMotion::ConstantVelocity, vel)
+                        } else {
+                            (WallMotion::Static, [0.0; 3])
+                        };
+
+                        planes.push(WallPlane {
+                            point_x: w.point_x,
+                            point_y: w.point_y,
+                            point_z: w.point_z,
+                            normal_x: nx,
+                            normal_y: ny,
+                            normal_z: nz,
+                            material_index: mat_idx,
+                            name: w.name.clone(),
+                            bound_x_low: w.bound_x_low,
+                            bound_x_high: w.bound_x_high,
+                            bound_y_low: w.bound_y_low,
+                            bound_y_high: w.bound_y_high,
+                            bound_z_low: w.bound_z_low,
+                            bound_z_high: w.bound_z_high,
+                            velocity,
+                            motion,
+                            origin: [w.point_x, w.point_y, w.point_z],
+                            force_accumulator: 0.0,
+                        });
+                    }
                 }
-                let nx = w.normal_x / mag;
-                let ny = w.normal_y / mag;
-                let nz = w.normal_z / mag;
-
-                // Determine motion mode and initial velocity
-                let (motion, velocity) = if let Some(ref osc) = w.oscillate {
-                    (
-                        WallMotion::Oscillate {
-                            amplitude: osc.amplitude,
-                            frequency: osc.frequency,
-                        },
-                        [0.0; 3], // velocity set each step by wall_move
-                    )
-                } else if let Some(ref srv) = w.servo {
-                    (
-                        WallMotion::Servo {
-                            target_force: srv.target_force,
-                            max_velocity: srv.max_velocity,
-                            gain: srv.gain,
-                        },
-                        [0.0; 3],
-                    )
-                } else if let Some(vel) = w.velocity {
-                    (WallMotion::ConstantVelocity, vel)
-                } else {
-                    (WallMotion::Static, [0.0; 3])
-                };
-
-                planes.push(WallPlane {
-                    point_x: w.point_x,
-                    point_y: w.point_y,
-                    point_z: w.point_z,
-                    normal_x: nx,
-                    normal_y: ny,
-                    normal_z: nz,
-                    material_index: mat_idx,
-                    name: w.name.clone(),
-                    bound_x_low: w.bound_x_low,
-                    bound_x_high: w.bound_x_high,
-                    bound_y_low: w.bound_y_low,
-                    bound_y_high: w.bound_y_high,
-                    bound_z_low: w.bound_z_low,
-                    bound_z_high: w.bound_z_high,
-                    velocity,
-                    motion,
-                    origin: [w.point_x, w.point_y, w.point_z],
-                    force_accumulator: 0.0,
-                });
             }
             drop(material_table);
 
-            let n = planes.len();
+            let np = planes.len();
+            let nc = cylinders.len();
+            let ns = spheres.len();
             Walls {
                 planes,
-                active: vec![true; n],
+                active: vec![true; np],
+                cylinders,
+                cylinder_active: vec![true; nc],
+                spheres,
+                sphere_active: vec![true; ns],
                 time: 0.0,
             }
         };
@@ -347,6 +490,12 @@ pub fn wall_zero_force_accumulators(mut walls: ResMut<Walls>) {
     for wall in &mut walls.planes {
         wall.force_accumulator = 0.0;
     }
+    for wall in &mut walls.cylinders {
+        wall.force_accumulator = 0.0;
+    }
+    for wall in &mut walls.spheres {
+        wall.force_accumulator = 0.0;
+    }
 }
 
 pub fn wall_contact_force(
@@ -355,7 +504,7 @@ pub fn wall_contact_force(
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
 ) {
-    let dem = registry.expect::<DemAtom>("wall_contact_force");
+    let mut dem = registry.expect_mut::<DemAtom>("wall_contact_force");
 
     let nlocal = atoms.nlocal as usize;
 
@@ -469,6 +618,23 @@ pub fn wall_contact_force(
             atoms.force[i][1] += f_net * wall.normal_y;
             atoms.force[i][2] += f_net * wall.normal_z;
 
+            // Twisting friction torque (wall-particle)
+            if delta > 0.0 {
+                let mu_tw = material_table.twisting_friction_ij[mat_i][wall_mat];
+                if mu_tw > 0.0 {
+                    let twist = dem.omega[i][0] * wall.normal_x
+                        + dem.omega[i][1] * wall.normal_y
+                        + dem.omega[i][2] * wall.normal_z;
+                    if twist.abs() > 1e-30 {
+                        let tau = mu_tw * f_net.abs() * r_eff;
+                        let sign_tw = if twist > 0.0 { -1.0 } else { 1.0 };
+                        dem.torque[i][0] += sign_tw * tau * wall.normal_x;
+                        dem.torque[i][1] += sign_tw * tau * wall.normal_y;
+                        dem.torque[i][2] += sign_tw * tau * wall.normal_z;
+                    }
+                }
+            }
+
             // Accumulate wall force for servo control
             wall_forces[wall_idx] += f_net;
         }
@@ -477,6 +643,168 @@ pub fn wall_contact_force(
     // Write accumulated forces back to walls
     for (idx, &f) in wall_forces.iter().enumerate() {
         walls.planes[idx].force_accumulator += f;
+    }
+
+    // ── Cylinder walls ──────────────────────────────────────────────────
+    let ncyl = walls.cylinders.len();
+    let mut cyl_forces = vec![0.0f64; ncyl];
+    for (cyl_idx, cyl) in walls.cylinders.iter().enumerate() {
+        if !walls.cylinder_active[cyl_idx] {
+            continue;
+        }
+        let wall_mat = cyl.material_index;
+        for i in 0..nlocal {
+            let pos = atoms.pos[i];
+            let radius = dem.radius[i];
+            let mat_i = atoms.atom_type[i] as usize;
+
+            // Project position onto cylinder axis to get radial distance
+            let (axial, d0, d1) = match cyl.axis {
+                0 => (pos[0], pos[1] - cyl.center[0], pos[2] - cyl.center[1]),
+                1 => (pos[1], pos[0] - cyl.center[0], pos[2] - cyl.center[1]),
+                _ => (pos[2], pos[0] - cyl.center[0], pos[1] - cyl.center[1]),
+            };
+
+            // Check axial bounds
+            if axial < cyl.lo || axial > cyl.hi {
+                continue;
+            }
+
+            let radial_dist = (d0 * d0 + d1 * d1).sqrt();
+            if radial_dist < 1e-30 {
+                continue;
+            }
+
+            // Distance from particle center to wall surface and normal direction
+            let (delta, nx, ny, nz) = if cyl.inside {
+                // Particle inside cylinder: delta = wall_radius - radial_dist - particle_radius
+                // But we want overlap = particle_radius - gap = radius - (cyl.radius - radial_dist)
+                let gap = cyl.radius - radial_dist;
+                let delta = radius - gap;
+                // Normal points inward (toward axis)
+                let inv_r = 1.0 / radial_dist;
+                let (n0, n1) = (-d0 * inv_r, -d1 * inv_r);
+                let (nx, ny, nz) = match cyl.axis {
+                    0 => (0.0, n0, n1),
+                    1 => (n0, 0.0, n1),
+                    _ => (n0, n1, 0.0),
+                };
+                (delta, nx, ny, nz)
+            } else {
+                // Particle outside cylinder: delta = radius - (radial_dist - cyl.radius)
+                let gap = radial_dist - cyl.radius;
+                let delta = radius - gap;
+                // Normal points outward (away from axis)
+                let inv_r = 1.0 / radial_dist;
+                let (n0, n1) = (d0 * inv_r, d1 * inv_r);
+                let (nx, ny, nz) = match cyl.axis {
+                    0 => (0.0, n0, n1),
+                    1 => (n0, 0.0, n1),
+                    _ => (n0, n1, 0.0),
+                };
+                (delta, nx, ny, nz)
+            };
+
+            if delta <= 0.0 {
+                continue;
+            }
+            let delta = delta.min(0.5 * radius);
+
+            let r_eff = radius;
+            let e_eff = material_table.e_eff_ij[mat_i][wall_mat];
+            let sdr = (delta * r_eff).sqrt();
+            let k_n = 4.0 / 3.0 * e_eff * sdr;
+            let s_n = 2.0 * e_eff * sdr;
+            let m_r = atoms.mass[i];
+            let v_n = atoms.vel[i][0] * nx + atoms.vel[i][1] * ny + atoms.vel[i][2] * nz;
+            let beta = material_table.beta_ij[mat_i][wall_mat];
+            let cohesion_energy = material_table.cohesion_energy_ij[mat_i][wall_mat];
+
+            let f_net = if cohesion_energy > 0.0 {
+                let f_diss = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
+                let f_cohesion = cohesion_energy * std::f64::consts::PI * delta * r_eff;
+                k_n * delta - f_diss - f_cohesion
+            } else {
+                let f_diss = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
+                (k_n * delta - f_diss).max(0.0)
+            };
+
+            atoms.force[i][0] += f_net * nx;
+            atoms.force[i][1] += f_net * ny;
+            atoms.force[i][2] += f_net * nz;
+            cyl_forces[cyl_idx] += f_net;
+        }
+    }
+    for (idx, &f) in cyl_forces.iter().enumerate() {
+        walls.cylinders[idx].force_accumulator += f;
+    }
+
+    // ── Sphere walls ────────────────────────────────────────────────────
+    let nsph = walls.spheres.len();
+    let mut sph_forces = vec![0.0f64; nsph];
+    for (sph_idx, sph) in walls.spheres.iter().enumerate() {
+        if !walls.sphere_active[sph_idx] {
+            continue;
+        }
+        let wall_mat = sph.material_index;
+        for i in 0..nlocal {
+            let pos = atoms.pos[i];
+            let radius = dem.radius[i];
+            let mat_i = atoms.atom_type[i] as usize;
+
+            let dx = pos[0] - sph.center[0];
+            let dy = pos[1] - sph.center[1];
+            let dz = pos[2] - sph.center[2];
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            if dist < 1e-30 {
+                continue;
+            }
+
+            let inv_dist = 1.0 / dist;
+            let (nx, ny, nz, delta) = if sph.inside {
+                let gap = sph.radius - dist;
+                let delta = radius - gap;
+                // Normal points inward (toward center)
+                (-dx * inv_dist, -dy * inv_dist, -dz * inv_dist, delta)
+            } else {
+                let gap = dist - sph.radius;
+                let delta = radius - gap;
+                // Normal points outward (away from center)
+                (dx * inv_dist, dy * inv_dist, dz * inv_dist, delta)
+            };
+
+            if delta <= 0.0 {
+                continue;
+            }
+            let delta = delta.min(0.5 * radius);
+
+            let r_eff = radius;
+            let e_eff = material_table.e_eff_ij[mat_i][wall_mat];
+            let sdr = (delta * r_eff).sqrt();
+            let k_n = 4.0 / 3.0 * e_eff * sdr;
+            let s_n = 2.0 * e_eff * sdr;
+            let m_r = atoms.mass[i];
+            let v_n = atoms.vel[i][0] * nx + atoms.vel[i][1] * ny + atoms.vel[i][2] * nz;
+            let beta = material_table.beta_ij[mat_i][wall_mat];
+            let cohesion_energy = material_table.cohesion_energy_ij[mat_i][wall_mat];
+
+            let f_net = if cohesion_energy > 0.0 {
+                let f_diss = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
+                let f_cohesion = cohesion_energy * std::f64::consts::PI * delta * r_eff;
+                k_n * delta - f_diss - f_cohesion
+            } else {
+                let f_diss = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
+                (k_n * delta - f_diss).max(0.0)
+            };
+
+            atoms.force[i][0] += f_net * nx;
+            atoms.force[i][1] += f_net * ny;
+            atoms.force[i][2] += f_net * nz;
+            sph_forces[sph_idx] += f_net;
+        }
+    }
+    for (idx, &f) in sph_forces.iter().enumerate() {
+        walls.spheres[idx].force_accumulator += f;
     }
 }
 
@@ -523,6 +851,10 @@ mod tests {
         Walls {
             planes,
             active: vec![true; n],
+            cylinders: Vec::new(),
+            cylinder_active: Vec::new(),
+            spheres: Vec::new(),
+            sphere_active: Vec::new(),
             time: 0.0,
         }
     }
@@ -876,6 +1208,199 @@ mod tests {
             f_static,
             f_approaching
         );
+    }
+
+    // ── Cylinder wall tests ────────────────────────────────────────────────
+
+    fn make_walls_with_cylinder(cyl: WallCylinder) -> Walls {
+        Walls {
+            planes: Vec::new(),
+            active: Vec::new(),
+            cylinders: vec![cyl],
+            cylinder_active: vec![true],
+            spheres: Vec::new(),
+            sphere_active: Vec::new(),
+            time: 0.0,
+        }
+    }
+
+    fn make_walls_with_sphere(sph: WallSphere) -> Walls {
+        Walls {
+            planes: Vec::new(),
+            active: Vec::new(),
+            cylinders: Vec::new(),
+            cylinder_active: Vec::new(),
+            spheres: vec![sph],
+            sphere_active: vec![true],
+            time: 0.0,
+        }
+    }
+
+    #[test]
+    fn cylinder_inside_repels_toward_center() {
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let radius = 0.001;
+
+        // Particle near the wall of a z-cylinder centered at (0.005, 0.005), radius 0.004
+        // Place particle at radial distance 0.0035 from axis (gap = 0.004 - 0.0035 = 0.0005 < radius)
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.005 + 0.0035, 0.005, 0.005], radius);
+        atom.nlocal = 1;
+        atom.natoms = 1;
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+
+        let walls = make_walls_with_cylinder(WallCylinder {
+            axis: 2, // Z
+            center: [0.005, 0.005],
+            radius: 0.004,
+            lo: 0.0,
+            hi: 0.01,
+            inside: true,
+            material_index: 0,
+            name: None,
+            force_accumulator: 0.0,
+        });
+
+        let mut app = App::new();
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(make_material_table());
+        app.add_resource(walls);
+        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        // Force should push particle toward center (negative x direction)
+        assert!(
+            atom.force[0][0] < 0.0,
+            "cylinder should push particle toward center, got fx={}",
+            atom.force[0][0]
+        );
+        assert!((atom.force[0][1]).abs() < 1e-15, "no y force");
+        assert!((atom.force[0][2]).abs() < 1e-15, "no z force");
+    }
+
+    #[test]
+    fn cylinder_no_force_when_not_touching() {
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let radius = 0.001;
+
+        // Particle well inside cylinder (far from wall)
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.005, 0.005, 0.005], radius);
+        atom.nlocal = 1;
+        atom.natoms = 1;
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+
+        let walls = make_walls_with_cylinder(WallCylinder {
+            axis: 2,
+            center: [0.005, 0.005],
+            radius: 0.004,
+            lo: 0.0,
+            hi: 0.01,
+            inside: true,
+            material_index: 0,
+            name: None,
+            force_accumulator: 0.0,
+        });
+
+        let mut app = App::new();
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(make_material_table());
+        app.add_resource(walls);
+        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        let f_mag = (atom.force[0][0].powi(2) + atom.force[0][1].powi(2) + atom.force[0][2].powi(2)).sqrt();
+        assert!(f_mag < 1e-15, "no force when not touching cylinder wall, got {}", f_mag);
+    }
+
+    #[test]
+    fn sphere_inside_repels_toward_center() {
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let radius = 0.001;
+
+        // Particle near the wall of a sphere centered at (0.005, 0.005, 0.005), radius 0.004
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.005 + 0.0035, 0.005, 0.005], radius);
+        atom.nlocal = 1;
+        atom.natoms = 1;
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+
+        let walls = make_walls_with_sphere(WallSphere {
+            center: [0.005, 0.005, 0.005],
+            radius: 0.004,
+            inside: true,
+            material_index: 0,
+            name: None,
+            force_accumulator: 0.0,
+        });
+
+        let mut app = App::new();
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(make_material_table());
+        app.add_resource(walls);
+        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        // Force should push particle toward center (negative x direction)
+        assert!(
+            atom.force[0][0] < 0.0,
+            "sphere should push particle toward center, got fx={}",
+            atom.force[0][0]
+        );
+        assert!((atom.force[0][1]).abs() < 1e-15, "no y force");
+        assert!((atom.force[0][2]).abs() < 1e-15, "no z force");
+    }
+
+    #[test]
+    fn sphere_no_force_when_not_touching() {
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let radius = 0.001;
+
+        // Particle at center of sphere
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.005, 0.005, 0.005], radius);
+        atom.nlocal = 1;
+        atom.natoms = 1;
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+
+        let walls = make_walls_with_sphere(WallSphere {
+            center: [0.005, 0.005, 0.005],
+            radius: 0.004,
+            inside: true,
+            material_index: 0,
+            name: None,
+            force_accumulator: 0.0,
+        });
+
+        let mut app = App::new();
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(make_material_table());
+        app.add_resource(walls);
+        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        let f_mag = (atom.force[0][0].powi(2) + atom.force[0][1].powi(2) + atom.force[0][2].powi(2)).sqrt();
+        assert!(f_mag < 1e-15, "no force when not touching sphere wall, got {}", f_mag);
     }
 
     #[test]

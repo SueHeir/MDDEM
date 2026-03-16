@@ -43,6 +43,14 @@ vy = 0.0
 vz = -0.001
 ```
 
+### Viscous
+Velocity-proportional damping `F = -gamma * v` applied at `PostForce`:
+```toml
+[[viscous]]
+group = "all"
+gamma = 0.1
+```
+
 ## Gravity (`GravityPlugin`)
 
 Applies gravitational body force `F = m * g` to all local atoms at `Force`:

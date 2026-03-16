@@ -169,20 +169,23 @@ cargo run --release -- config.toml --schedule
 
 ### DEM (Granular)
 - Hertz elastic normal contact with viscoelastic damping (LAMMPS `hertz/material` equivalent)
+- Hooke linear spring contact model (alternative to Hertz, selectable via config)
 - Mindlin tangential spring-history with Coulomb friction cap
 - Rolling resistance (constant torque model)
+- Twisting friction (resistance to relative spin about contact normal)
 - SJKR cohesion (overlap-dependent attractive force)
 - JKR adhesion (surface energy-based attraction with pull-off at separation)
 - Velocity Verlet for translational + rotational degrees of freedom
 - Quaternion-based orientation tracking
 - Automatic timestep (5% of Rayleigh wave period)
 - Configurable gravity body force
-- General plane wall contacts with motion (static, constant velocity, oscillating, servo-controlled), toggleable at runtime
+- Wall contacts: plane, cylinder, and sphere geometries with motion (static, constant velocity, oscillating, servo-controlled), toggleable at runtime
 - Named material types with per-pair geometric-mean mixing
 - Bonded particle model: auto-bonding, normal/tangential/bending spring-dashpot forces, breakage criteria
 - FIRE energy minimization (adaptive timestep, stage-aware)
 - Particle insertion: random (overlap-free), rate-based (periodic), file-based (CSV, LAMMPS dump, LAMMPS data)
 - Size distributions: uniform, Gaussian, log-normal, weighted discrete
+- Contact-based heat conduction with per-atom temperature
 
 ### MD (Molecular)
 - Lennard-Jones 12-6 with cutoff, virial accumulator, and tail corrections; multi-type support with per-type parameters, mixing rules, and explicit pair coefficient overrides
@@ -196,10 +199,10 @@ cargo run --release -- config.toml --schedule
 - Single-process mode with ghost atoms for periodic boundaries
 - Bin-based neighbor lists with CSR storage and forward-only stencil
 - Brute force and sweep-and-prune neighbor lists also available
-- Named atom groups (`[[group]]`) with type and region filters; structured `Region` primitives (block, sphere, cylinder, plane)
+- Named atom groups (`[[group]]`) with type and region filters; structured `Region` primitives (block, sphere, cylinder, plane, union, intersect)
 - `PairCoeffTable<T>` generic NxN symmetric pair coefficient storage with geometric/arithmetic mixing
 - `DumpRegistry` callback-based per-atom output extension for dump and VTP files
-- Fixes: AddForce, SetForce, Freeze, MoveLinear (group-based)
+- Fixes: AddForce, SetForce, Freeze, MoveLinear, Viscous (group-based)
 - Configurable thermo columns with group filtering (`ke/mobile`, `temp/mobile`)
 - TOML config with `serde` validation and `deny_unknown_fields` on all config structs
 - Dump files (CSV/binary), restart files (bincode/JSON), VTP visualization
@@ -340,11 +343,12 @@ These are specialized features that won't be in core. Users can write plugins fo
 | [`mddem_verlet`](crates/mddem_verlet/) | Velocity Verlet translational integration |
 | [`mddem_print`](crates/mddem_print/) | Thermo (configurable columns), VTP, dump files, restart files, `DumpRegistry` |
 | [`mddem_derive`](crates/mddem_derive/) | `#[derive(AtomData)]` and `#[derive(StageEnum)]` proc macros |
-| [`mddem_fixes`](crates/mddem_fixes/) | AddForce, SetForce, Freeze, MoveLinear fixes; Gravity body force |
+| [`mddem_fixes`](crates/mddem_fixes/) | AddForce, SetForce, Freeze, MoveLinear, Viscous fixes; Gravity body force |
 | [`mddem_fire`](crates/mddem_fire/) | FIRE energy minimization (adaptive timestep, stage-aware) |
 | [`dem_atom`](crates/dem_atom/) | Per-atom DEM data, `MaterialTable`, particle insertion (random/rate/file), radius distributions |
-| [`dem_granular`](crates/dem_granular/) | Hertz-Mindlin contact (with rolling resistance, SJKR cohesion, JKR adhesion), rotational dynamics, granular temperature |
-| [`dem_wall`](crates/dem_wall/) | Plane wall contact forces with motion (static, constant velocity, oscillating, servo) |
+| [`dem_granular`](crates/dem_granular/) | Hertz-Mindlin and Hooke contact (with rolling resistance, twisting friction, SJKR cohesion, JKR adhesion), rotational dynamics, granular temperature |
+| [`dem_wall`](crates/dem_wall/) | Plane, cylinder, and sphere wall contact forces with motion (static, constant velocity, oscillating, servo) |
+| [`dem_thermal`](crates/dem_thermal/) | Contact-based heat conduction with per-atom temperature |
 | [`dem_bond`](crates/dem_bond/) | Bonded particle model: auto-bonding, normal/tangential/bending forces, breakage |
 | [`md_lj`](crates/md_lj/) | LJ 12-6 pair force with virial, tail corrections, and multi-type support |
 | [`md_thermostat`](crates/md_thermostat/) | Nose-Hoover NVT and Langevin thermostats (group-aware) |

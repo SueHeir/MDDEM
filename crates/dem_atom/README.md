@@ -32,6 +32,9 @@ Implements the `AtomData` trait (via `#[derive(AtomData)]`) for automatic MPI pa
 - `rolling_friction` — rolling resistance coefficient (default 0.0 = disabled)
 - `cohesion_energy` — SJKR cohesion energy density in J/m² (default 0.0 = disabled)
 - `surface_energy` — JKR surface energy in J/m² (default 0.0 = disabled)
+- `twisting_friction` — twisting resistance coefficient (default 0.0 = disabled)
+- `kn` — Hooke normal stiffness (default 0.0, used when `contact_model = "hooke"`)
+- `kt` — Hooke tangential stiffness (default 0.0, used when `contact_model = "hooke"`)
 
 **Per-pair (geometric-mean mixing):**
 - `beta_ij` — damping coefficient from restitution
@@ -39,10 +42,16 @@ Implements the `AtomData` trait (via `#[derive(AtomData)]`) for automatic MPI pa
 - `rolling_friction_ij` — rolling resistance coefficient
 - `cohesion_energy_ij` — SJKR cohesion
 - `surface_energy_ij` — JKR adhesion
+- `twisting_friction_ij` — twisting resistance coefficient
+- `kn_ij` — Hooke normal stiffness (harmonic mean: `2*ki*kj/(ki+kj)`)
+- `kt_ij` — Hooke tangential stiffness (harmonic mean)
 - `e_eff_ij` — effective Young's modulus (Hertz)
 - `g_eff_ij` — effective shear modulus (Mindlin)
 
-Pair properties use geometric-mean mixing: `mu_ij = sqrt(mu_i * mu_j)`.
+Pair properties use geometric-mean mixing: `mu_ij = sqrt(mu_i * mu_j)`. Hooke stiffnesses use harmonic-mean mixing.
+
+**DemConfig:**
+- `contact_model` — `"hertz"` (default) or `"hooke"` — selects the contact model used by `HertzMindlinContactPlugin`.
 
 `cohesion_energy` and `surface_energy` are mutually exclusive on the same material — the plugin exits with an error if both are nonzero.
 
@@ -86,8 +95,11 @@ poisson_ratio = 0.3
 restitution = 0.95
 friction = 0.4
 # rolling_friction = 0.1       # rolling resistance (default 0.0)
+# twisting_friction = 0.01     # twisting resistance (default 0.0)
 # cohesion_energy = 0.05        # SJKR cohesion J/m² (default 0.0)
 # surface_energy = 0.05         # JKR adhesion J/m² (default 0.0)
+# kn = 1e5                      # Hooke normal stiffness (for contact_model = "hooke")
+# kt = 1e4                      # Hooke tangential stiffness (for contact_model = "hooke")
 
 # Random insertion
 [[particles.insert]]
