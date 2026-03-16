@@ -1,10 +1,10 @@
 [package]
-name = "dem_velocity_distribution"
+name = "mddem_velocity_distribution"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Velocity distribution analysis for granular gases — bins particle speeds and compares against Maxwell-Boltzmann"
+description = "Velocity distribution analysis for particle simulations — bins particle speeds and compares against Maxwell-Boltzmann"
 
 [dependencies]
 mddem_app = { path = "../mddem_app" }

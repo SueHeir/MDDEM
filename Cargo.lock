@@ -170,16 +170,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dem_velocity_distribution"
-version = "0.1.3"
-dependencies = [
- "mddem_app",
- "mddem_core",
- "mddem_scheduler",
- "serde",
-]
-
-[[package]]
 name = "dem_wall"
 version = "0.1.3"
 dependencies = [
@@ -410,7 +400,6 @@ dependencies = [
  "dem_bond",
  "dem_granular",
  "dem_thermal",
- "dem_velocity_distribution",
  "dem_wall",
  "md_lattice",
  "md_lj",
@@ -424,6 +413,7 @@ dependencies = [
  "mddem_neighbor",
  "mddem_print",
  "mddem_scheduler",
+ "mddem_velocity_distribution",
  "mddem_verlet",
 ]
 
@@ -431,12 +421,12 @@ dependencies = [
 name = "mddem-bin"
 version = "0.1.3"
 dependencies = [
- "dem_velocity_distribution",
  "libffi-sys",
  "mddem",
  "mddem_derive",
  "mddem_fire",
  "mddem_scheduler",
+ "mddem_velocity_distribution",
 ]
 
 [[package]]
@@ -524,6 +514,16 @@ version = "0.1.3"
 dependencies = [
  "dem_atom",
  "mddem_core",
+]
+
+[[package]]
+name = "mddem_velocity_distribution"
+version = "0.1.3"
+dependencies = [
+ "mddem_app",
+ "mddem_core",
+ "mddem_scheduler",
+ "serde",
 ]
 
 [[package]]

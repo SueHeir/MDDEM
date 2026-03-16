@@ -1,4 +1,4 @@
-//! Velocity distribution analysis plugin for granular gases.
+//! Velocity distribution analysis plugin for particle simulations.
 //!
 //! Measures particle speed distributions and compares against the Maxwell-Boltzmann
 //! distribution for the measured granular temperature. Outputs:
@@ -68,6 +68,7 @@ impl Default for VelocityDistributionConfig {
 
 /// Plugin that periodically measures the velocity distribution and writes
 /// comparison data against the Maxwell-Boltzmann distribution.
+/// Applicable to any particle simulation (granular, molecular dynamics, etc.).
 pub struct VelocityDistributionPlugin;
 
 impl Plugin for VelocityDistributionPlugin {
@@ -151,6 +152,7 @@ fn gaussian_component_pdf(v: f64, t_granular: f64) -> f64 {
 
 /// Compute velocity distribution statistics from raw velocity data.
 /// This is the pure-computation core, separated from I/O for testability.
+/// Works for any particle simulation (DEM, MD, etc.).
 pub fn analyze_velocity_distribution(
     velocities: &[[f64; 3]],
     masses: &[f64],
@@ -346,10 +348,18 @@ fn compute_velocity_distribution(
         return;
     }
 
-    // For single-process: compute directly. For MPI: only rank 0 has full data
-    // after allgather, but we keep it simple — each rank computes its local distribution.
-    // In single-process mode (no MPI), nlocal == natoms.
-    // For MPI, a proper implementation would allgather velocities. For now, compute locally.
+    // Warn once if running with MPI — analysis is local-only and will not
+    // aggregate velocities across ranks. A proper implementation would
+    // allgather velocities before computing the distribution.
+    if comm.size() > 1 && step == config.interval {
+        eprintln!(
+            "WARNING: velocity_distribution plugin is local-only; \
+             results on {} ranks may not represent the global distribution. \
+             Consider running in single-process mode for accurate analysis.",
+            comm.size()
+        );
+    }
+
     let velocities = &atoms.vel[..nlocal];
     let masses = &atoms.mass[..nlocal];
 
