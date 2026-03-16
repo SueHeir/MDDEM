@@ -423,6 +423,146 @@ regions = [
         assert!(!r.contains(&[4.0, 0.0, 0.0]));
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // VALIDATION: Region edge cases — boundary points, degenerate regions,
+    // nested union/intersect, and overlapping regions.
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_block_boundary_points_are_inside() {
+        // All faces, edges, and corners of a block should be "inside" (inclusive)
+        let r = Region::Block { min: [0.0, 0.0, 0.0], max: [1.0, 1.0, 1.0] };
+        // Faces
+        assert!(r.contains(&[0.5, 0.5, 0.0])); // bottom face
+        assert!(r.contains(&[0.5, 0.5, 1.0])); // top face
+        // Edges
+        assert!(r.contains(&[0.0, 0.5, 0.0]));
+        assert!(r.contains(&[1.0, 0.5, 1.0]));
+        // Corners
+        assert!(r.contains(&[0.0, 0.0, 0.0]));
+        assert!(r.contains(&[1.0, 1.0, 1.0]));
+        assert!(r.contains(&[0.0, 1.0, 0.0]));
+    }
+
+    #[test]
+    fn test_sphere_boundary_on_surface() {
+        let r = Region::Sphere { center: [0.0, 0.0, 0.0], radius: 1.0 };
+        // Points exactly on the surface should be inside (<=)
+        assert!(r.contains(&[1.0, 0.0, 0.0]));
+        assert!(r.contains(&[0.0, 1.0, 0.0]));
+        assert!(r.contains(&[0.0, 0.0, 1.0]));
+        // Just outside
+        assert!(!r.contains(&[1.0 + 1e-10, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn test_zero_volume_block() {
+        // Degenerate block with zero volume (min == max)
+        let r = Region::Block { min: [1.0, 2.0, 3.0], max: [1.0, 2.0, 3.0] };
+        // Only the exact point should be inside
+        assert!(r.contains(&[1.0, 2.0, 3.0]));
+        assert!(!r.contains(&[1.0 + 1e-15, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn test_zero_radius_sphere() {
+        // Degenerate sphere with zero radius
+        let r = Region::Sphere { center: [0.0, 0.0, 0.0], radius: 0.0 };
+        assert!(r.contains(&[0.0, 0.0, 0.0]));
+        assert!(!r.contains(&[1e-15, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn test_nested_union_of_intersections() {
+        // Union of two intersections: (A ∩ B) ∪ (C ∩ D)
+        let r = Region::Union {
+            regions: vec![
+                Region::Intersect {
+                    regions: vec![
+                        Region::Block { min: [0.0, 0.0, 0.0], max: [2.0, 2.0, 2.0] },
+                        Region::Sphere { center: [0.0, 0.0, 0.0], radius: 1.5 },
+                    ],
+                },
+                Region::Intersect {
+                    regions: vec![
+                        Region::Block { min: [3.0, 3.0, 3.0], max: [5.0, 5.0, 5.0] },
+                        Region::Sphere { center: [4.0, 4.0, 4.0], radius: 2.0 },
+                    ],
+                },
+            ],
+        };
+        // Point in first intersection
+        assert!(r.contains(&[0.5, 0.5, 0.5]));
+        // Point in second intersection
+        assert!(r.contains(&[4.0, 4.0, 4.0]));
+        // Point in neither
+        assert!(!r.contains(&[2.5, 2.5, 2.5]));
+    }
+
+    #[test]
+    fn test_overlapping_union_regions() {
+        // Two overlapping spheres — point in overlap should be inside
+        let r = Region::Union {
+            regions: vec![
+                Region::Sphere { center: [0.0, 0.0, 0.0], radius: 2.0 },
+                Region::Sphere { center: [1.0, 0.0, 0.0], radius: 2.0 },
+            ],
+        };
+        // In overlap region
+        assert!(r.contains(&[0.5, 0.0, 0.0]));
+        // In first only
+        assert!(r.contains(&[-1.5, 0.0, 0.0]));
+        // In second only
+        assert!(r.contains(&[2.5, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn test_non_overlapping_intersect_is_empty() {
+        // Two non-overlapping blocks — intersect should contain nothing
+        let r = Region::Intersect {
+            regions: vec![
+                Region::Block { min: [0.0, 0.0, 0.0], max: [1.0, 1.0, 1.0] },
+                Region::Block { min: [2.0, 2.0, 2.0], max: [3.0, 3.0, 3.0] },
+            ],
+        };
+        assert!(!r.contains(&[0.5, 0.5, 0.5]));
+        assert!(!r.contains(&[2.5, 2.5, 2.5]));
+        assert!(!r.contains(&[1.5, 1.5, 1.5]));
+    }
+
+    #[test]
+    fn test_cylinder_at_axial_boundaries() {
+        let r = Region::Cylinder {
+            center: [0.0, 0.0],
+            radius: 1.0,
+            axis: Axis::Z,
+            lo: 0.0,
+            hi: 5.0,
+        };
+        // Exactly at lo
+        assert!(r.contains(&[0.0, 0.0, 0.0]));
+        // Exactly at hi
+        assert!(r.contains(&[0.0, 0.0, 5.0]));
+        // Just below lo
+        assert!(!r.contains(&[0.0, 0.0, -1e-10]));
+        // Just above hi
+        assert!(!r.contains(&[0.0, 0.0, 5.0 + 1e-10]));
+    }
+
+    #[test]
+    fn test_plane_exact_on_surface() {
+        let r = Region::Plane {
+            point: [0.0, 0.0, 5.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        // Point exactly on the plane
+        assert!(r.contains(&[10.0, -5.0, 5.0]));
+        // Point just above (positive side)
+        assert!(r.contains(&[0.0, 0.0, 5.0 + 1e-15]));
+        // Point just below (negative side)
+        assert!(!r.contains(&[0.0, 0.0, 5.0 - 1e-10]));
+    }
+
     #[test]
     fn test_region_deserialization() {
         let toml_str = r#"type = "sphere"

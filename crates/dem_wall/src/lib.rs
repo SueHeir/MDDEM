@@ -1403,6 +1403,304 @@ mod tests {
         assert!(f_mag < 1e-15, "no force when not touching sphere wall, got {}", f_mag);
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // VALIDATION: Cylinder wall force direction always points radially
+    // For an inside cylinder, the force should always point toward the axis
+    // regardless of where the particle is around the circumference.
+    // Test at multiple angular positions around a Z-cylinder.
+    // ══════════════════════════════════════════════════════════════════════
+    #[test]
+    fn cylinder_force_always_points_radially_inward() {
+        let particle_radius = 0.001;
+        let cyl_radius = 0.01;
+        let center = [0.005, 0.005];
+        // Place particles near the wall at different angles
+        let angles: Vec<f64> = vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0];
+
+        for angle in &angles {
+            let r = cyl_radius - 0.5 * particle_radius; // overlap = 0.5 * particle_radius
+            let px = center[0] + r * angle.cos();
+            let py = center[1] + r * angle.sin();
+            let pz = 0.005;
+
+            let mut atom = Atom::new();
+            let mut dem = DemAtom::new();
+            push_dem_test_atom(&mut atom, &mut dem, 0, [px, py, pz], particle_radius);
+            atom.nlocal = 1;
+            atom.natoms = 1;
+
+            let mut registry = AtomDataRegistry::new();
+            registry.register(dem);
+
+            let walls = make_walls_with_cylinder(WallCylinder {
+                axis: 2,
+                center,
+                radius: cyl_radius,
+                lo: 0.0,
+                hi: 0.01,
+                inside: true,
+                material_index: 0,
+                name: None,
+                force_accumulator: 0.0,
+            });
+
+            let mut app = App::new();
+            app.add_resource(atom);
+            app.add_resource(registry);
+            app.add_resource(make_material_table());
+            app.add_resource(walls);
+            app.add_update_system(wall_contact_force, ScheduleSet::Force);
+            app.organize_systems();
+            app.run();
+
+            let atom = app.get_resource_ref::<Atom>().unwrap();
+            let fx = atom.force[0][0];
+            let fy = atom.force[0][1];
+            let fz = atom.force[0][2];
+
+            // Force should be purely radial (no z component)
+            assert!(
+                fz.abs() < 1e-12,
+                "angle={:.1}: no z force expected, got {:.6e}", angle, fz
+            );
+
+            // Force direction should point toward axis center
+            let dx = px - center[0];
+            let dy = py - center[1];
+            let r_actual = (dx * dx + dy * dy).sqrt();
+            // Radial unit vector (outward): (dx/r, dy/r)
+            // Force should oppose this (inward): dot(f, r_hat) < 0
+            let f_dot_r = fx * dx / r_actual + fy * dy / r_actual;
+            assert!(
+                f_dot_r < 0.0,
+                "angle={:.1}: force should point inward, f·r_hat={:.6e}",
+                angle, f_dot_r
+            );
+
+            // Force magnitude should be nonzero
+            let f_mag = (fx * fx + fy * fy).sqrt();
+            assert!(f_mag > 0.0, "angle={:.1}: force magnitude should be nonzero", angle);
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // VALIDATION: Cylinder axial bounds are enforced
+    // Particles outside lo/hi should not get any force from the cylinder.
+    // ══════════════════════════════════════════════════════════════════════
+    #[test]
+    fn cylinder_axial_bounds_enforced() {
+        let particle_radius = 0.001;
+        let cyl_radius = 0.01;
+        let center = [0.005, 0.005];
+
+        // Place particle near the wall but outside axial bounds (below lo)
+        let r = cyl_radius - 0.5 * particle_radius;
+        let px = center[0] + r;
+        let py = center[1];
+        let pz = -0.001; // below lo=0.0
+
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        push_dem_test_atom(&mut atom, &mut dem, 0, [px, py, pz], particle_radius);
+        atom.nlocal = 1;
+        atom.natoms = 1;
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+
+        let walls = make_walls_with_cylinder(WallCylinder {
+            axis: 2,
+            center,
+            radius: cyl_radius,
+            lo: 0.0,
+            hi: 0.01,
+            inside: true,
+            material_index: 0,
+            name: None,
+            force_accumulator: 0.0,
+        });
+
+        let mut app = App::new();
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(make_material_table());
+        app.add_resource(walls);
+        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        let f_mag = (atom.force[0][0].powi(2) + atom.force[0][1].powi(2) + atom.force[0][2].powi(2)).sqrt();
+        assert!(
+            f_mag < 1e-15,
+            "No force outside axial bounds: f_mag={:.6e}",
+            f_mag
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // VALIDATION: Sphere wall force direction at multiple positions
+    // For an inside sphere, force should always point toward the center.
+    // ══════════════════════════════════════════════════════════════════════
+    #[test]
+    fn sphere_force_points_toward_center_at_multiple_positions() {
+        let particle_radius = 0.001;
+        let sph_radius = 0.01;
+        let sph_center = [0.005, 0.005, 0.005];
+
+        // Test positions along different axes
+        let directions: Vec<[f64; 3]> = vec![
+            [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0],
+            [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0],
+            [1.0, 1.0, 0.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ];
+
+        for dir in &directions {
+            let mag = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+            let nd = [dir[0] / mag, dir[1] / mag, dir[2] / mag];
+            let r = sph_radius - 0.5 * particle_radius;
+            let px = sph_center[0] + r * nd[0];
+            let py = sph_center[1] + r * nd[1];
+            let pz = sph_center[2] + r * nd[2];
+
+            let mut atom = Atom::new();
+            let mut dem = DemAtom::new();
+            push_dem_test_atom(&mut atom, &mut dem, 0, [px, py, pz], particle_radius);
+            atom.nlocal = 1;
+            atom.natoms = 1;
+
+            let mut registry = AtomDataRegistry::new();
+            registry.register(dem);
+
+            let walls = make_walls_with_sphere(WallSphere {
+                center: sph_center,
+                radius: sph_radius,
+                inside: true,
+                material_index: 0,
+                name: None,
+                force_accumulator: 0.0,
+            });
+
+            let mut app = App::new();
+            app.add_resource(atom);
+            app.add_resource(registry);
+            app.add_resource(make_material_table());
+            app.add_resource(walls);
+            app.add_update_system(wall_contact_force, ScheduleSet::Force);
+            app.organize_systems();
+            app.run();
+
+            let atom = app.get_resource_ref::<Atom>().unwrap();
+            let fx = atom.force[0][0];
+            let fy = atom.force[0][1];
+            let fz = atom.force[0][2];
+            let f_mag = (fx * fx + fy * fy + fz * fz).sqrt();
+
+            assert!(f_mag > 0.0, "dir={:?}: force should be nonzero", dir);
+
+            // Force should point toward center: dot(f, r_hat) < 0
+            let dx = px - sph_center[0];
+            let dy = py - sph_center[1];
+            let dz = pz - sph_center[2];
+            let r_actual = (dx * dx + dy * dy + dz * dz).sqrt();
+            let f_dot_r = fx * dx / r_actual + fy * dy / r_actual + fz * dz / r_actual;
+            assert!(
+                f_dot_r < 0.0,
+                "dir={:?}: force should point toward center, f·r_hat={:.6e}",
+                dir, f_dot_r
+            );
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // VALIDATION: Wall force at exact contact (delta=0) should be zero
+    // When a particle's surface just touches the wall (no overlap),
+    // the elastic force should be zero.
+    // ══════════════════════════════════════════════════════════════════════
+    #[test]
+    fn wall_zero_force_at_exact_contact() {
+        let radius = 0.001;
+
+        // Place particle center at exactly radius from wall → delta = 0
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.01, 0.01, radius], radius);
+        atom.nlocal = 1;
+        atom.natoms = 1;
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+
+        let walls = make_walls(vec![make_wall_plane(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)]);
+
+        let mut app = App::new();
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(make_material_table());
+        app.add_resource(walls);
+        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        let f_mag = (atom.force[0][0].powi(2) + atom.force[0][1].powi(2) + atom.force[0][2].powi(2)).sqrt();
+        assert!(
+            f_mag < 1e-10,
+            "Force at exact contact should be ~zero, got {:.6e}",
+            f_mag
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // VALIDATION: Wall Hertz force scales as delta^(3/2) for plane walls
+    // Same as particle-particle Hertz, but with R_eff = R_particle.
+    // ══════════════════════════════════════════════════════════════════════
+    #[test]
+    fn wall_hertz_force_scales_as_delta_three_halves() {
+        let radius = 0.001;
+
+        let wall_force_at = |delta: f64| -> f64 {
+            let distance = radius - delta; // signed distance from wall to center
+            let mut atom = Atom::new();
+            let mut dem = DemAtom::new();
+            push_dem_test_atom(&mut atom, &mut dem, 0, [0.01, 0.01, distance], radius);
+            atom.nlocal = 1;
+            atom.natoms = 1;
+
+            let mut registry = AtomDataRegistry::new();
+            registry.register(dem);
+
+            let walls = make_walls(vec![make_wall_plane(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)]);
+
+            let mut app = App::new();
+            app.add_resource(atom);
+            app.add_resource(registry);
+            app.add_resource(make_material_table());
+            app.add_resource(walls);
+            app.add_update_system(wall_contact_force, ScheduleSet::Force);
+            app.organize_systems();
+            app.run();
+
+            let atom = app.get_resource_ref::<Atom>().unwrap();
+            atom.force[0][2].abs()
+        };
+
+        let deltas = [1e-5, 2e-5, 4e-5, 6e-5, 8e-5];
+        let forces: Vec<f64> = deltas.iter().map(|d| wall_force_at(*d)).collect();
+
+        for i in 1..deltas.len() {
+            let expected_ratio = (deltas[i] / deltas[0]).powf(1.5);
+            let actual_ratio = forces[i] / forces[0];
+            let rel_err = ((actual_ratio - expected_ratio) / expected_ratio).abs();
+            assert!(
+                rel_err < 0.01,
+                "Wall Hertz scaling: delta ratio {:.1}, expected F ratio {:.4}, got {:.4} (rel err {:.4})",
+                deltas[i] / deltas[0], expected_ratio, actual_ratio, rel_err
+            );
+        }
+    }
+
     #[test]
     fn static_wall_unaffected_by_motion_systems() {
         let mut atom = Atom::new();
