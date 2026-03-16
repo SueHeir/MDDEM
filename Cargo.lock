@@ -393,7 +393,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "md_water"
+name = "md_type_rdf"
 version = "0.1.3"
 dependencies = [
  "mddem_app",
@@ -417,7 +417,7 @@ dependencies = [
  "md_lj",
  "md_measure",
  "md_thermostat",
- "md_water",
+ "md_type_rdf",
  "mddem_app",
  "mddem_core",
  "mddem_derive",
@@ -434,7 +434,7 @@ version = "0.1.3"
 dependencies = [
  "dem_measure_plane",
  "libffi-sys",
- "md_water",
+ "md_type_rdf",
  "mddem",
  "mddem_derive",
  "mddem_fire",

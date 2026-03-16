@@ -1,11 +1,11 @@
 [package]
-name = "md_water"
+name = "md_type_rdf"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Water model support for MDDEM: type-filtered RDF and SPC/E reference parameters"
-keywords = ["water", "spc-e", "rdf", "molecular-dynamics"]
+description = "Type-filtered radial distribution function plugin for MDDEM: measure g(r) between specific atom type pairs"
+keywords = ["rdf", "molecular-dynamics", "pair-correlation", "simulation"]
 categories = ["simulation", "science"]
 
 [dependencies]

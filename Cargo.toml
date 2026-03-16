@@ -79,8 +79,8 @@ name = "conveyor_belt"
 path = "examples/conveyor_belt/main.rs"
 
 [[example]]
-name = "water_spce"
-path = "examples/water_spce/main.rs"
+name = "lj_type_rdf"
+path = "examples/lj_type_rdf/main.rs"
 
 
 [profile.release]
@@ -92,7 +92,7 @@ panic = "abort"
 [dependencies]
 mddem = { path = "./crates/mddem", default-features = false }
 dem_measure_plane = { path = "./crates/dem_measure_plane" }
-md_water = { path = "./crates/md_water" }
+md_type_rdf = { path = "./crates/md_type_rdf" }
 mddem_derive = { path = "./crates/mddem_derive" }
 mddem_fire = { path = "./crates/mddem_fire" }
 mddem_scheduler = { path = "./crates/mddem_scheduler" }
