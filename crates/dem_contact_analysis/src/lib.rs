@@ -3,7 +3,8 @@
 //! Provides [`ContactAnalysisPlugin`] which reads a `[contact_analysis]` TOML config section
 //! and registers post-force systems for:
 //! - Per-atom coordination number (count of active contacts per particle)
-//! - Per-contact force records dumped to CSV files at configurable intervals
+//! - Rattler detection (particles with < 4 contacts, unstable in 3D)
+//! - Per-contact geometry records dumped to CSV files at configurable intervals
 //! - Fabric tensor computation from contact normals (output to thermo)
 //!
 //! # Configuration
@@ -11,6 +12,7 @@
 //! [contact_analysis]
 //! interval = 1000        # dump contact data every N steps (0 = disabled)
 //! coordination = true    # compute per-atom coordination number
+//! rattlers = true        # detect rattler particles (< 4 contacts)
 //! fabric_tensor = true   # compute fabric tensor to thermo output
 //! file_prefix = "contact" # prefix for contact CSV files
 //! ```
@@ -45,6 +47,9 @@ pub struct ContactAnalysisConfig {
     /// Compute per-atom coordination number.
     #[serde(default)]
     pub coordination: bool,
+    /// Enable rattler detection (particles with < 4 contacts in 3D).
+    #[serde(default)]
+    pub rattlers: bool,
     /// Compute fabric tensor and output to thermo.
     #[serde(default)]
     pub fabric_tensor: bool,
@@ -59,6 +64,7 @@ pub struct ContactAnalysisConfig {
 #[derive(AtomData)]
 pub struct ContactAnalysis {
     /// Number of contacts per atom (as f64 for thermo/dump compatibility).
+    #[forward]
     #[zero]
     pub coordination: Vec<f64>,
 }
@@ -79,21 +85,17 @@ impl Default for ContactAnalysis {
 
 // ── Per-contact record ──────────────────────────────────────────────────────
 
-/// A single contact record for force chain analysis.
+/// A single contact record for contact network analysis.
+///
+/// Contains geometric data (overlap, contact point, contact normal) that can be
+/// computed from the neighbor list. Force data requires coupling to the contact
+/// force computation and is not included here.
 #[derive(Clone, Debug)]
 pub struct ContactRecord {
     /// Global tag of atom i.
     pub i_tag: u32,
     /// Global tag of atom j.
     pub j_tag: u32,
-    /// Total contact force (x, y, z).
-    pub fx: f64,
-    pub fy: f64,
-    pub fz: f64,
-    /// Normal force magnitude.
-    pub fn_mag: f64,
-    /// Tangential force magnitude.
-    pub ft_mag: f64,
     /// Overlap (positive = penetration).
     pub overlap: f64,
     /// Contact point (x, y, z).
@@ -106,7 +108,7 @@ pub struct ContactRecord {
     pub nz: f64,
 }
 
-/// Resource holding per-contact force data, cleared each step.
+/// Resource holding per-contact data, cleared each step.
 pub struct ContactOutput {
     pub records: Vec<ContactRecord>,
 }
@@ -125,6 +127,19 @@ impl Default for ContactOutput {
     }
 }
 
+/// Fabric tensor accumulator, stored as a resource and filled during the main
+/// contact analysis loop to avoid redundant neighbor traversal.
+#[derive(Default)]
+struct FabricTensorAccum {
+    fxx: f64,
+    fyy: f64,
+    fzz: f64,
+    fxy: f64,
+    fxz: f64,
+    fyz: f64,
+    nc: f64,
+}
+
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
 /// Contact analysis plugin: coordination number, per-contact force output, fabric tensor.
@@ -138,6 +153,8 @@ impl Plugin for ContactAnalysisPlugin {
 interval = 0
 # Compute per-atom coordination number
 coordination = true
+# Detect rattler particles (< 4 contacts in 3D)
+rattlers = false
 # Compute fabric tensor and output to thermo
 fabric_tensor = false
 # File prefix for contact CSV output
@@ -150,6 +167,7 @@ file_prefix = "contact""#,
 
         // Always register ContactOutput for per-contact records
         app.add_resource(ContactOutput::new());
+        app.add_resource(FabricTensorAccum::default());
 
         if config.coordination {
             register_atom_data!(app, ContactAnalysis::new());
@@ -175,7 +193,8 @@ file_prefix = "contact""#,
             );
         }
 
-        // Coordination + contact record collection (PostForce, after contact forces)
+        // Coordination + contact record collection + fabric tensor accumulation
+        // (PostForce, after contact forces — single neighbor traversal)
         app.add_update_system(
             compute_contact_analysis
                 .label("contact_analysis")
@@ -189,8 +208,9 @@ file_prefix = "contact""#,
         }
 
         if config.fabric_tensor {
+            // Fabric tensor thermo output reads the accumulator filled by compute_contact_analysis
             app.add_update_system(
-                compute_fabric_tensor.after("contact_analysis"),
+                push_fabric_tensor_to_thermo.after("contact_analysis"),
                 ScheduleSet::PostForce,
             );
         }
@@ -199,8 +219,9 @@ file_prefix = "contact""#,
 
 // ── Systems ─────────────────────────────────────────────────────────────────
 
-/// Post-force system: iterate neighbor pairs, detect contacts (overlap > 0),
-/// increment coordination numbers, and collect per-contact records.
+/// Post-force system: iterate neighbor pairs once, detect contacts (overlap > 0),
+/// increment coordination numbers, collect per-contact records, and accumulate
+/// fabric tensor components — all in a single neighbor traversal.
 #[allow(clippy::too_many_arguments)]
 fn compute_contact_analysis(
     atoms: Res<Atom>,
@@ -209,15 +230,26 @@ fn compute_contact_analysis(
     config: Res<ContactAnalysisConfig>,
     run_state: Res<RunState>,
     mut contact_output: ResMut<ContactOutput>,
+    mut fabric: ResMut<FabricTensorAccum>,
 ) {
     let nlocal = atoms.nlocal as usize;
     let dem = registry.expect::<DemAtom>("compute_contact_analysis");
     let has_coordination = config.coordination;
+    let has_fabric = config.fabric_tensor;
     let collect_records =
         config.interval > 0 && run_state.total_cycle % config.interval == 0;
 
     // Clear previous step's records
     contact_output.records.clear();
+
+    // Reset fabric tensor accumulator
+    fabric.fxx = 0.0;
+    fabric.fyy = 0.0;
+    fabric.fzz = 0.0;
+    fabric.fxy = 0.0;
+    fabric.fxz = 0.0;
+    fabric.fyz = 0.0;
+    fabric.nc = 0.0;
 
     // Get mutable coordination data if enabled
     let mut ca = if has_coordination {
@@ -267,32 +299,34 @@ fn compute_contact_analysis(
             }
         }
 
+        // Compute contact normal (needed for fabric tensor and contact records)
+        let inv_dist = 1.0 / distance;
+        let nx = dx * inv_dist;
+        let ny = dy * inv_dist;
+        let nz = dz * inv_dist;
+
+        // Accumulate fabric tensor
+        if has_fabric {
+            fabric.fxx += nx * nx;
+            fabric.fyy += ny * ny;
+            fabric.fzz += nz * nz;
+            fabric.fxy += nx * ny;
+            fabric.fxz += nx * nz;
+            fabric.fyz += ny * nz;
+            fabric.nc += 1.0;
+        }
+
         // Collect per-contact record if this is a dump step
         if collect_records {
-            let inv_dist = 1.0 / distance;
-            let nx = dx * inv_dist;
-            let ny = dy * inv_dist;
-            let nz = dz * inv_dist;
-
             // Contact point: on surface of atom i, offset by (r1 - delta/2)
             let alpha = r1 - 0.5 * delta;
             let cx = atoms.pos[i][0] + alpha * nx;
             let cy = atoms.pos[i][1] + alpha * ny;
             let cz = atoms.pos[i][2] + alpha * nz;
 
-            // Force magnitudes: recorded as geometry-only for now.
-            // Full force integration (reading fn/ft from the contact force loop)
-            // requires coupling to dem_granular's contact computation.
-            // The overlap and contact normal are the primary data for
-            // fabric tensor and contact network analysis.
             contact_output.records.push(ContactRecord {
                 i_tag: atoms.tag[i],
                 j_tag: atoms.tag[j],
-                fx: 0.0,
-                fy: 0.0,
-                fz: 0.0,
-                fn_mag: 0.0,
-                ft_mag: 0.0,
                 overlap: delta,
                 cx,
                 cy,
@@ -305,10 +339,11 @@ fn compute_contact_analysis(
     }
 }
 
-/// Push coordination statistics to thermo output.
+/// Push coordination statistics (avg, max, min) and rattler counts to thermo output.
 fn push_coordination_to_thermo(
     atoms: Res<Atom>,
     registry: Res<AtomDataRegistry>,
+    config: Res<ContactAnalysisConfig>,
     comm: Res<CommResource>,
     mut thermo: ResMut<Thermo>,
     run_state: Res<RunState>,
@@ -321,17 +356,33 @@ fn push_coordination_to_thermo(
         let nlocal = atoms.nlocal as usize;
         let mut sum = 0.0;
         let mut max_val: f64 = 0.0;
+        let mut min_val: f64 = f64::MAX;
+        let mut n_rattlers: usize = 0;
+
         for i in 0..nlocal {
             let c = ca.coordination[i];
             sum += c;
             if c > max_val {
                 max_val = c;
             }
+            if c < min_val {
+                min_val = c;
+            }
+            // Rattler: particle with < 4 contacts (in 3D, needs d+1 = 4 for stability)
+            if c < 4.0 {
+                n_rattlers += 1;
+            }
+        }
+
+        // Handle empty case
+        if nlocal == 0 {
+            min_val = 0.0;
         }
 
         let global_sum = comm.all_reduce_sum_f64(sum);
         // Use min of negated values to get max across ranks
         let global_max = -comm.all_reduce_min_f64(-max_val);
+        let global_min = comm.all_reduce_min_f64(min_val);
         let global_atoms = atoms.natoms as f64;
         let avg = if global_atoms > 0.0 {
             global_sum / global_atoms
@@ -341,73 +392,45 @@ fn push_coordination_to_thermo(
 
         thermo.set("coord_avg", avg);
         thermo.set("coord_max", global_max);
+        thermo.set("coord_min", global_min);
+
+        if config.rattlers {
+            let global_rattlers = comm.all_reduce_sum_f64(n_rattlers as f64);
+            thermo.set("n_rattlers", global_rattlers);
+            thermo.set(
+                "rattler_fraction",
+                if global_atoms > 0.0 {
+                    global_rattlers / global_atoms
+                } else {
+                    0.0
+                },
+            );
+        }
     }
 }
 
-/// Post-force system: compute fabric tensor from contact normals and push to thermo.
+/// Push fabric tensor components from the accumulator to thermo output.
 ///
 /// Fabric tensor: `F_ij = (1/Nc) * sum(n_i * n_j)` over all contacts.
 /// For an isotropic packing, F ≈ (1/3) * I.
-fn compute_fabric_tensor(
-    mut thermo: ResMut<Thermo>,
-    atoms: Res<Atom>,
-    neighbor: Res<Neighbor>,
-    registry: Res<AtomDataRegistry>,
+fn push_fabric_tensor_to_thermo(
+    fabric: Res<FabricTensorAccum>,
     comm: Res<CommResource>,
+    mut thermo: ResMut<Thermo>,
     run_state: Res<RunState>,
 ) {
     if thermo.interval == 0 || run_state.total_cycle % thermo.interval != 0 {
         return;
     }
 
-    let nlocal = atoms.nlocal as usize;
-    let dem = registry.expect::<DemAtom>("compute_fabric_tensor");
-
-    let (mut fxx, mut fyy, mut fzz, mut fxy, mut fxz, mut fyz) =
-        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-    let mut nc: f64 = 0.0;
-
-    // Compute from neighbor pairs (always recompute to ensure consistency)
-    for (i, j) in neighbor.pairs(nlocal) {
-        let r1 = dem.radius[i];
-        let r2 = dem.radius[j];
-        let dx = atoms.pos[j][0] - atoms.pos[i][0];
-        let dy = atoms.pos[j][1] - atoms.pos[i][1];
-        let dz = atoms.pos[j][2] - atoms.pos[i][2];
-        let dist_sq = dx * dx + dy * dy + dz * dz;
-        let sum_r = r1 + r2;
-        if dist_sq >= sum_r * sum_r {
-            continue;
-        }
-        let distance = dist_sq.sqrt();
-        if distance == 0.0 {
-            continue;
-        }
-        let delta = sum_r - distance;
-        if delta <= 0.0 {
-            continue;
-        }
-        let inv_dist = 1.0 / distance;
-        let nx = dx * inv_dist;
-        let ny = dy * inv_dist;
-        let nz = dz * inv_dist;
-        fxx += nx * nx;
-        fyy += ny * ny;
-        fzz += nz * nz;
-        fxy += nx * ny;
-        fxz += nx * nz;
-        fyz += ny * nz;
-        nc += 1.0;
-    }
-
     // MPI reduce
-    let global_fxx = comm.all_reduce_sum_f64(fxx);
-    let global_fyy = comm.all_reduce_sum_f64(fyy);
-    let global_fzz = comm.all_reduce_sum_f64(fzz);
-    let global_fxy = comm.all_reduce_sum_f64(fxy);
-    let global_fxz = comm.all_reduce_sum_f64(fxz);
-    let global_fyz = comm.all_reduce_sum_f64(fyz);
-    let global_nc = comm.all_reduce_sum_f64(nc);
+    let global_fxx = comm.all_reduce_sum_f64(fabric.fxx);
+    let global_fyy = comm.all_reduce_sum_f64(fabric.fyy);
+    let global_fzz = comm.all_reduce_sum_f64(fabric.fzz);
+    let global_fxy = comm.all_reduce_sum_f64(fabric.fxy);
+    let global_fxz = comm.all_reduce_sum_f64(fabric.fxz);
+    let global_fyz = comm.all_reduce_sum_f64(fabric.fyz);
+    let global_nc = comm.all_reduce_sum_f64(fabric.nc);
 
     if global_nc > 0.0 {
         let inv_nc = 1.0 / global_nc;
@@ -470,15 +493,14 @@ fn dump_contact_csv(
 
     writeln!(
         w,
-        "i_tag,j_tag,fx,fy,fz,fn_mag,ft_mag,overlap,cx,cy,cz,nx,ny,nz"
+        "i_tag,j_tag,overlap,cx,cy,cz,nx,ny,nz"
     )?;
 
     for r in records {
         writeln!(
             w,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-            r.i_tag, r.j_tag, r.fx, r.fy, r.fz, r.fn_mag, r.ft_mag, r.overlap, r.cx, r.cy,
-            r.cz, r.nx, r.ny, r.nz
+            "{},{},{},{},{},{},{},{},{}",
+            r.i_tag, r.j_tag, r.overlap, r.cx, r.cy, r.cz, r.nx, r.ny, r.nz
         )?;
     }
 
@@ -635,16 +657,39 @@ mod tests {
     }
 
     #[test]
+    fn test_rattler_detection() {
+        // 5 particles: center particle touching all 4 others → coord=4
+        // Outer particles only touch center → coord=1 (rattlers)
+        let mut atoms = Atom::new();
+        atoms.push_test_atom(1, [0.0, 0.0, 0.0], 0.5, 1.0);   // center
+        atoms.push_test_atom(2, [0.9, 0.0, 0.0], 0.5, 1.0);   // rattler
+        atoms.push_test_atom(3, [-0.9, 0.0, 0.0], 0.5, 1.0);  // rattler
+        atoms.push_test_atom(4, [0.0, 0.9, 0.0], 0.5, 1.0);   // rattler
+        atoms.push_test_atom(5, [0.0, -0.9, 0.0], 0.5, 1.0);  // rattler
+        atoms.nlocal = 5;
+        atoms.natoms = 5;
+
+        let dem = make_dem_atom(5);
+        let neighbor = build_neighbor_list(&atoms);
+        let mut coordination = vec![0.0; 5];
+
+        count_coordination(&atoms, &neighbor, &dem, &mut coordination);
+
+        // Center has 4 contacts, all others have 1
+        assert_eq!(coordination[0], 4.0, "center should have coord=4");
+        assert_eq!(coordination[1], 1.0, "outer should have coord=1");
+
+        // Rattler count: particles with < 4 contacts
+        let n_rattlers = coordination.iter().filter(|&&c| c < 4.0).count();
+        assert_eq!(n_rattlers, 4, "4 outer particles are rattlers");
+    }
+
+    #[test]
     fn test_contact_record_csv_output() {
         let records = vec![
             ContactRecord {
                 i_tag: 1,
                 j_tag: 2,
-                fx: 10.0,
-                fy: 0.0,
-                fz: 0.0,
-                fn_mag: 10.0,
-                ft_mag: 0.0,
                 overlap: 0.1,
                 cx: 0.45,
                 cy: 0.0,
@@ -667,8 +712,8 @@ mod tests {
         assert!(result.is_ok(), "CSV dump should succeed");
 
         let content = fs::read_to_string(dir.join("contact_001000_rank0.csv")).unwrap();
-        assert!(content.starts_with("i_tag,j_tag,"));
-        assert!(content.contains("1,2,10,0,0,10,0,0.1,0.45,0,0,1,0,0"));
+        assert!(content.starts_with("i_tag,j_tag,overlap,"));
+        assert!(content.contains("1,2,0.1,0.45,0,0,1,0,0"));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -717,6 +762,7 @@ mod tests {
         let config = ContactAnalysisConfig::default();
         assert_eq!(config.interval, 0);
         assert!(!config.coordination);
+        assert!(!config.rattlers);
         assert!(!config.fabric_tensor);
         // Note: Default trait gives "" for String; the "contact" default
         // is applied by serde during TOML deserialization.
