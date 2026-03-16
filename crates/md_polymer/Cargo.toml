@@ -1,0 +1,17 @@
+[package]
+name = "md_polymer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Polymer chain initialization, R_ee, and R_g measurements for MDDEM"
+keywords = ["polymer", "chain", "radius-of-gyration", "end-to-end"]
+categories = ["simulation", "science"]
+
+[dependencies]
+mddem_core = { path = "../mddem_core", version = "0.1.3", default-features = false }
+mddem_app = { path = "../mddem_app", version = "0.1.3" }
+mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.3" }
+serde = { version = "1", features = ["derive"] }
+rand = "0.8"
+rand_chacha = "0.3"
