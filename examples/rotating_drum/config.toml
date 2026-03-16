@@ -1,0 +1,132 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Rotating Drum DEM Simulation
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# A classic industrial DEM test case. A cylindrical drum rotates at constant
+# angular velocity, dragging particles upward via friction. Gravity pulls
+# particles back down, creating avalanching flow and a dynamic angle of repose.
+#
+# Geometry (cross-section, XY plane):
+#
+#              ╭───────────────╮
+#           ╱                     ╲
+#         │    ◊ ◊ ◊                │
+#         │  ◊ ◊ ◊ ◊ ◊             │   ← drum rotates CCW
+#         │ ◊ ◊ ◊ ◊ ◊ ◊ ◊          │      at 1 rad/s (~10 RPM)
+#         │  ◊ ◊ ◊ ◊ ◊ ◊ ◊         │
+#         │    ◊ ◊ ◊ ◊ ◊           │
+#           ╲                     ╱
+#              ╰───────────────╯
+#
+# The drum is a Z-axis cylinder centered at (0, 0) with radius 0.05 m.
+# Flat end caps close the drum at z = 0 and z = 0.02.
+# Particles are 2 mm diameter glass beads inserted in the lower half.
+#
+# At ~10 RPM (rolling/cascading regime), particles exhibit:
+# - A free surface with dynamic angle of repose (~25-35° for glass beads)
+# - Continuous avalanching from the raised side
+# - Minimal centrifugal segregation at low speeds
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[comm]
+processors = [1, 1, 1]
+
+[domain]
+# Box must fully enclose the drum cylinder
+x_lo = -0.055
+x_hi = 0.055
+y_lo = -0.055
+y_hi = 0.055
+z_lo = 0.0
+z_hi = 0.02
+x_periodic = false
+y_periodic = false
+z_periodic = false
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.005
+
+[gravity]
+gx = 0.0
+gy = -9.81              # Gravity in -y direction (downward in cross-section view)
+gz = 0.0
+
+# ── Material ──────────────────────────────────────────────────────────────────
+
+[dem]
+contact_model = "hertz"
+
+[[dem.materials]]
+name = "glass"
+youngs_mod = 5.0e8       # Reduced Young's modulus for faster simulation
+poisson_ratio = 0.3
+restitution = 0.4
+friction = 0.5           # Sliding friction — important for drum dynamics
+
+# ── Particle insertion ────────────────────────────────────────────────────────
+#
+# Insert particles in the lower half of the drum (y < 0).
+# They will settle under gravity before the drum rotation takes effect.
+
+[[particles.insert]]
+material = "glass"
+count = 400
+radius = 0.001           # d = 2 mm particles
+density = 2500.0         # Glass density
+velocity = 0.1           # Small random velocity for initial spreading
+region = { type = "block", min = [-0.035, -0.045, 0.002], max = [0.035, -0.005, 0.018] }
+
+# ── Walls ─────────────────────────────────────────────────────────────────────
+
+# Rotating cylinder wall (Z-axis, particles inside)
+# angular_velocity = 1.0 rad/s ≈ 9.5 RPM (rolling/cascading regime)
+# Froude number = ω²R/g = 1.0² × 0.05 / 9.81 ≈ 0.005 (well below centrifuging)
+[[wall]]
+type = "cylinder"
+axis = "z"
+center = [0.0, 0.0]
+radius = 0.05
+lo = 0.0
+hi = 0.02
+inside = true
+material = "glass"
+name = "drum"
+angular_velocity = 1.0
+
+# Bottom end cap (z = 0, normal +z)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "glass"
+name = "bottom_cap"
+
+# Top end cap (z = 0.02, normal -z)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.02
+normal_x = 0.0
+normal_y = 0.0
+normal_z = -1.0
+material = "glass"
+name = "top_cap"
+
+# ── Output ────────────────────────────────────────────────────────────────────
+
+[vtp]
+interval = 2000
+
+[thermo]
+columns = ["step", "atoms", "ke", "walltime", "stepps"]
+
+# ── Run ───────────────────────────────────────────────────────────────────────
+
+[run]
+steps = 2000000
+thermo = 5000
