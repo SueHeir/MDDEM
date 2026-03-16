@@ -10,11 +10,14 @@ Standard Lennard-Jones potential with cutoff:
 - Repulsive at `r < sigma`, attractive at `sigma < r < cutoff`
 - Full virial stress tensor accumulation (via `VirialStressPlugin` from `mddem_core`)
 - Ghost atom scaling (0.5 for cross-boundary pairs)
+- Conditional virial: the force inner loop skips virial bookkeeping between thermo steps for zero overhead on most steps
 
 ### Tail Corrections
 Long-range corrections computed once at setup from density and cutoff:
 - Energy tail: `E_tail = (8/3)*pi*N*rho*eps*sigma^3 * [(1/3)(sigma/rc)^9 - (sigma/rc)^3]`
 - Pressure tail: `P_tail = (16/3)*pi*rho^2*eps*sigma^3 * [(2/3)(sigma/rc)^9 - (sigma/rc)^3]`
+
+For multi-type systems, tail corrections sum over all `(i,j)` pair combinations using the pair table. An equimolar type distribution (`1/ntypes` each) is assumed — a warning is printed for non-equimolar mixtures.
 
 ## Config
 
@@ -40,21 +43,22 @@ sigma = 1.0
 epsilon = 0.5
 sigma = 0.8
 
-# Optional explicit pair overrides
+# Optional explicit pair overrides (including per-pair cutoff)
 [[lj.pair_coeffs]]
 types = [0, 1]
 epsilon = 0.75
 sigma = 0.9
+cutoff = 3.0         # per-pair cutoff override (optional)
 ```
 
-When `types` is present, the plugin builds an NxN `PairCoeffTable<LJPairCoeffs>` with mixed parameters. Explicit `pair_coeffs` entries override the mixed values for specific pairs.
+When `types` is present, the plugin builds an NxN `PairCoeffTable<LJPairCoeffs>` with mixed parameters. Explicit `pair_coeffs` entries override the mixed values for specific pairs, including optional per-pair cutoff distances.
 
 ## Resources
 
 - `LJConfig` — deserialized config
 - `LJPairTable` — precomputed NxN pair coefficient table (`PairCoeffTable<LJPairCoeffs>`)
 - `VirialStress` — full symmetric virial stress tensor (from `mddem_core`, shared with bond/contact forces)
-- `LJTailCorrections` — energy and pressure tail corrections (computed once at setup)
+- `LJTailCorrections` — energy and pressure tail corrections (computed once at first stage setup)
 
 ## Usage
 

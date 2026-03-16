@@ -170,12 +170,19 @@ cargo run --release -- config.toml --schedule
 ### DEM (Granular)
 - Hertz elastic normal contact with viscoelastic damping (LAMMPS `hertz/material` equivalent)
 - Mindlin tangential spring-history with Coulomb friction cap
+- Rolling resistance (constant torque model)
+- SJKR cohesion (overlap-dependent attractive force)
+- JKR adhesion (surface energy-based attraction with pull-off at separation)
 - Velocity Verlet for translational + rotational degrees of freedom
 - Quaternion-based orientation tracking
 - Automatic timestep (5% of Rayleigh wave period)
 - Configurable gravity body force
-- General plane wall contacts, toggleable at runtime
-- Named material types with per-pair mixing
+- General plane wall contacts with motion (static, constant velocity, oscillating, servo-controlled), toggleable at runtime
+- Named material types with per-pair geometric-mean mixing
+- Bonded particle model: auto-bonding, normal/tangential/bending spring-dashpot forces, breakage criteria
+- FIRE energy minimization (adaptive timestep, stage-aware)
+- Particle insertion: random (overlap-free), rate-based (periodic), file-based (CSV, LAMMPS dump, LAMMPS data)
+- Size distributions: uniform, Gaussian, log-normal, weighted discrete
 
 ### MD (Molecular)
 - Lennard-Jones 12-6 with cutoff, virial accumulator, and tail corrections; multi-type support with per-type parameters, mixing rules, and explicit pair coefficient overrides
@@ -193,10 +200,11 @@ cargo run --release -- config.toml --schedule
 - `PairCoeffTable<T>` generic NxN symmetric pair coefficient storage with geometric/arithmetic mixing
 - `DumpRegistry` callback-based per-atom output extension for dump and VTP files
 - Fixes: AddForce, SetForce, Freeze, MoveLinear (group-based)
+- Configurable thermo columns with group filtering (`ke/mobile`, `temp/mobile`)
 - TOML config with `serde` validation and `deny_unknown_fields` on all config structs
 - Dump files (CSV/binary), restart files (bincode/JSON), VTP visualization
 - Generic restart serialization — any registered `AtomData` extension is automatically saved/restored
-- Multi-stage runs with named stages (`#[derive(StageEnum)]`), `StageAdvancePlugin` for automatic stage advancement on state transitions, and per-stage config overrides (e.g., changing gravity between stages)
+- Multi-stage runs with named stages (`#[derive(StageEnum)]`), `StageAdvancePlugin` for automatic stage advancement on state transitions, and per-stage config overrides (e.g., changing gravity or temperature between stages)
 - `#[derive(AtomData)]` proc macro for zero-boilerplate per-atom extension structs
 
 ## Examples
@@ -207,8 +215,11 @@ cargo run --release -- config.toml --schedule
 | [granular_gas_benchmark](examples/granular_gas_benchmark/) | Haff's cooling law validation with LAMMPS comparison | `cargo run --example granular_gas_benchmark -- examples/granular_gas_benchmark/run_debug.toml` |
 | [hopper](examples/hopper/) | 2D slot hopper with named stages (`StageEnum`), KE-based state transitions | `cargo run --example hopper -- examples/hopper/config.toml` |
 | [dem_compression](examples/dem_compression/) | 3-stage DEM compression (insert → relax → compress) with per-stage config overrides | `cargo run --example dem_compression -- examples/dem_compression/config.toml` |
+| [bond_basic](examples/bond_basic/) | Bonded particle model with auto-bonding and breakage | `cargo run --example bond_basic -- examples/bond_basic/config.toml` |
+| [fire_packing](examples/fire_packing/) | FIRE energy minimization for particle packing | `cargo run --example fire_packing -- examples/fire_packing/config.toml` |
 | [lj_argon](examples/lj_argon/) | LJ fluid validated against liquid Argon (RDF, MSD, pressure) | `cargo run --release --example lj_argon -- examples/lj_argon/config.toml` |
 | [lj_langevin](examples/lj_langevin/) | LJ fluid with Langevin thermostat | `cargo run --release --example lj_langevin -- examples/lj_langevin/config.toml` |
+| [lj_per_atom_energy](examples/lj_per_atom_energy/) | Per-atom energy output via DumpRegistry | `cargo run --release --example lj_per_atom_energy -- examples/lj_per_atom_energy/config.toml` |
 | [group_freeze](examples/group_freeze/) | Group-based freeze fix demonstration | `cargo run --release --example group_freeze -- examples/group_freeze/config.toml` |
 | [poiseuille_flow](examples/poiseuille_flow/) | Poiseuille flow with body force and frozen walls | `cargo run --release --example poiseuille_flow -- examples/poiseuille_flow/config.toml` |
 | [toml_single](examples/toml_single/) | Programmatic config — no TOML file needed | `cargo run --example toml_single` |
@@ -250,8 +261,8 @@ Here's a rough comparison of the code needed to run a simple LJ fluid simulation
 
 | | **MDDEM** | **LAMMPS** |
 |---|---|---|
-| LJ fluid core | ~9,200 lines (Rust) | ~30,000–40,000 lines (C++) |
-| Full codebase | ~13,500 lines | ~190,000 lines (core `src/`, no packages) |
+| LJ fluid core | ~11,200 lines (Rust) | ~30,000–40,000 lines (C++) |
+| Full codebase | ~19,000 lines | ~190,000 lines (core `src/`, no packages) |
 
 **Caveats:** This is an approximate comparison, not a rigorous benchmark. LAMMPS has 30+ years of development, supports far more features, and its core files include infrastructure (e.g., `variable.cpp` at ~5,000 lines for a full expression parser) that MDDEM sidesteps by using TOML config with `serde`. LAMMPS also has deep class hierarchies with virtual dispatch that add lines but provide extensibility MDDEM handles differently via plugins. The MDDEM line count includes tests (~20% of crate code); LAMMPS tests live in a separate directory. Lines of code is a crude metric — it doesn't capture complexity, correctness, or capability.
 
@@ -259,20 +270,20 @@ The MDDEM breakdown for an LJ fluid:
 
 | Crate | Lines | Role |
 |---|---|---|
-| `mddem_scheduler` | 1,750 | DI scheduler, `Res`/`ResMut`, ordering |
-| `mddem_core` | 3,120 | Atom, domain, comm, config, groups |
+| `mddem_core` | 3,940 | Atom, domain, comm, config, groups, regions |
+| `mddem_scheduler` | 2,270 | DI scheduler, `Res`/`ResMut`, ordering |
 | `mddem_neighbor` | 1,100 | Bin-based neighbor lists |
-| `mddem_print` | 870 | Thermo, dump, restart, VTP output |
-| `md_thermostat` | 590 | Nose-Hoover NVT |
-| `mddem_app` | 460 | App container, plugin trait |
-| `md_lj` | 385 | LJ 12-6 pair force |
+| `mddem_print` | 1,100 | Thermo, dump, restart, VTP output |
+| `md_thermostat` | 590 | Nose-Hoover NVT + Langevin |
+| `md_lj` | 560 | LJ 12-6 pair force |
+| `mddem_app` | 510 | App container, plugin trait |
+| `mddem_derive` | 450 | `#[derive(AtomData)]` proc macro |
 | `md_lattice` | 380 | FCC lattice init |
-| `mddem_derive` | 340 | `#[derive(AtomData)]` proc macro |
-| `mddem_verlet` | 106 | Velocity Verlet integrator |
-| `mddem` | 106 | Plugin group definitions |
-| **Total** | **~9,200** | |
+| `mddem_verlet` | 154 | Velocity Verlet integrator |
+| `mddem` | 105 | Plugin group definitions |
+| **Total** | **~11,200** | |
 
-The scheduler (`mddem_scheduler`) is the largest single piece, but it's pure infrastructure shared by every simulation type. The actual LJ physics is 385 lines. Adding a new force model doesn't require touching any of the infrastructure code — you write a function, register it in a plugin, and the scheduler handles the rest.
+The scheduler (`mddem_scheduler`) is the largest single piece, but it's pure infrastructure shared by every simulation type. The actual LJ physics is 560 lines. Adding a new force model doesn't require touching any of the infrastructure code — you write a function, register it in a plugin, and the scheduler handles the rest.
 
 ## Roadmap
 
@@ -280,25 +291,24 @@ Planned features, organized by implementation wave:
 
 ### Completed
 1. ~~**Groups**~~ — Named atom subsets (`[[group]]`) for selective operations
-2. ~~**Custom thermo computes**~~ — `ThermoCompute` trait + configurable thermo columns
+2. ~~**Custom thermo computes**~~ — Configurable thermo columns with group filtering
 3. ~~**Langevin thermostat**~~ — Stochastic friction + random force
 4. ~~**AddForce / SetForce / Freeze / MoveLinear**~~ — Group-based atom manipulation fixes
 5. ~~**Virial stress tensor**~~ — Full 6-component symmetric tensor shared across LJ, bond, and contact forces
-6. ~~**Bonded particle model**~~ — Bond lists between DEM spheres with auto-bonding, spring-damper normal forces, and bond exclusion from contact
+6. ~~**Bonded particle model**~~ — Auto-bonding, normal/tangential/bending spring-dashpot forces, breakage criteria
 7. ~~**Named stages**~~ — `#[derive(StageEnum)]` with `StageAdvancePlugin` for automatic `[[run]]` stage advancement on state transitions, plus per-stage config overrides
+8. ~~**FIRE energy minimization**~~ — Adaptive timestep, stage-aware, can coexist with Velocity Verlet in multi-stage runs
+9. ~~**Rolling resistance**~~ — Constant torque model opposing rolling motion
+10. ~~**Cohesion models**~~ — SJKR (overlap-dependent) and JKR (surface energy-based adhesion with pull-off)
+11. ~~**Particle insertion overhaul**~~ — Size distributions, rate-based insertion, file-based (CSV, LAMMPS dump, LAMMPS data)
+12. ~~**Wall motion**~~ — Constant velocity, oscillating, servo-controlled walls
 
-### Wave 3: Medium Complexity
-5. **Shrink-wrap boundaries** — Auto-expanding domain per axis
-6. **Energy minimization** — CG + FIRE, runs as a `[[run]]` stage
-7. **Fix ave/time** — Running time averages to file
-
-### Wave 4: Box Manipulation
-8. **NPT barostat** — Nose-Hoover pressure control with box rescaling
-9. **Fix deform** — Box size change over time
-
-### Wave 5: New Physics
-10. **Short-range Coulomb** — `k_e*q_i*q_j/r^2` with cutoff (no PPPM)
-11. **Parallel bonds / breakage** — Tangential + bending bond forces, breakage criteria for modeling cemented/rock-like materials
+### Planned
+- **Shrink-wrap boundaries** — Auto-expanding domain per axis
+- **NPT barostat** — Nose-Hoover pressure control with box rescaling
+- **Fix deform** — Box size change over time
+- **Fix ave/time** — Running time averages to file
+- **Short-range Coulomb** — `k_e*q_i*q_j/r^2` with cutoff (no PPPM)
 
 Every feature ships with an example and validation against analytical solutions or LAMMPS.
 
@@ -308,7 +318,7 @@ These are specialized features that won't be in core. Users can write plugins fo
 
 - EAM / Tersoff / many-body potentials
 - ReaxFF / ML potentials (SNAP, ACE)
-- Angles / dihedrals (bonds are planned — see roadmap)
+- Angles / dihedrals
 - SHAKE / RATTLE constraints
 - Units system (TOML config uses explicit units in docs)
 - rRESPA multi-timescale integration
@@ -322,25 +332,24 @@ These are specialized features that won't be in core. Users can write plugins fo
 
 | Crate | Description |
 |---|---|
-| [`mddem`](crates/mddem/) | Umbrella crate: `CorePlugins`, `LJDefaultPlugins`, prelude re-exports |
+| [`mddem`](crates/mddem/) | Umbrella crate: `CorePlugins`, `LJDefaultPlugins`, `GranularDefaultPlugins`, prelude re-exports |
 | [`mddem_scheduler`](crates/mddem_scheduler/) | DI scheduler, resources, schedule sets, ordering, run conditions, states |
 | [`mddem_app`](crates/mddem_app/) | App, SubApp, Plugin, PluginGroup, StatesPlugin |
-| [`mddem_core`](crates/mddem_core/) | TOML config, domain decomposition, communication, atom data, pair coefficients, regions, run management |
+| [`mddem_core`](crates/mddem_core/) | TOML config, domain decomposition, communication, atom data, pair coefficients, regions, groups, run management |
 | [`mddem_neighbor`](crates/mddem_neighbor/) | Neighbor lists: brute force, sweep-and-prune, bin-based |
 | [`mddem_verlet`](crates/mddem_verlet/) | Velocity Verlet translational integration |
-| [`mddem_print`](crates/mddem_print/) | Thermo, VTP, dump files, restart files |
+| [`mddem_print`](crates/mddem_print/) | Thermo (configurable columns), VTP, dump files, restart files, `DumpRegistry` |
 | [`mddem_derive`](crates/mddem_derive/) | `#[derive(AtomData)]` and `#[derive(StageEnum)]` proc macros |
-| [`dem_atom`](crates/dem_atom/) | Per-atom DEM data, `MaterialTable`, material config |
-| [`dem_atom_insert`](crates/dem_atom_insert/) | Random particle insertion with overlap checking |
-| [`dem_granular`](crates/dem_granular/) | Hertz normal, Mindlin tangential, rotational dynamics, granular temperature |
-| [`dem_gravity`](crates/dem_gravity/) | Gravity body force |
-| [`dem_wall`](crates/dem_wall/) | Plane wall contact forces |
+| [`mddem_fixes`](crates/mddem_fixes/) | AddForce, SetForce, Freeze, MoveLinear fixes; Gravity body force |
+| [`mddem_fire`](crates/mddem_fire/) | FIRE energy minimization (adaptive timestep, stage-aware) |
+| [`dem_atom`](crates/dem_atom/) | Per-atom DEM data, `MaterialTable`, particle insertion (random/rate/file), radius distributions |
+| [`dem_granular`](crates/dem_granular/) | Hertz-Mindlin contact (with rolling resistance, SJKR cohesion, JKR adhesion), rotational dynamics, granular temperature |
+| [`dem_wall`](crates/dem_wall/) | Plane wall contact forces with motion (static, constant velocity, oscillating, servo) |
+| [`dem_bond`](crates/dem_bond/) | Bonded particle model: auto-bonding, normal/tangential/bending forces, breakage |
 | [`md_lj`](crates/md_lj/) | LJ 12-6 pair force with virial, tail corrections, and multi-type support |
-| [`md_thermostat`](crates/md_thermostat/) | Nose-Hoover NVT thermostat |
-| [`md_langevin`](crates/md_langevin/) | Langevin thermostat (stochastic friction + random force) |
+| [`md_thermostat`](crates/md_thermostat/) | Nose-Hoover NVT and Langevin thermostats (group-aware) |
 | [`md_lattice`](crates/md_lattice/) | FCC lattice initialization |
 | [`md_measure`](crates/md_measure/) | RDF, MSD, virial pressure |
-| [`mddem_fixes`](crates/mddem_fixes/) | AddForce, SetForce, Freeze, MoveLinear fixes |
 | [`mddem_test_utils`](crates/mddem_test_utils/) | Shared test helpers |
 
 A simulation is composed by adding plugin groups to an `App`:
@@ -355,7 +364,7 @@ fn main() {
 }
 ```
 
-`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, groups, and output. `GranularDefaultPlugins` adds DEM atom data, insertion, contact forces, rotational dynamics, Velocity Verlet, and granular temperature. `LJDefaultPlugins` adds FCC lattice, LJ forces, Nose-Hoover thermostat (with fused Velocity Verlet integration), and measurements. Individual plugins can be added separately for custom configurations — add `VelocityVerletPlugin` explicitly when not using a thermostat that provides integration.
+`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, groups, and output. `GranularDefaultPlugins` adds DEM atom data, particle insertion, Hertz-Mindlin contact forces (with rolling resistance and cohesion/adhesion), rotational dynamics, Velocity Verlet, and granular temperature. `LJDefaultPlugins` adds FCC lattice, LJ forces, Nose-Hoover thermostat (with fused Velocity Verlet integration), and measurements. Individual plugins can be added separately for custom configurations — add `VelocityVerletPlugin` explicitly when not using a thermostat that provides integration.
 
 ## Testing
 

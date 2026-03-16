@@ -27,6 +27,10 @@ fn default_friction() -> f64 {
     0.4
 }
 
+fn default_contact_model() -> String {
+    "hertz".to_string()
+}
+
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 /// A single material definition from `[[dem.materials]]`.
@@ -52,6 +56,15 @@ pub struct MaterialConfig {
     /// Cannot be used together with cohesion_energy on the same material.
     #[serde(default)]
     pub surface_energy: f64,
+    /// Twisting friction coefficient (0 = disabled).
+    #[serde(default)]
+    pub twisting_friction: f64,
+    /// Linear normal stiffness for Hooke model (N/m, 0 = use Hertz).
+    #[serde(default)]
+    pub kn: f64,
+    /// Linear tangential stiffness for Hooke model (N/m, 0 = use Mindlin).
+    #[serde(default)]
+    pub kt: f64,
 }
 
 /// TOML `[dem]` — top-level DEM configuration containing material definitions.
@@ -59,6 +72,9 @@ pub struct MaterialConfig {
 #[serde(deny_unknown_fields)]
 pub struct DemConfig {
     pub materials: Option<Vec<MaterialConfig>>,
+    /// Contact model: "hertz" (default) or "hooke".
+    #[serde(default = "default_contact_model")]
+    pub contact_model: String,
 }
 
 // ── MaterialTable — per-material and per-pair precomputed properties ────────
@@ -83,6 +99,18 @@ pub struct MaterialTable {
     pub e_eff_ij: Vec<Vec<f64>>,
     /// Precomputed effective shear modulus for each material pair (Mindlin contact).
     pub g_eff_ij: Vec<Vec<f64>>,
+    /// Per-pair twisting friction (geometric mean mixing).
+    pub twisting_friction_ij: Vec<Vec<f64>>,
+    /// Per-material linear normal stiffness for Hooke model.
+    pub kn: Vec<f64>,
+    /// Per-material linear tangential stiffness for Hooke model.
+    pub kt: Vec<f64>,
+    /// Per-pair Hooke normal stiffness (harmonic mean: 2*ki*kj/(ki+kj)).
+    pub kn_ij: Vec<Vec<f64>>,
+    /// Per-pair Hooke tangential stiffness (harmonic mean).
+    pub kt_ij: Vec<Vec<f64>>,
+    /// Contact model: "hertz" or "hooke".
+    pub contact_model: String,
 }
 
 impl Default for MaterialTable {
@@ -109,6 +137,12 @@ impl MaterialTable {
             surface_energy_ij: Vec::new(),
             e_eff_ij: Vec::new(),
             g_eff_ij: Vec::new(),
+            twisting_friction_ij: Vec::new(),
+            kn: Vec::new(),
+            kt: Vec::new(),
+            kn_ij: Vec::new(),
+            kt_ij: Vec::new(),
+            contact_model: "hertz".to_string(),
         }
     }
 
