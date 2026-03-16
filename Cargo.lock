@@ -388,6 +388,7 @@ dependencies = [
  "mddem_scheduler",
  "rand",
  "rand_chacha",
+ "rand_distr",
  "serde",
 ]
 

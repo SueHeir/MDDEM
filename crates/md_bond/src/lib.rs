@@ -174,16 +174,24 @@ pub fn md_bond_force(
                     k * (r - r0_bond) / r
                 }
                 BondStyle::Fene => {
-                    // FENE: F_on_i = k r / (1 - (r/R0)^2) / r along r_hat_ij
-                    // Always attractive (pulls toward r=0)
+                    // FENE potential: U = -0.5 k R0^2 ln(1 - (r/R0)^2)
+                    // Force magnitude: F = -dU/dr = k r / (1 - (r/R0)^2)
+                    //
+                    // `fpair` is F/r (force magnitude divided by distance) because
+                    // it gets multiplied by the unnormalized displacement vector
+                    // (dx, dy, dz) to produce force components:
+                    //   fx = fpair * dx = (F/r) * dx = F * (dx/r)
+                    // This avoids a separate normalization step.
                     let ratio2 = r2 / (r0_config * r0_config);
                     if ratio2 >= 1.0 {
                         eprintln!(
                             "WARNING: FENE bond exceeded maximum extension! r={:.4}, R0={:.4}, tags=({},{})",
                             r, r0_config, atoms.tag[i], bond.partner_tag
                         );
-                        // Apply a large restoring force
-                        k * r * 100.0
+                        // Cap at the force value at r = 0.99 * R0 as an emergency restoring force.
+                        // F(0.99*R0)/r ≈ k / (1 - 0.99^2) = k / 0.0199 ≈ 50.25 * k
+                        let cap_ratio2 = 0.99 * 0.99;
+                        k / (1.0 - cap_ratio2)
                     } else {
                         k / (1.0 - ratio2)
                     }

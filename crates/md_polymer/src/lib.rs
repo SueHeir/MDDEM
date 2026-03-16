@@ -20,6 +20,7 @@ use mddem_scheduler::prelude::*;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 use rand::SeedableRng;
+use rand_distr::{Distribution, Normal};
 use serde::Deserialize;
 
 // ── Init Config ─────────────────────────────────────────────────────────────
@@ -367,12 +368,14 @@ pub fn init_polymer_chains(
             atoms.atom_type.push(0);
             atoms.origin_index.push(0);
             atoms.pos.push(wrapped);
-            // Initial velocity: Maxwell-Boltzmann
+            // Initial velocity: Maxwell-Boltzmann (Gaussian distribution)
+            // Each component is drawn from N(0, sigma_v) where sigma_v = sqrt(kT/m)
             let sigma_v = (config.temperature / mass).sqrt();
+            let normal = Normal::new(0.0, sigma_v).expect("invalid sigma for Normal distribution");
             atoms.vel.push([
-                rng.random::<f64>() * 2.0 * sigma_v - sigma_v,
-                rng.random::<f64>() * 2.0 * sigma_v - sigma_v,
-                rng.random::<f64>() * 2.0 * sigma_v - sigma_v,
+                normal.sample(&mut rng),
+                normal.sample(&mut rng),
+                normal.sample(&mut rng),
             ]);
             atoms.force.push([0.0; 3]);
             atoms.mass.push(mass);
@@ -479,14 +482,7 @@ fn wrap_coord(x: f64, lo: f64, hi: f64, periodic: bool) -> f64 {
         return x;
     }
     let len = hi - lo;
-    let mut val = x;
-    while val >= hi {
-        val -= len;
-    }
-    while val < lo {
-        val += len;
-    }
-    val
+    lo + ((x - lo) % len + len) % len
 }
 
 // ── Chain discovery from BondStore ──────────────────────────────────────────
