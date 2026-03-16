@@ -1,0 +1,87 @@
+# Granular shear flow — simple shear between opposing walls
+# Top wall moves +x, bottom wall moves -x to create linear shear profile.
+# Side walls (y) are periodic; front/back (x) are periodic.
+
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.003
+
+[domain]
+x_low = 0.0
+x_high = 0.02
+y_low = 0.0
+y_high = 0.02
+z_low = 0.0
+z_high = 0.04
+periodic_x = true
+periodic_y = true
+periodic_z = false
+
+[gravity]
+gz = -9.81
+
+[[dem.materials]]
+name = "glass"
+youngs_mod = 8.7e9
+poisson_ratio = 0.3
+restitution = 0.5
+friction = 0.4
+
+# Polydisperse particles (lognormal size distribution)
+[[particles.insert]]
+material = "glass"
+count = 500
+radius = { distribution = "lognormal", mean = 0.001, std = 0.0001 }
+density = 2500.0
+
+# Bottom wall (z = 0, normal +z) — moves in -x direction
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "glass"
+name = "bottom"
+velocity = [-0.01, 0.0, 0.0]
+
+# Top wall (z = 0.04, normal -z) — moves in +x direction
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.04
+normal_x = 0.0
+normal_y = 0.0
+normal_z = -1.0
+material = "glass"
+name = "top"
+velocity = [0.01, 0.0, 0.0]
+
+[velocity_distribution]
+interval = 10000
+num_bins = 40
+max_speed_factor = 3.0
+
+[output]
+dir = "examples/granular_shear/output"
+
+[thermo]
+columns = ["step", "atoms", "ke", "walltime"]
+
+# Stage 1: Let particles settle under gravity (no wall motion initially)
+[[run]]
+name = "settle"
+steps = 100000
+thermo = 5000
+
+# Stage 2: Apply shear — walls are already moving from config
+[[run]]
+name = "shear"
+steps = 200000
+thermo = 5000

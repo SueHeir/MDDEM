@@ -82,6 +82,14 @@ path = "examples/conveyor_belt/main.rs"
 name = "lj_type_rdf"
 path = "examples/lj_type_rdf/main.rs"
 
+[[example]]
+name = "granular_shear"
+path = "examples/granular_shear/main.rs"
+
+[[example]]
+name = "granular_gas_vdist"
+path = "examples/granular_gas_vdist/main.rs"
+
 
 [profile.release]
 opt-level = 3
@@ -95,6 +103,7 @@ dem_measure_plane = { path = "./crates/dem_measure_plane" }
 md_type_rdf = { path = "./crates/md_type_rdf" }
 mddem_derive = { path = "./crates/mddem_derive" }
 mddem_fire = { path = "./crates/mddem_fire" }
+dem_velocity_distribution = { path = "./crates/dem_velocity_distribution" }
 mddem_scheduler = { path = "./crates/mddem_scheduler" }
 # Force libffi-sys to use system libffi (via pkg-config) instead of building
 # from source. libffi-sys 2.3.0 has a broken aarch64 macOS assembler; Homebrew
