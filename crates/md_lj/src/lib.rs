@@ -143,6 +143,10 @@ impl Default for LJTailCorrections {
 pub struct LJForcePlugin;
 
 impl Plugin for LJForcePlugin {
+    fn dependencies(&self) -> Vec<&str> {
+        vec!["NeighborPlugin"]
+    }
+
     fn default_config(&self) -> Option<&str> {
         Some(
             r#"[lj]

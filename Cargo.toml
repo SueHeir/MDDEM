@@ -110,6 +110,10 @@ path = "examples/polymer_melt/main.rs"
 name = "lj_binary"
 path = "examples/lj_binary/main.rs"
 
+[[example]]
+name = "example_template"
+path = "examples/example_template/main.rs"
+
 [profile.release]
 opt-level = 3
 lto = "fat"

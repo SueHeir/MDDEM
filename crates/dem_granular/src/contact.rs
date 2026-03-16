@@ -20,6 +20,10 @@ use crate::{LARGE_OVERLAP_WARN_THRESHOLD, MAX_OVERLAP_WARNINGS, SQRT_5_3, TANGEN
 pub struct HertzMindlinContactPlugin;
 
 impl Plugin for HertzMindlinContactPlugin {
+    fn dependencies(&self) -> Vec<&str> {
+        vec!["DemAtomPlugin"]
+    }
+
     fn build(&self, app: &mut App) {
         app.add_plugins(VirialStressPlugin);
         // Register ContactHistoryStore

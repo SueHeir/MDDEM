@@ -405,7 +405,7 @@ pub fn dem_insert_atoms(
                     println!(
                         "DemAtomInsert: registering rate-based insertion for material '{}' (rate={}/every {})",
                         mat_name,
-                        insert.rate.unwrap(),
+                        insert.rate.expect("rate already validated above"),
                         insert.rate_interval.unwrap_or(1),
                     );
                     rate_state.entries.push(RateInsertEntry {
@@ -829,6 +829,20 @@ fn read_lammps_dump_particles(
     );
 }
 
+/// Parse a field from a LAMMPS data file, with a user-friendly error on failure.
+fn parse_field<T: std::str::FromStr>(value: &str, field_name: &str, line_num: usize, file_path: &str) -> T
+where
+    T::Err: std::fmt::Display,
+{
+    value.parse::<T>().unwrap_or_else(|e| {
+        eprintln!(
+            "ERROR: Failed to parse {} '{}' at line {} of '{}': {}",
+            field_name, value, line_num, file_path, e
+        );
+        std::process::exit(1);
+    })
+}
+
 fn read_lammps_data_particles(
     insert: &InsertConfig,
     file_path: &str,
@@ -864,7 +878,16 @@ fn read_lammps_data_particles(
         std::process::exit(1);
     });
     let reader = BufReader::new(file);
-    let lines: Vec<String> = reader.lines().map(|l| l.unwrap()).collect();
+    let lines: Vec<String> = reader
+        .lines()
+        .enumerate()
+        .map(|(i, l)| {
+            l.unwrap_or_else(|e| {
+                eprintln!("ERROR: Failed to read line {} of '{}': {}", i + 1, file_path, e);
+                std::process::exit(1);
+            })
+        })
+        .collect();
 
     // Detect atom style from config or from "Atoms # style" header
     let config_style = insert.atom_style.as_deref();
@@ -952,11 +975,11 @@ fn read_lammps_data_particles(
                     );
                     std::process::exit(1);
                 }
-                let id: u32 = fields[0].parse().unwrap();
-                let atype: u32 = fields[1].parse().unwrap();
-                let x: f64 = fields[2].parse().unwrap();
-                let y: f64 = fields[3].parse().unwrap();
-                let z: f64 = fields[4].parse().unwrap();
+                let id: u32 = parse_field(fields[0], "atom id", i + 1, file_path);
+                let atype: u32 = parse_field(fields[1], "atom type", i + 1, file_path);
+                let x: f64 = parse_field(fields[2], "x coordinate", i + 1, file_path);
+                let y: f64 = parse_field(fields[3], "y coordinate", i + 1, file_path);
+                let z: f64 = parse_field(fields[4], "z coordinate", i + 1, file_path);
                 let radius = default_radius.unwrap_or_else(|| {
                     eprintln!("ERROR: 'radius' required in config for atomic style LAMMPS data");
                     std::process::exit(1);
@@ -984,13 +1007,13 @@ fn read_lammps_data_particles(
                     );
                     std::process::exit(1);
                 }
-                let id: u32 = fields[0].parse().unwrap();
-                let atype: u32 = fields[1].parse().unwrap();
-                let diameter: f64 = fields[2].parse().unwrap();
-                let density: f64 = fields[3].parse().unwrap();
-                let x: f64 = fields[4].parse().unwrap();
-                let y: f64 = fields[5].parse().unwrap();
-                let z: f64 = fields[6].parse().unwrap();
+                let id: u32 = parse_field(fields[0], "atom id", i + 1, file_path);
+                let atype: u32 = parse_field(fields[1], "atom type", i + 1, file_path);
+                let diameter: f64 = parse_field(fields[2], "diameter", i + 1, file_path);
+                let density: f64 = parse_field(fields[3], "density", i + 1, file_path);
+                let x: f64 = parse_field(fields[4], "x coordinate", i + 1, file_path);
+                let y: f64 = parse_field(fields[5], "y coordinate", i + 1, file_path);
+                let z: f64 = parse_field(fields[6], "z coordinate", i + 1, file_path);
                 parsed_atoms.push(ParsedAtom {
                     id,
                     atom_type: atype,
@@ -1025,10 +1048,10 @@ fn read_lammps_data_particles(
             }
             let fields: Vec<&str> = trimmed.split_whitespace().collect();
             if fields.len() >= 4 {
-                let id: u32 = fields[0].parse().unwrap();
-                let vx: f64 = fields[1].parse().unwrap();
-                let vy: f64 = fields[2].parse().unwrap();
-                let vz: f64 = fields[3].parse().unwrap();
+                let id: u32 = parse_field(fields[0], "atom id (Velocities)", i + 1, file_path);
+                let vx: f64 = parse_field(fields[1], "vx", i + 1, file_path);
+                let vy: f64 = parse_field(fields[2], "vy", i + 1, file_path);
+                let vz: f64 = parse_field(fields[3], "vz", i + 1, file_path);
                 velocity_map.insert(id, [vx, vy, vz]);
             }
         }

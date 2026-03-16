@@ -33,7 +33,9 @@ impl Config {
     ) -> T {
         let config = if let Some(raw_cell) = app.get_mut_resource(TypeId::of::<Config>()) {
             let raw = raw_cell.borrow();
-            let raw_config = raw.downcast_ref::<Config>().unwrap();
+            let raw_config = raw
+                .downcast_ref::<Config>()
+                .expect("Config resource has wrong type — this is a bug in MDDEM");
             let c: T = raw_config.section(key);
             drop(raw);
             c
@@ -104,7 +106,9 @@ impl Config {
     pub fn load_run_config(app: &mut App) -> crate::RunConfig {
         if let Some(raw_cell) = app.get_mut_resource(TypeId::of::<Config>()) {
             let raw = raw_cell.borrow();
-            let config = raw.downcast_ref::<Config>().unwrap();
+            let config = raw
+                .downcast_ref::<Config>()
+                .expect("Config resource has wrong type — this is a bug in MDDEM");
             let rc = config.parse_run_config();
             drop(raw);
             rc
