@@ -9,7 +9,6 @@
 //!   cargo run --example lj_type_rdf --no-default-features -- -c examples/lj_type_rdf/config.toml
 
 use mddem::prelude::*;
-use md_type_rdf::TypeRdfPlugin;
 
 fn main() {
     let mut app = App::new();

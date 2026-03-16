@@ -434,7 +434,6 @@ version = "0.1.3"
 dependencies = [
  "dem_measure_plane",
  "libffi-sys",
- "md_type_rdf",
  "mddem",
  "mddem_derive",
  "mddem_fire",

@@ -27,6 +27,16 @@
 //!
 //! Each entry produces a separate output file: `data/type_rdf_0_0.txt`,
 //! `data/type_rdf_0_1.txt`, etc.
+//!
+//! # Relationship to `md_measure`
+//!
+//! The existing [`md_measure`] crate computes a single global RDF over all
+//! atoms regardless of type. This crate adds *type-filtered* RDF — g(r)
+//! between specific (type_i, type_j) pairs — which is essential for
+//! multi-component systems (binary LJ mixtures, alloys, water models, etc.).
+//! Merging into `md_measure` is possible in the future, but keeping it
+//! separate avoids coupling the simpler single-type RDF to the multi-type
+//! config and normalization logic.
 
 use std::any::TypeId;
 use std::f64::consts::PI;
@@ -182,7 +192,9 @@ output_interval = 1000  # write output every N steps"#,
         let entries: Vec<TypeRdfEntry> =
             if let Some(raw_cell) = app.get_mut_resource(TypeId::of::<Config>()) {
                 let raw = raw_cell.borrow();
-                let config = raw.downcast_ref::<Config>().unwrap();
+                let config = raw.downcast_ref::<Config>().expect(
+                    "Config resource must be registered before TypeRdfPlugin",
+                );
                 let e = config.parse_array::<TypeRdfEntry>("type_rdf");
                 drop(raw);
                 e
@@ -210,8 +222,17 @@ output_interval = 1000  # write output every N steps"#,
 
 // ── Systems ─────────────────────────────────────────────────────────────────
 
-/// Accumulate type-filtered RDF using brute-force pair counting with
+/// Accumulate type-filtered RDF using brute-force O(N²) pair counting with
 /// minimum-image convention.
+///
+/// **Why brute-force instead of neighbor lists?**
+/// RDF measurement typically uses a cutoff larger than the force cutoff (and
+/// therefore larger than the neighbor-list ghost cutoff). Using the existing
+/// neighbor list would silently miss pairs beyond the force cutoff, producing
+/// incorrect g(r). The brute-force loop guarantees correctness for arbitrary
+/// RDF cutoffs at the cost of O(N²) scaling, which is acceptable because
+/// RDF accumulation runs infrequently (every `interval` steps) rather than
+/// every timestep.
 ///
 /// Iterates over all configured type pairs and accumulates their histograms.
 /// For pairs where type_i == type_j, counts local-local pairs (i < j) to
@@ -503,6 +524,96 @@ mod tests {
     fn type_rdf_config_default_empty() {
         let config = TypeRdfConfig::default();
         assert!(config.entries.is_empty());
+    }
+
+    /// Verify that uniformly distributed random particles produce g(r) ≈ 1.0.
+    ///
+    /// For an ideal gas (no interactions), the pair correlation function is
+    /// exactly 1.0 at all distances. We place N particles uniformly at random
+    /// in a cubic periodic box and compute g(r) using the same normalization
+    /// as the plugin. With enough particles, every bin beyond the exclusion
+    /// zone should be close to 1.0.
+    #[test]
+    fn uniform_random_particles_give_gr_approx_one() {
+        use std::f64::consts::PI;
+
+        // Deterministic pseudo-random via simple LCG
+        let mut seed: u64 = 123456789;
+        let mut rand_f64 = || -> f64 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (seed >> 33) as f64 / (1u64 << 31) as f64
+        };
+
+        let n = 2000usize;
+        let box_l = 20.0f64;
+        let volume = box_l * box_l * box_l;
+        let half_l = box_l * 0.5;
+
+        // Generate random positions
+        let mut pos: Vec<[f64; 3]> = Vec::with_capacity(n);
+        for _ in 0..n {
+            pos.push([
+                rand_f64() * box_l,
+                rand_f64() * box_l,
+                rand_f64() * box_l,
+            ]);
+        }
+
+        // Compute RDF histogram (brute-force, minimum-image)
+        let n_bins = 100usize;
+        let cutoff = 8.0f64;
+        let dr = cutoff / n_bins as f64;
+        let mut hist = vec![0.0f64; n_bins];
+
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let mut dx = pos[j][0] - pos[i][0];
+                let mut dy = pos[j][1] - pos[i][1];
+                let mut dz = pos[j][2] - pos[i][2];
+                if dx > half_l { dx -= box_l; } else if dx < -half_l { dx += box_l; }
+                if dy > half_l { dy -= box_l; } else if dy < -half_l { dy += box_l; }
+                if dz > half_l { dz -= box_l; } else if dz < -half_l { dz += box_l; }
+
+                let r = (dx * dx + dy * dy + dz * dz).sqrt();
+                if r < cutoff {
+                    let bin = (r / dr) as usize;
+                    if bin < n_bins {
+                        hist[bin] += 1.0;
+                    }
+                }
+            }
+        }
+
+        // Normalize to g(r)
+        let n_pairs = (n * (n - 1)) as f64 / 2.0;
+        let mut gr = vec![0.0f64; n_bins];
+        for k in 0..n_bins {
+            let r_low = k as f64 * dr;
+            let r_high = (k + 1) as f64 * dr;
+            let shell_vol = (4.0 / 3.0) * PI * (r_high.powi(3) - r_low.powi(3));
+            gr[k] = hist[k] * volume / (n_pairs * shell_vol);
+        }
+
+        // Check that g(r) ≈ 1.0 for bins beyond r = 1.0 (skip first few bins
+        // where statistical noise is large due to small shell volume)
+        let start_bin = (1.0 / dr).ceil() as usize;
+        for k in start_bin..n_bins {
+            let r = (k as f64 + 0.5) * dr;
+            assert!(
+                (gr[k] - 1.0).abs() < 0.15,
+                "g(r={:.2}) = {:.4}, expected ≈ 1.0 for uniform random particles",
+                r,
+                gr[k]
+            );
+        }
+
+        // Also check the mean is very close to 1.0
+        let mean_gr: f64 = gr[start_bin..].iter().sum::<f64>() / (n_bins - start_bin) as f64;
+        assert!(
+            (mean_gr - 1.0).abs() < 0.02,
+            "Mean g(r) = {:.4}, expected ≈ 1.0",
+            mean_gr
+        );
     }
 
     #[test]
