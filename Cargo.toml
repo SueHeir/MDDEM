@@ -91,6 +91,10 @@ name = "granular_gas_vdist"
 path = "examples/granular_gas_vdist/main.rs"
 
 [[example]]
+name = "granular_gas_polydisperse"
+path = "examples/granular_gas_polydisperse/main.rs"
+
+[[example]]
 name = "polymer_chain"
 path = "examples/polymer_chain/main.rs"
 
