@@ -94,6 +94,10 @@ path = "examples/granular_gas_vdist/main.rs"
 name = "polymer_chain"
 path = "examples/polymer_chain/main.rs"
 
+[[example]]
+name = "shrink_wrap_demo"
+path = "examples/shrink_wrap_demo/main.rs"
+
 
 [profile.release]
 opt-level = 3
