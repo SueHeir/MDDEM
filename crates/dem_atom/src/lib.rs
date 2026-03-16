@@ -65,10 +65,30 @@ pub struct MaterialConfig {
     /// Linear tangential stiffness for Hooke model (N/m, 0 = use Mindlin).
     #[serde(default)]
     pub kt: f64,
+    /// Rolling spring stiffness for SDS rolling model (N·m/rad, 0 = use constant model).
+    #[serde(default)]
+    pub rolling_stiffness: f64,
+    /// Rolling viscous damping coefficient for SDS rolling model.
+    #[serde(default)]
+    pub rolling_damping: f64,
+    /// Twisting spring stiffness for SDS twisting model (N·m/rad, 0 = use constant model).
+    #[serde(default)]
+    pub twisting_stiffness: f64,
+    /// Twisting viscous damping coefficient for SDS twisting model.
+    #[serde(default)]
+    pub twisting_damping: f64,
 }
 
 fn default_adhesion_model() -> String {
     "jkr".to_string()
+}
+
+fn default_rolling_model() -> String {
+    "constant".to_string()
+}
+
+fn default_twisting_model() -> String {
+    "constant".to_string()
 }
 
 /// TOML `[dem]` — top-level DEM configuration containing material definitions.
@@ -81,12 +101,18 @@ pub struct DemConfig {
     pub contact_model: String,
     /// Adhesion model when `surface_energy > 0`: "jkr" (default) or "dmt".
     ///
-    /// - **JKR** (Johnson-Kendall-Roberts): Modified contact area with pull-off force = 1.5πγR*.
+    /// - **JKR** (Johnson-Kendall-Roberts): Modified contact area with pull-off force = 1.5*pi*gamma*R*.
     ///   Suitable for soft materials with high surface energy (Tabor parameter > 5).
     /// - **DMT** (Derjaguin-Muller-Toporov): Pure Hertz contact area with constant attractive
-    ///   force = 2πγR*. Suitable for stiff materials with low surface energy (Tabor parameter < 0.1).
+    ///   force = 2*pi*gamma*R*. Suitable for stiff materials with low surface energy (Tabor parameter < 0.1).
     #[serde(default = "default_adhesion_model")]
     pub adhesion_model: String,
+    /// Rolling resistance model: "constant" (default) or "sds".
+    #[serde(default = "default_rolling_model")]
+    pub rolling_model: String,
+    /// Twisting friction model: "constant" (default) or "sds".
+    #[serde(default = "default_twisting_model")]
+    pub twisting_model: String,
 }
 
 // ── MaterialTable — per-material and per-pair precomputed properties ────────
@@ -126,6 +152,26 @@ pub struct MaterialTable {
     pub contact_model: String,
     /// Adhesion model: "jkr" (default) or "dmt".
     pub adhesion_model: String,
+    /// Rolling resistance model: "constant" or "sds".
+    pub rolling_model: String,
+    /// Twisting friction model: "constant" or "sds".
+    pub twisting_model: String,
+    /// Per-material rolling spring stiffness (SDS model).
+    pub rolling_stiffness: Vec<f64>,
+    /// Per-material rolling damping coefficient (SDS model).
+    pub rolling_damping: Vec<f64>,
+    /// Per-material twisting spring stiffness (SDS model).
+    pub twisting_stiffness: Vec<f64>,
+    /// Per-material twisting damping coefficient (SDS model).
+    pub twisting_damping: Vec<f64>,
+    /// Per-pair rolling stiffness (harmonic mean).
+    pub rolling_stiffness_ij: Vec<Vec<f64>>,
+    /// Per-pair rolling damping (geometric mean).
+    pub rolling_damping_ij: Vec<Vec<f64>>,
+    /// Per-pair twisting stiffness (harmonic mean).
+    pub twisting_stiffness_ij: Vec<Vec<f64>>,
+    /// Per-pair twisting damping (geometric mean).
+    pub twisting_damping_ij: Vec<Vec<f64>>,
 }
 
 impl Default for MaterialTable {
@@ -160,6 +206,16 @@ impl MaterialTable {
             kt_ij: Vec::new(),
             contact_model: "hertz".to_string(),
             adhesion_model: "jkr".to_string(),
+            rolling_model: "constant".to_string(),
+            twisting_model: "constant".to_string(),
+            rolling_stiffness: Vec::new(),
+            rolling_damping: Vec::new(),
+            twisting_stiffness: Vec::new(),
+            twisting_damping: Vec::new(),
+            rolling_stiffness_ij: Vec::new(),
+            rolling_damping_ij: Vec::new(),
+            twisting_stiffness_ij: Vec::new(),
+            twisting_damping_ij: Vec::new(),
         }
     }
 
@@ -207,6 +263,33 @@ impl MaterialTable {
         kn: f64,
         kt: f64,
     ) -> u32 {
+        self.add_material_with_sds(
+            name, youngs_mod, poisson_ratio, restitution, friction,
+            rolling_friction, cohesion_energy, surface_energy, twisting_friction,
+            kn, kt, 0.0, 0.0, 0.0, 0.0,
+        )
+    }
+
+    /// Add a material with all fields including SDS rolling/twisting parameters.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_material_with_sds(
+        &mut self,
+        name: &str,
+        youngs_mod: f64,
+        poisson_ratio: f64,
+        restitution: f64,
+        friction: f64,
+        rolling_friction: f64,
+        cohesion_energy: f64,
+        surface_energy: f64,
+        twisting_friction: f64,
+        kn: f64,
+        kt: f64,
+        rolling_stiffness: f64,
+        rolling_damping: f64,
+        twisting_stiffness: f64,
+        twisting_damping: f64,
+    ) -> u32 {
         if cohesion_energy > 0.0 && surface_energy > 0.0 {
             eprintln!(
                 "ERROR: material '{}' has both cohesion_energy and surface_energy > 0. Use only one.",
@@ -226,6 +309,10 @@ impl MaterialTable {
         self.surface_energy.push(surface_energy);
         self.kn.push(kn);
         self.kt.push(kt);
+        self.rolling_stiffness.push(rolling_stiffness);
+        self.rolling_damping.push(rolling_damping);
+        self.twisting_stiffness.push(twisting_stiffness);
+        self.twisting_damping.push(twisting_damping);
         idx
     }
 
@@ -245,6 +332,10 @@ impl MaterialTable {
         self.twisting_friction_ij = vec![vec![0.0; n]; n];
         self.kn_ij = vec![vec![0.0; n]; n];
         self.kt_ij = vec![vec![0.0; n]; n];
+        self.rolling_stiffness_ij = vec![vec![0.0; n]; n];
+        self.rolling_damping_ij = vec![vec![0.0; n]; n];
+        self.twisting_stiffness_ij = vec![vec![0.0; n]; n];
+        self.twisting_damping_ij = vec![vec![0.0; n]; n];
         // Pad optional fields if old API was used
         while self.surface_energy.len() < n {
             self.surface_energy.push(0.0);
@@ -257,6 +348,18 @@ impl MaterialTable {
         }
         while self.kt.len() < n {
             self.kt.push(0.0);
+        }
+        while self.rolling_stiffness.len() < n {
+            self.rolling_stiffness.push(0.0);
+        }
+        while self.rolling_damping.len() < n {
+            self.rolling_damping.push(0.0);
+        }
+        while self.twisting_stiffness.len() < n {
+            self.twisting_stiffness.push(0.0);
+        }
+        while self.twisting_damping.len() < n {
+            self.twisting_damping.push(0.0);
         }
         for i in 0..n {
             for j in 0..n {
@@ -311,6 +414,36 @@ impl MaterialTable {
                 } else {
                     0.0
                 };
+
+                // SDS rolling stiffness (harmonic mean)
+                let kri = self.rolling_stiffness[i];
+                let krj = self.rolling_stiffness[j];
+                self.rolling_stiffness_ij[i][j] = if kri > 0.0 && krj > 0.0 {
+                    2.0 * kri * krj / (kri + krj)
+                } else if kri > 0.0 {
+                    kri
+                } else {
+                    krj
+                };
+
+                // SDS rolling damping (geometric mean)
+                self.rolling_damping_ij[i][j] =
+                    (self.rolling_damping[i].max(0.0) * self.rolling_damping[j].max(0.0)).sqrt();
+
+                // SDS twisting stiffness (harmonic mean)
+                let kwi = self.twisting_stiffness[i];
+                let kwj = self.twisting_stiffness[j];
+                self.twisting_stiffness_ij[i][j] = if kwi > 0.0 && kwj > 0.0 {
+                    2.0 * kwi * kwj / (kwi + kwj)
+                } else if kwi > 0.0 {
+                    kwi
+                } else {
+                    kwj
+                };
+
+                // SDS twisting damping (geometric mean)
+                self.twisting_damping_ij[i][j] =
+                    (self.twisting_damping[i].max(0.0) * self.twisting_damping[j].max(0.0)).sqrt();
             }
         }
     }
@@ -395,10 +528,12 @@ friction = 0.4
 
         material_table.contact_model = dem_config.contact_model.clone();
         material_table.adhesion_model = dem_config.adhesion_model.clone();
+        material_table.rolling_model = dem_config.rolling_model.clone();
+        material_table.twisting_model = dem_config.twisting_model.clone();
 
         if let Some(ref materials) = dem_config.materials {
             for mat in materials {
-                material_table.add_material_extended(
+                material_table.add_material_with_sds(
                     &mat.name,
                     mat.youngs_mod,
                     mat.poisson_ratio,
@@ -410,6 +545,10 @@ friction = 0.4
                     mat.twisting_friction,
                     mat.kn,
                     mat.kt,
+                    mat.rolling_stiffness,
+                    mat.rolling_damping,
+                    mat.twisting_stiffness,
+                    mat.twisting_damping,
                 );
             }
             material_table.build_pair_tables();

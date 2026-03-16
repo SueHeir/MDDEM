@@ -805,6 +805,8 @@ mod tests {
         let fx = atom.force[0][0];
         assert!(fx.is_finite(), "FENE force beyond R0 should be finite, got {}", fx);
         assert!(fx > 0.0, "FENE force beyond R0 should be attractive (capped), got {}", fx);
+    }
+
     #[test]
     fn angle_force_straight_chain() {
         // Three atoms in a straight line: θ = π, cos θ = -1
