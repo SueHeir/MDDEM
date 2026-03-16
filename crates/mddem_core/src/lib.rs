@@ -4,6 +4,7 @@
 //! framework. DEM-specific extensions (`DemAtom`, force models) live in
 //! separate crates (`dem_atom`, `dem_granular`).
 
+pub mod angle;
 pub mod atom;
 pub mod bond;
 pub mod comm;
@@ -16,6 +17,7 @@ pub mod run;
 pub mod virial;
 
 // Re-export all public types at crate root for convenience.
+pub use angle::*;
 pub use atom::*;
 pub use bond::*;
 pub use comm::*;

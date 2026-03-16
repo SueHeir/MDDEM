@@ -15,7 +15,7 @@ use std::fs;
 use std::io::Write;
 
 use mddem_app::prelude::*;
-use mddem_core::{Atom, AtomDataRegistry, BondEntry, BondStore, CommResource, Config, Domain, Input, RunState};
+use mddem_core::{AngleEntry, AngleStore, Atom, AtomDataRegistry, BondEntry, BondStore, CommResource, Config, Domain, Input, RunState};
 use mddem_scheduler::prelude::*;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
@@ -460,6 +460,35 @@ pub fn init_polymer_chains(
                 bond_type: 0,
                 r0: bond_len,
             });
+        }
+    }
+
+    // Populate angle topology if AngleStore is registered
+    if let Some(mut angle_store) = registry.get_mut::<AngleStore>() {
+        while angle_store.angles.len() < n {
+            angle_store.angles.push(Vec::new());
+        }
+
+        let mut total_angles = 0usize;
+        for chain_tags in &stats_data.chain_tags {
+            // For each triple of consecutive beads (i, j, k), store angle on central atom j
+            if chain_tags.len() >= 3 {
+                for w in chain_tags.windows(3) {
+                    let tag_i = w[0];
+                    let tag_j = w[1];
+                    let tag_k = w[2];
+                    angle_store.angles[tag_j as usize].push(AngleEntry {
+                        tag_i,
+                        tag_k,
+                        angle_type: 0,
+                    });
+                    total_angles += 1;
+                }
+            }
+        }
+
+        if comm.rank() == 0 && total_angles > 0 {
+            println!("Polymer init: created {} bond angles", total_angles);
         }
     }
 
