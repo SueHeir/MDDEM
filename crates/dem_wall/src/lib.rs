@@ -222,6 +222,10 @@ impl Walls {
 pub struct WallPlugin;
 
 impl Plugin for WallPlugin {
+    fn dependencies(&self) -> Vec<&str> {
+        vec!["DemAtomPlugin"]
+    }
+
     fn default_config(&self) -> Option<&str> {
         Some(
             r#"# Wall definitions (uncomment to add walls)

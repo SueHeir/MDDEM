@@ -76,6 +76,10 @@ impl ThermalAtom {
 pub struct ThermalPlugin;
 
 impl Plugin for ThermalPlugin {
+    fn dependencies(&self) -> Vec<&str> {
+        vec!["DemAtomPlugin", "NeighborPlugin"]
+    }
+
     fn default_config(&self) -> Option<&str> {
         Some(
             r#"# [thermal]
