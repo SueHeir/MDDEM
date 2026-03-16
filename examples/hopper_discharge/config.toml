@@ -1,0 +1,190 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Hopper Discharge with Mass Flow Rate Measurement
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Classic DEM validation case: slot hopper discharge through an orifice.
+# Particles fill a funnel under gravity, settle, then the blocker wall is
+# removed and particles flow out. A measurement plane at the outlet tracks
+# mass flow rate for comparison with the Beverloo correlation.
+#
+# Geometry (side view, XZ plane):
+#
+#   z=0.08  ┌────────────────────────────┐  ceiling
+#           │                            │
+#           │  ◊ ◊ ◊ ◊ ◊ ◊ ◊ ◊ ◊ ◊ ◊   │  particles inserted here
+#   z=0.06  │  ◊ ◊ ◊ ◊ ◊ ◊ ◊ ◊ ◊ ◊ ◊   │
+#           │                            │
+#   z=0.05  │\                          /│  funnel walls (angled)
+#           │ \                        / │
+#           │  \                      /  │
+#   z=0.015 │   \   ┌──blocker──┐   /   │  ← removed when settled
+#           │    \  │            │  /    │
+#   z=0.01  │─────measure plane──────────│  ← tracks mass flow
+#           │                            │
+#   z=0.0   └────────────────────────────┘  floor
+#         x=0                          x=0.04
+#
+# Beverloo correlation for slot hoppers (2D):
+#   W = C * ρ_bulk * sqrt(g) * (D - k*d)^(3/2) * L
+# where D = orifice width ≈ 0.010 m, d = 0.002 m, L = y-depth = 0.02 m
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[comm]
+processors = [1, 1, 1]
+
+[domain]
+x_lo = 0.0
+x_hi = 0.04
+y_lo = 0.0
+y_hi = 0.02
+z_lo = 0.0
+z_hi = 0.08
+x_periodic = false
+y_periodic = true       # Periodic in y to simulate a 2D-like slot
+z_periodic = false
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.005
+
+[gravity]
+gz = -9.81
+
+# ── Material ──────────────────────────────────────────────────────────────────
+
+[dem]
+contact_model = "hertz"
+
+[[dem.materials]]
+name = "glass"
+youngs_mod = 8.7e9
+poisson_ratio = 0.3
+restitution = 0.3       # Low restitution for heavy damping (faster settling)
+friction = 0.5
+
+# ── Particle insertion ────────────────────────────────────────────────────────
+
+[[particles.insert]]
+material = "glass"
+count = 300
+radius = 0.001           # d = 2mm particles
+density = 2500.0
+velocity_z = -1.0        # Initial downward velocity for faster filling
+region = { type = "block", min = [0.005, 0.0, 0.050], max = [0.035, 0.02, 0.075] }
+
+# ── Walls ─────────────────────────────────────────────────────────────────────
+
+# Left side wall (x = 0, normal +x)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 1.0
+normal_y = 0.0
+normal_z = 0.0
+material = "glass"
+
+# Right side wall (x = 0.04, normal -x)
+[[wall]]
+point_x = 0.04
+point_y = 0.0
+point_z = 0.0
+normal_x = -1.0
+normal_y = 0.0
+normal_z = 0.0
+material = "glass"
+
+# Ceiling (z = 0.08, normal -z)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.08
+normal_x = 0.0
+normal_y = 0.0
+normal_z = -1.0
+material = "glass"
+
+# Floor (z = 0, normal +z)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "glass"
+
+# Left funnel wall: from (0, 0, 0.05) angled inward to the orifice
+# Orifice at z=0.015, centered at x=0.02, half-width = 0.005 (full width D=0.010)
+# Left edge at (0.015, 0, 0.015), wall goes from x=0 z=0.05 to x=0.015 z=0.015
+# Direction along wall: (0.015, 0, -0.035), inward normal: (0.035, 0, 0.015)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.05
+normal_x = 0.035
+normal_y = 0.0
+normal_z = 0.015
+material = "glass"
+bound_z_low = 0.014
+bound_z_high = 0.052
+
+# Right funnel wall: mirror of left
+# Right edge at (0.025, 0, 0.015)
+# Inward normal: (-0.035, 0, 0.015)
+[[wall]]
+point_x = 0.04
+point_y = 0.0
+point_z = 0.05
+normal_x = -0.035
+normal_y = 0.0
+normal_z = 0.015
+material = "glass"
+bound_z_low = 0.014
+bound_z_high = 0.052
+
+# Blocker wall — horizontal at z = 0.015 covering the orifice (removed when settled)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.015
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "glass"
+name = "blocker"
+
+# ── Measurement plane ────────────────────────────────────────────────────────
+#
+# Placed at z = 0.010, below the orifice, counting particles flowing downward.
+# Normal points -z so that particles falling through are counted as positive crossings.
+
+[[measure_plane]]
+name = "outlet"
+point = [0.02, 0.0, 0.010]
+normal = [0.0, 0.0, -1.0]
+report_interval = 5000
+rolling_windows = 3      # Rolling average over 3 reporting windows
+
+# ── Output ────────────────────────────────────────────────────────────────────
+
+[vtp]
+interval = 2000
+
+[thermo]
+columns = ["step", "atoms", "ke", "crossings_outlet", "flow_rate_outlet", "avg_flow_rate_outlet", "walltime"]
+
+# ── Stages ────────────────────────────────────────────────────────────────────
+
+# Stage 1: Fill the hopper — particles settle under gravity onto the blocker
+[[run]]
+name = "filling"
+steps = 500000
+thermo = 5000
+
+# Stage 2: Blocker removed — particles discharge through the funnel opening
+[[run]]
+name = "flowing"
+steps = 1000000
+thermo = 5000

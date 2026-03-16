@@ -101,6 +101,10 @@ pub struct WallDef {
     /// Servo control: adjust velocity to reach target force.
     #[serde(default)]
     pub servo: Option<ServoDef>,
+    /// Angular velocity for cylinder walls [rad/s]. Positive = counterclockwise
+    /// when looking along the +axis direction.
+    #[serde(default)]
+    pub angular_velocity: Option<f64>,
 }
 
 // ── Runtime types ───────────────────────────────────────────────────────────
@@ -169,6 +173,8 @@ pub struct WallCylinder {
     pub material_index: usize,
     pub name: Option<String>,
     pub force_accumulator: f64,
+    /// Angular velocity around the cylinder axis [rad/s].
+    pub angular_velocity: f64,
 }
 
 /// Runtime sphere wall.
@@ -321,6 +327,7 @@ impl Plugin for WallPlugin {
                         let lo = w.lo.unwrap_or(f64::NEG_INFINITY);
                         let hi = w.hi.unwrap_or(f64::INFINITY);
                         let inside = w.inside.unwrap_or(false);
+                        let angular_velocity = w.angular_velocity.unwrap_or(0.0);
                         cylinders.push(WallCylinder {
                             axis,
                             center,
@@ -331,6 +338,7 @@ impl Plugin for WallPlugin {
                             material_index: mat_idx,
                             name: w.name.clone(),
                             force_accumulator: 0.0,
+                            angular_velocity,
                         });
                     }
                     "sphere" => {
@@ -733,6 +741,54 @@ pub fn wall_contact_force(
             atoms.force[i][1] += f_net * ny;
             atoms.force[i][2] += f_net * nz;
             cyl_forces[cyl_idx] += f_net;
+
+            // ── Tangential friction from cylinder angular velocity ──
+            // Compute wall surface velocity at contact point: v_wall = omega × r
+            // where r is the radial vector from cylinder axis to contact point.
+            let omega = cyl.angular_velocity;
+            let mu = material_table.friction_ij[mat_i][wall_mat];
+            if omega.abs() > 1e-30 && mu > 0.0 {
+                let (vw_x, vw_y, vw_z) = match cyl.axis {
+                    // axis=X: omega=(omega,0,0), r=(0,d0,d1) → v=(0,-omega*d1,omega*d0)
+                    0 => (0.0, -omega * d1, omega * d0),
+                    // axis=Y: omega=(0,omega,0), r=(d0,0,d1) → v=(-omega*d1,0,omega*d0)
+                    1 => (-omega * d1, 0.0, omega * d0),
+                    // axis=Z: omega=(0,0,omega), r=(d0,d1,0) → v=(-omega*d1,omega*d0,0)
+                    _ => (-omega * d1, omega * d0, 0.0),
+                };
+
+                // Relative tangential velocity
+                let vr_x = atoms.vel[i][0] - vw_x;
+                let vr_y = atoms.vel[i][1] - vw_y;
+                let vr_z = atoms.vel[i][2] - vw_z;
+                let v_n_comp = vr_x * nx + vr_y * ny + vr_z * nz;
+                let vt_x = vr_x - v_n_comp * nx;
+                let vt_y = vr_y - v_n_comp * ny;
+                let vt_z = vr_z - v_n_comp * nz;
+                let vt_mag = (vt_x * vt_x + vt_y * vt_y + vt_z * vt_z).sqrt();
+
+                if vt_mag > 1e-30 {
+                    // Coulomb friction: F_t = mu * |F_n|, opposing relative sliding
+                    let f_t = mu * f_net.abs();
+                    let inv_vt = 1.0 / vt_mag;
+                    let ft_x = -f_t * vt_x * inv_vt;
+                    let ft_y = -f_t * vt_y * inv_vt;
+                    let ft_z = -f_t * vt_z * inv_vt;
+
+                    atoms.force[i][0] += ft_x;
+                    atoms.force[i][1] += ft_y;
+                    atoms.force[i][2] += ft_z;
+
+                    // Torque on particle: tau = r_contact × F_t
+                    // r_contact from particle center to contact point = -radius * n_hat
+                    let rc_x = -radius * nx;
+                    let rc_y = -radius * ny;
+                    let rc_z = -radius * nz;
+                    dem.torque[i][0] += rc_y * ft_z - rc_z * ft_y;
+                    dem.torque[i][1] += rc_z * ft_x - rc_x * ft_z;
+                    dem.torque[i][2] += rc_x * ft_y - rc_y * ft_x;
+                }
+            }
         }
     }
     for (idx, &f) in cyl_forces.iter().enumerate() {
@@ -1261,6 +1317,7 @@ mod tests {
             material_index: 0,
             name: None,
             force_accumulator: 0.0,
+            angular_velocity: 0.0,
         });
 
         let mut app = App::new();
@@ -1307,6 +1364,7 @@ mod tests {
             material_index: 0,
             name: None,
             force_accumulator: 0.0,
+            angular_velocity: 0.0,
         });
 
         let mut app = App::new();
@@ -1442,6 +1500,7 @@ mod tests {
                 material_index: 0,
                 name: None,
                 force_accumulator: 0.0,
+                angular_velocity: 0.0,
             });
 
             let mut app = App::new();
@@ -1518,6 +1577,7 @@ mod tests {
             material_index: 0,
             name: None,
             force_accumulator: 0.0,
+            angular_velocity: 0.0,
         });
 
         let mut app = App::new();

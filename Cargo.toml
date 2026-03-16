@@ -94,6 +94,14 @@ path = "examples/granular_gas_vdist/main.rs"
 name = "polymer_chain"
 path = "examples/polymer_chain/main.rs"
 
+[[example]]
+name = "hopper_discharge"
+path = "examples/hopper_discharge/main.rs"
+
+[[example]]
+name = "rotating_drum"
+path = "examples/rotating_drum/main.rs"
+
 
 [profile.release]
 opt-level = 3
