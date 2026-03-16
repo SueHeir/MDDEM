@@ -228,6 +228,7 @@ cargo run --release -- config.toml --schedule
 | [group_freeze](examples/group_freeze/) | Group-based freeze fix demonstration | `cargo run --release --example group_freeze -- examples/group_freeze/config.toml` |
 | [poiseuille_flow](examples/poiseuille_flow/) | Poiseuille flow with body force and frozen walls | `cargo run --release --example poiseuille_flow -- examples/poiseuille_flow/config.toml` |
 | [lj_type_rdf](examples/lj_type_rdf/) | LJ fluid with type-filtered RDF measurement | `cargo run --release --example lj_type_rdf -- examples/lj_type_rdf/config.toml` |
+| [polymer_chain](examples/polymer_chain/) | Bead-spring polymer chain with FENE bonds, R_ee and R_g | `cargo run --release --example polymer_chain -- examples/polymer_chain/config.toml` |
 | [toml_single](examples/toml_single/) | Programmatic config — no TOML file needed | `cargo run --example toml_single` |
 
 DEM examples include `validate.py` scripts for physics checks (Haff's law cooling, hopper settling). The `lj_argon` example validates against known liquid Argon properties (RDF, MSD, pressure) and generates diagnostic plots. Run `./validate.sh` to execute all tests and validations.
@@ -357,6 +358,8 @@ These are specialized features that won't be in core. Users can write plugins fo
 | [`md_lj`](crates/md_lj/) | LJ 12-6 pair force with virial, tail corrections, and multi-type support |
 | [`md_thermostat`](crates/md_thermostat/) | Nose-Hoover NVT and Langevin thermostats (group-aware) |
 | [`md_lattice`](crates/md_lattice/) | FCC lattice initialization |
+| [`md_bond`](crates/md_bond/) | Harmonic and FENE bond potentials for bead-spring models |
+| [`md_polymer`](crates/md_polymer/) | Polymer chain initialization, R_ee and R_g measurements |
 | [`md_measure`](crates/md_measure/) | RDF, MSD, virial pressure |
 | [`md_type_rdf`](crates/md_type_rdf/) | Type-filtered RDF: g(r) between specific atom type pairs |
 | [`mddem_test_utils`](crates/mddem_test_utils/) | Shared test helpers |

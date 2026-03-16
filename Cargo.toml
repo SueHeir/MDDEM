@@ -90,6 +90,10 @@ path = "examples/granular_shear/main.rs"
 name = "granular_gas_vdist"
 path = "examples/granular_gas_vdist/main.rs"
 
+[[example]]
+name = "polymer_chain"
+path = "examples/polymer_chain/main.rs"
+
 
 [profile.release]
 opt-level = 3

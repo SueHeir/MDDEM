@@ -1,0 +1,58 @@
+# Bead-spring polymer chain simulation
+# Kremer-Grest model: FENE bonds + WCA (repulsive LJ) interactions
+
+[domain]
+x_low = 0.0
+x_high = 30.0
+y_low = 0.0
+y_high = 30.0
+z_low = 0.0
+z_high = 30.0
+periodic_x = true
+periodic_y = true
+periodic_z = true
+
+[neighbor]
+skin_fraction = 1.12
+bin_size = 1.5
+
+# Polymer chain configuration
+[polymer]
+n_chains = 5
+chain_length = 50
+bond_length = 0.97        # initial bond length (< FENE R0)
+mass = 1.0
+init_style = "random_walk"
+seed = 12345
+measure_interval = 100
+output_interval = 5000
+skin = 1.25               # cutoff skin for neighbor list
+temperature = 1.0
+equilibration_steps = 2000
+
+# FENE bond potential: U = -0.5 k R0^2 ln(1 - (r/R0)^2)
+# Kremer-Grest parameters: k=30, R0=1.5
+[md_bond]
+style = "fene"
+k = 30.0
+r0 = 1.5
+
+# LJ potential for excluded-volume (WCA = purely repulsive LJ at cutoff 2^(1/6))
+[lj]
+epsilon = 1.0
+sigma = 1.0
+cutoff = 1.122462         # 2^(1/6) sigma for WCA
+
+# Langevin thermostat
+[langevin]
+temperature = 1.0
+damping = 1.0
+seed = 54321
+
+[run]
+steps = 50000
+dt = 0.005
+thermo = 1000
+
+[dump]
+interval = 0
