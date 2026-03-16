@@ -104,6 +104,8 @@ pub struct Neighbor {
     pub bin_sorted_pos: Vec<[f64; 3]>,
     // Cached uniform cutoff squared (Some when all atoms have the same skin)
     pub cached_uniform_cutoff_sq: Option<f64>,
+    // Cached max_cutoff from neighbor_setup, needed for bin recomputation on shrink-wrap
+    pub cached_max_cutoff: f64,
 }
 
 impl Default for Neighbor {
@@ -200,8 +202,91 @@ impl Neighbor {
             bin_atom_sorted_idx: Vec::new(),
             bin_sorted_pos: Vec::new(),
             cached_uniform_cutoff_sq: None,
+            cached_max_cutoff: 0.0,
         }
     }
+}
+
+/// Compute bin grid parameters (count, size, origin, stencil) from domain bounds and cutoff.
+///
+/// Shared helper used by both `neighbor_setup` (initial setup) and `recompute_bins`
+/// (after shrink-wrap domain changes). Updates bin_count, bin_size, bin_origin,
+/// bin_total_cells, stencil arrays, and PBC box dimensions on `neighbor`.
+fn compute_bin_grid(neighbor: &mut Neighbor, domain: &Domain, comm_size: i32) {
+    let max_cutoff = neighbor.cached_max_cutoff;
+
+    let required_bin = if comm_size > 1 { max_cutoff * 0.5 } else { max_cutoff };
+    let min_bin = neighbor.bin_min_size.max(required_bin);
+
+    let wbx = domain.sub_length[0] / min_bin;
+    let wby = domain.sub_length[1] / min_bin;
+    let wbz = domain.sub_length[2] / min_bin;
+    let xi = wbx.floor().max(1.0) as i32;
+    let yi = wby.floor().max(1.0) as i32;
+    let zi = wbz.floor().max(1.0) as i32;
+
+    let actual_bin_size = [
+        domain.sub_length[0] / xi as f64,
+        domain.sub_length[1] / yi as f64,
+        domain.sub_length[2] / zi as f64,
+    ];
+
+    let sx = (max_cutoff / actual_bin_size[0]).ceil() as i32;
+    let sy = (max_cutoff / actual_bin_size[1]).ceil() as i32;
+    let sz = (max_cutoff / actual_bin_size[2]).ceil() as i32;
+
+    let nx = xi + 2 * sx;
+    let ny = yi + 2 * sy;
+    let nz = zi + 2 * sz;
+    neighbor.bin_count = [nx, ny, nz];
+    neighbor.bin_size = actual_bin_size;
+
+    let total_cells = (nx * ny * nz) as usize;
+    neighbor.bin_total_cells = total_cells;
+    neighbor.bin_origin = [
+        domain.sub_domain_low[0] - actual_bin_size[0] * sx as f64,
+        domain.sub_domain_low[1] - actual_bin_size[1] * sy as f64,
+        domain.sub_domain_low[2] - actual_bin_size[2] * sz as f64,
+    ];
+
+    // Precompute stencil offsets — only include cells whose minimum distance < cutoff
+    let cutoff2 = max_cutoff * max_cutoff;
+    neighbor.bin_stencil.clear();
+    neighbor.bin_stencil_forward.clear();
+    neighbor.bin_stencil_self = false;
+    for dx in -sx..=sx {
+        for dy in -sy..=sy {
+            for dz in -sz..=sz {
+                let min_dx = (dx.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size[0];
+                let min_dy = (dy.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size[1];
+                let min_dz = (dz.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size[2];
+                if min_dx * min_dx + min_dy * min_dy + min_dz * min_dz < cutoff2 {
+                    let offset = dx * ny * nz + dy * nz + dz;
+                    neighbor.bin_stencil.push(offset);
+                    if offset > 0 {
+                        neighbor.bin_stencil_forward.push(offset);
+                    } else if offset == 0 {
+                        neighbor.bin_stencil_self = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Update PBC box dimensions
+    neighbor.pbc_box = [
+        domain.boundaries_high[0] - domain.boundaries_low[0],
+        domain.boundaries_high[1] - domain.boundaries_low[1],
+        domain.boundaries_high[2] - domain.boundaries_low[2],
+    ];
+}
+
+/// Recompute bin grid parameters after domain bounds change (e.g., shrink-wrap).
+fn recompute_bins(neighbor: &mut Neighbor, domain: &Domain, comm_size: i32) {
+    if neighbor.cached_max_cutoff <= 0.0 {
+        return; // not yet initialized
+    }
+    compute_bin_grid(neighbor, domain, comm_size);
 }
 
 /// Registers neighbor list construction and rebuild systems.
@@ -297,6 +382,7 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
     let displacement_buffer = (neighbor.skin_fraction - 1.0) * min_skin;
     let ghost_cut = max_cutoff + 2.0 * displacement_buffer;
     neighbor.ghost_cutoff = ghost_cut;
+    neighbor.cached_max_cutoff = max_cutoff;
     domain.ghost_cutoff = ghost_cut;
     atoms.rebuild_on_pbc_wrap = config.rebuild_on_pbc_wrap;
     if comm.rank() == 0 {
@@ -311,82 +397,25 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
         neighbor.bin_min_size = required_bin;
     }
 
-    let wbx = domain.sub_length[0] / neighbor.bin_min_size;
-    let wby = domain.sub_length[1] / neighbor.bin_min_size;
-    let wbz = domain.sub_length[2] / neighbor.bin_min_size;
-    let xi = wbx.floor().max(1.0) as i32;
-    let yi = wby.floor().max(1.0) as i32;
-    let zi = wbz.floor().max(1.0) as i32;
-    if wbx < 1.0 || wby < 1.0 || wbz < 1.0 {
+    let min_bin = neighbor.bin_min_size;
+    if domain.sub_length[0] / min_bin < 1.0
+        || domain.sub_length[1] / min_bin < 1.0
+        || domain.sub_length[2] / min_bin < 1.0
+    {
         if comm.rank() == 0 {
             println!("WARNING: subdomain smaller than bin_size in at least one dimension, clamping to 1 bin");
         }
     }
 
-    let actual_bin_size = [
-        domain.sub_length[0] / xi as f64,
-        domain.sub_length[1] / yi as f64,
-        domain.sub_length[2] / zi as f64,
-    ];
-
-    // Stencil range: ceil(cutoff / bin_size) in each dimension
-    let sx = (max_cutoff / actual_bin_size[0]).ceil() as i32;
-    let sy = (max_cutoff / actual_bin_size[1]).ceil() as i32;
-    let sz = (max_cutoff / actual_bin_size[2]).ceil() as i32;
-
-    // Ghost layers must match stencil range
-    let nx = xi + 2 * sx;
-    let ny = yi + 2 * sy;
-    let nz = zi + 2 * sz;
-    neighbor.bin_count = [nx, ny, nz];
-    neighbor.bin_size = actual_bin_size;
-
-    // Flat bin grid setup
-    let total_cells = (nx * ny * nz) as usize;
-    neighbor.bin_total_cells = total_cells;
-    neighbor.bin_origin = [
-        domain.sub_domain_low[0] - actual_bin_size[0] * sx as f64,
-        domain.sub_domain_low[1] - actual_bin_size[1] * sy as f64,
-        domain.sub_domain_low[2] - actual_bin_size[2] * sz as f64,
-    ];
-
-    // Precompute stencil offsets — only include cells whose minimum distance < cutoff
-    let cutoff2 = max_cutoff * max_cutoff;
-    neighbor.bin_stencil.clear();
-    neighbor.bin_stencil_forward.clear();
-    neighbor.bin_stencil_self = false;
-    for dx in -sx..=sx {
-        for dy in -sy..=sy {
-            for dz in -sz..=sz {
-                // Minimum distance from central cell to cell at offset (dx,dy,dz)
-                let min_dx = (dx.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size[0];
-                let min_dy = (dy.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size[1];
-                let min_dz = (dz.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size[2];
-                if min_dx * min_dx + min_dy * min_dy + min_dz * min_dz < cutoff2 {
-                    let offset = dx * ny * nz + dy * nz + dz;
-                    neighbor.bin_stencil.push(offset);
-                    if offset > 0 {
-                        neighbor.bin_stencil_forward.push(offset);
-                    } else if offset == 0 {
-                        neighbor.bin_stencil_self = true;
-                    }
-                }
-            }
-        }
-    }
-
-    // Store box dimensions for minimum-image displacement check
-    neighbor.pbc_box = [
-        domain.boundaries_high[0] - domain.boundaries_low[0],
-        domain.boundaries_high[1] - domain.boundaries_low[1],
-        domain.boundaries_high[2] - domain.boundaries_low[2],
-    ];
+    // Compute bin grid, stencil, and PBC box using shared helper
+    compute_bin_grid(&mut neighbor, &domain, comm.size());
     neighbor.pbc_flags = domain.is_periodic;
 
     if comm.rank() == 0 {
         println!(
             "Neighbor: bins {}x{}x{} (with ghost layers), {} forward stencil cells",
-            nx, ny, nz, neighbor.bin_stencil_forward.len()
+            neighbor.bin_count[0], neighbor.bin_count[1], neighbor.bin_count[2],
+            neighbor.bin_stencil_forward.len()
         );
     }
 }
@@ -616,7 +645,14 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
     build_csr_from_pairs(&mut neighbor, nlocal);
 }
 
-pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>, comm: Res<CommResource>, registry: Res<AtomDataRegistry>) {
+pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>, comm: Res<CommResource>, registry: Res<AtomDataRegistry>, mut domain: ResMut<Domain>) {
+    // Recompute bin grid if domain bounds changed (e.g., shrink-wrap).
+    // Must happen before sorting since sorting depends on bin parameters.
+    if domain.bounds_changed {
+        recompute_bins(&mut neighbor, &domain, comm.size());
+        domain.bounds_changed = false;
+        atoms.communicate_only = false;
+    }
     // Increment sort_counter first so it stays synchronized across all MPI ranks,
     // even if some ranks skip sorting due to nlocal == 0 or other conditions.
     neighbor.sort_counter += 1;
@@ -722,9 +758,18 @@ pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>
 pub fn bin_neighbor_list(
     mut atoms: ResMut<Atom>,
     mut neighbor: ResMut<Neighbor>,
-    _domain: Res<Domain>,
-    _comm: Res<CommResource>,
+    mut domain: ResMut<Domain>,
+    comm: Res<CommResource>,
 ) {
+    // Recompute bin grid if domain bounds changed (e.g., shrink-wrap).
+    // This is a fallback — sort_atoms_by_bin handles this for the Bin style,
+    // but BruteForce/SweepAndPrune callers won't have sort_atoms_by_bin.
+    if domain.bounds_changed {
+        recompute_bins(&mut neighbor, &domain, comm.size());
+        domain.bounds_changed = false;
+        atoms.communicate_only = false;
+    }
+
     let nlocal = atoms.nlocal as usize;
     let total = atoms.len();
     if !needs_rebuild(&atoms, &neighbor) {

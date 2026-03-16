@@ -99,6 +99,10 @@ name = "polymer_chain"
 path = "examples/polymer_chain/main.rs"
 
 [[example]]
+name = "shrink_wrap_demo"
+path = "examples/shrink_wrap_demo/main.rs"
+
+[[example]]
 name = "dem_benchmark"
 path = "examples/dem_benchmark/main.rs"
 
