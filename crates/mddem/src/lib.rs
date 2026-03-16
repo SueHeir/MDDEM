@@ -13,6 +13,7 @@ pub use md_lattice;
 pub use md_lj;
 pub use md_bond;
 pub use md_measure;
+pub use md_msd;
 pub use md_type_rdf;
 pub use md_polymer;
 pub use md_thermostat;
@@ -103,6 +104,7 @@ pub mod prelude {
     pub use md_lj::{LJConfig, LJForcePlugin, LJPairTable, LJTailCorrections};
     pub use md_bond::{MdBondConfig, MdBondPlugin};
     pub use md_measure::{MeasureConfig, MeasurePlugin};
+    pub use md_msd::{MsdConfig, TypeMsdPlugin};
     pub use md_type_rdf::{TypeRdfConfig, TypeRdfPlugin};
     pub use md_polymer::{ChainStatsConfig, ChainStatsPlugin, PolymerConfig, PolymerInitConfig, PolymerInitPlugin, PolymerPlugin};
     pub use md_thermostat::{LangevinConfig, LangevinPlugin, LangevinState, NoseHooverPlugin, NoseHooverState, ThermostatConfig};

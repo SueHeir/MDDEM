@@ -364,6 +364,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "md_msd"
+version = "0.1.3"
+dependencies = [
+ "mddem_app",
+ "mddem_core",
+ "mddem_scheduler",
+ "serde",
+]
+
+[[package]]
 name = "md_polymer"
 version = "0.1.3"
 dependencies = [
@@ -415,6 +425,7 @@ dependencies = [
  "md_lattice",
  "md_lj",
  "md_measure",
+ "md_msd",
  "md_polymer",
  "md_thermostat",
  "md_type_rdf",
@@ -435,6 +446,7 @@ version = "0.1.3"
 dependencies = [
  "dem_measure_plane",
  "libffi-sys",
+ "md_msd",
  "md_type_rdf",
  "mddem",
  "mddem_derive",
