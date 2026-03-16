@@ -7,6 +7,7 @@ pub use dem_bond;
 pub use dem_measure_plane;
 pub use dem_granular;
 pub use dem_thermal;
+pub use dem_contact_stats;
 pub use mddem_velocity_distribution;
 pub use dem_wall;
 pub use md_lattice;
@@ -97,6 +98,7 @@ pub mod prelude {
     pub use mddem_velocity_distribution::VelocityDistributionPlugin;
     pub use mddem_fixes::{GravityConfig, GravityPlugin};
     pub use dem_thermal::{ThermalConfig, ThermalPlugin};
+    pub use dem_contact_stats::{ContactStatsConfig, ContactStatsPlugin};
     pub use dem_measure_plane::{MeasurePlaneDef, MeasurePlanePlugin, MeasurePlanes};
     pub use dem_wall::{WallDef, WallPlane, WallPlugin, Walls};
     pub use md_lattice::{LatticeConfig, LatticePlugin};

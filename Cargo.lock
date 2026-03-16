@@ -143,6 +143,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dem_contact_stats"
+version = "0.1.3"
+dependencies = [
+ "dem_atom",
+ "mddem_app",
+ "mddem_core",
+ "mddem_derive",
+ "mddem_neighbor",
+ "mddem_print",
+ "mddem_scheduler",
+ "mddem_test_utils",
+ "serde",
+]
+
+[[package]]
 name = "dem_granular"
 version = "0.1.3"
 dependencies = [
@@ -153,6 +168,17 @@ dependencies = [
  "mddem_scheduler",
  "mddem_test_utils",
  "mddem_verlet",
+]
+
+[[package]]
+name = "dem_measure_plane"
+version = "0.1.3"
+dependencies = [
+ "mddem_app",
+ "mddem_core",
+ "mddem_print",
+ "mddem_scheduler",
+ "serde",
 ]
 
 [[package]]
@@ -422,7 +448,9 @@ version = "0.1.3"
 dependencies = [
  "dem_atom",
  "dem_bond",
+ "dem_contact_stats",
  "dem_granular",
+ "dem_measure_plane",
  "dem_thermal",
  "dem_wall",
  "md_bond",
@@ -447,7 +475,9 @@ dependencies = [
 name = "mddem-bin"
 version = "0.1.3"
 dependencies = [
+ "dem_measure_plane",
  "libffi-sys",
+ "md_type_rdf",
  "mddem",
  "mddem_derive",
  "mddem_fire",
