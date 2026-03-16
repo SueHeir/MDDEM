@@ -62,12 +62,16 @@ pub fn hertz_mindlin_contact_force(
     let dt = atoms.dt;
 
     // Ensure contacts vec covers all atoms (local + ghost)
-    while history.contacts.len() < atoms.len() {
-        history.contacts.push(Vec::new());
+    let natoms = atoms.len();
+    if history.contacts.len() < natoms {
+        history.contacts.resize_with(natoms, Vec::new);
     }
 
     let nlocal = atoms.nlocal as usize;
     let mut overlap_warnings = 0usize;
+
+    let has_bonds = bond_store.is_some();
+    let virial_active = virial.as_ref().map_or(false, |v| v.active);
 
     // Reset all active flags before pair loop
     for i in 0..nlocal {
@@ -77,9 +81,11 @@ pub fn hertz_mindlin_contact_force(
     }
 
     for (i, j) in neighbor.pairs(nlocal) {
-        if let Some(ref bonds) = bond_store {
-            if bonds.are_excluded(i, j, &atoms.tag) {
-                continue;
+        if has_bonds {
+            if let Some(ref bonds) = bond_store {
+                if bonds.are_excluded(i, j, &atoms.tag) {
+                    continue;
+                }
             }
         }
 
@@ -89,7 +95,7 @@ pub fn hertz_mindlin_contact_force(
         let dx = atoms.pos[j][0] - atoms.pos[i][0];
         let dy = atoms.pos[j][1] - atoms.pos[i][1];
         let dz = atoms.pos[j][2] - atoms.pos[i][2];
-        let dist_sq = dx * dx + dy * dy + dz * dz;
+        let dist_sq = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
         let sum_r = r1 + r2;
 
         let mat_i = atoms.atom_type[i] as usize;
@@ -175,7 +181,7 @@ pub fn hertz_mindlin_contact_force(
         let (s_n, k_n, k_t) = if delta > 0.0 {
             let sdr = (delta * r_eff).sqrt();
             let sn = 2.0 * e_eff * sdr;
-            let kn = 4.0 / 3.0 * e_eff * sdr;
+            let kn = (4.0 / 3.0) * e_eff * sdr;
             let kt = 8.0 * g_eff * sdr;
             (sn, kn, kt)
         } else {
@@ -183,34 +189,30 @@ pub fn hertz_mindlin_contact_force(
         };
 
         // Full relative velocity (including angular contributions)
-        let omega_ix = dem.omega[i][0];
-        let omega_iy = dem.omega[i][1];
-        let omega_iz = dem.omega[i][2];
-        let omega_jx = dem.omega[j][0];
-        let omega_jy = dem.omega[j][1];
-        let omega_jz = dem.omega[j][2];
+        let omega_i = dem.omega[i];
+        let omega_j = dem.omega[j];
 
         // v_contact_i = vel_i + omega_i × (r1 * n)
         let r1n_x = r1 * nx;
         let r1n_y = r1 * ny;
         let r1n_z = r1 * nz;
-        let vc_ix = atoms.vel[i][0] + (omega_iy * r1n_z - omega_iz * r1n_y);
-        let vc_iy = atoms.vel[i][1] + (omega_iz * r1n_x - omega_ix * r1n_z);
-        let vc_iz = atoms.vel[i][2] + (omega_ix * r1n_y - omega_iy * r1n_x);
+        let vc_ix = atoms.vel[i][0] + omega_i[1].mul_add(r1n_z, -omega_i[2] * r1n_y);
+        let vc_iy = atoms.vel[i][1] + omega_i[2].mul_add(r1n_x, -omega_i[0] * r1n_z);
+        let vc_iz = atoms.vel[i][2] + omega_i[0].mul_add(r1n_y, -omega_i[1] * r1n_x);
 
         // v_contact_j = vel_j + omega_j × (-r2 * n)
         let r2n_x = r2 * nx;
         let r2n_y = r2 * ny;
         let r2n_z = r2 * nz;
-        let vc_jx = atoms.vel[j][0] + (-omega_jy * r2n_z + omega_jz * r2n_y);
-        let vc_jy = atoms.vel[j][1] + (-omega_jz * r2n_x + omega_jx * r2n_z);
-        let vc_jz = atoms.vel[j][2] + (-omega_jx * r2n_y + omega_jy * r2n_x);
+        let vc_jx = atoms.vel[j][0] + (-omega_j[1]).mul_add(r2n_z, omega_j[2] * r2n_y);
+        let vc_jy = atoms.vel[j][1] + (-omega_j[2]).mul_add(r2n_x, omega_j[0] * r2n_z);
+        let vc_jz = atoms.vel[j][2] + (-omega_j[0]).mul_add(r2n_y, omega_j[1] * r2n_x);
 
         let vr_x = vc_jx - vc_ix;
         let vr_y = vc_jy - vc_iy;
         let vr_z = vc_jz - vc_iz;
 
-        let v_n = vr_x * nx + vr_y * ny + vr_z * nz;
+        let v_n = vr_x.mul_add(nx, vr_y.mul_add(ny, vr_z * nz));
 
         // ── Normal force ─────────────────────────────────────────────────
         let f_n_mag = if surface_energy > 0.0 {
@@ -222,16 +224,16 @@ pub fn hertz_mindlin_contact_force(
             } else {
                 // Full contact: Hertz + damping + adhesion
                 let f_diss_n = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
-                k_n * delta - f_diss_n - f_adhesion
+                k_n.mul_add(delta, -f_diss_n) - f_adhesion
             }
         } else if cohesion_energy > 0.0 {
             // SJKR cohesion: contact area A = pi * delta * r_eff
             let f_diss_n = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
             let f_cohesion = cohesion_energy * std::f64::consts::PI * delta * r_eff;
-            k_n * delta - f_diss_n - f_cohesion // can go negative (attractive)
+            k_n.mul_add(delta, -f_diss_n) - f_cohesion // can go negative (attractive)
         } else {
             let f_diss_n = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
-            (k_n * delta - f_diss_n).max(0.0)
+            k_n.mul_add(delta, -f_diss_n).max(0.0)
         };
 
         let fn_x = f_n_mag * nx;
@@ -249,9 +251,9 @@ pub fn hertz_mindlin_contact_force(
         if jkr_adhesion_only {
             // No tangential, rolling, or spring history in adhesion-only regime
             // Virial contribution from normal only
-            if let Some(ref mut v) = virial {
-                if v.active {
-                    v.add_pair(dx, dy, dz, -fn_x, -fn_y, -fn_z);
+            if virial_active {
+                if let Some(ref mut virial_stress) = virial {
+                    virial_stress.add_pair(dx, dy, dz, -fn_x, -fn_y, -fn_z);
                 }
             }
             continue;
@@ -277,14 +279,14 @@ pub fn hertz_mindlin_contact_force(
         let mut sx = sign * stored_spring[0];
         let mut sy = sign * stored_spring[1];
         let mut sz = sign * stored_spring[2];
-        let s_dot_n = sx*nx + sy*ny + sz*nz;
+        let s_dot_n = sx.mul_add(nx, sy.mul_add(ny, sz * nz));
         sx -= s_dot_n * nx; sy -= s_dot_n * ny; sz -= s_dot_n * nz;
         sx += vt_x * dt;
         sy += vt_y * dt;
         sz += vt_z * dt;
 
         // Coulomb cap on spring
-        let s_mag = (sx*sx + sy*sy + sz*sz).sqrt();
+        let s_mag = sx.mul_add(sx, sy.mul_add(sy, sz * sz)).sqrt();
         let f_t_spring_mag = k_t * s_mag;
         let f_t_max = mu * f_n_mag.abs();
         if f_t_spring_mag > f_t_max && f_t_spring_mag > TANGENTIAL_EPSILON {
@@ -299,7 +301,7 @@ pub fn hertz_mindlin_contact_force(
         let mut ft_z = k_t * sz - gamma_t * vt_z;
 
         // Coulomb cap on total tangential force
-        let f_t_mag = (ft_x * ft_x + ft_y * ft_y + ft_z * ft_z).sqrt();
+        let f_t_mag = ft_x.mul_add(ft_x, ft_y.mul_add(ft_y, ft_z * ft_z)).sqrt();
         if f_t_mag > f_t_max && f_t_mag > TANGENTIAL_EPSILON {
             let scale = f_t_max / f_t_mag;
             ft_x *= scale;
@@ -308,12 +310,12 @@ pub fn hertz_mindlin_contact_force(
         }
 
         // Torques: τ_i = (r1 * n) × f_t, τ_j = (-r2 * n) × (-f_t) = (r2 * n) × f_t
-        let ti_x = r1n_y * ft_z - r1n_z * ft_y;
-        let ti_y = r1n_z * ft_x - r1n_x * ft_z;
-        let ti_z = r1n_x * ft_y - r1n_y * ft_x;
-        let tj_x = r2n_y * ft_z - r2n_z * ft_y;
-        let tj_y = r2n_z * ft_x - r2n_x * ft_z;
-        let tj_z = r2n_x * ft_y - r2n_y * ft_x;
+        let ti_x = r1n_y.mul_add(ft_z, -r1n_z * ft_y);
+        let ti_y = r1n_z.mul_add(ft_x, -r1n_x * ft_z);
+        let ti_z = r1n_x.mul_add(ft_y, -r1n_y * ft_x);
+        let tj_x = r2n_y.mul_add(ft_z, -r2n_z * ft_y);
+        let tj_y = r2n_z.mul_add(ft_x, -r2n_x * ft_z);
+        let tj_z = r2n_x.mul_add(ft_y, -r2n_y * ft_x);
 
         atoms.force[i][0] += ft_x;
         atoms.force[i][1] += ft_y;
@@ -331,15 +333,15 @@ pub fn hertz_mindlin_contact_force(
         // ── Rolling resistance torque ───────────────────────────────────
         if mu_r > 0.0 {
             // Relative angular velocity
-            let or_x = omega_ix - omega_jx;
-            let or_y = omega_iy - omega_jy;
-            let or_z = omega_iz - omega_jz;
+            let or_x = omega_i[0] - omega_j[0];
+            let or_y = omega_i[1] - omega_j[1];
+            let or_z = omega_i[2] - omega_j[2];
             // Remove twisting component (keep only rolling)
-            let or_dot_n = or_x * nx + or_y * ny + or_z * nz;
+            let or_dot_n = or_x.mul_add(nx, or_y.mul_add(ny, or_z * nz));
             let roll_x = or_x - or_dot_n * nx;
             let roll_y = or_y - or_dot_n * ny;
             let roll_z = or_z - or_dot_n * nz;
-            let roll_mag = (roll_x * roll_x + roll_y * roll_y + roll_z * roll_z).sqrt();
+            let roll_mag = roll_x.mul_add(roll_x, roll_y.mul_add(roll_y, roll_z * roll_z)).sqrt();
             if roll_mag > 1e-30 {
                 let tau_mag = mu_r * f_n_mag.abs() * r_eff;
                 let inv_roll = tau_mag / roll_mag;
@@ -357,10 +359,10 @@ pub fn hertz_mindlin_contact_force(
 
         // ── Twisting friction torque ─────────────────────────────────────
         if mu_tw > 0.0 {
-            let or_x = omega_ix - omega_jx;
-            let or_y = omega_iy - omega_jy;
-            let or_z = omega_iz - omega_jz;
-            let twist = or_x * nx + or_y * ny + or_z * nz;
+            let or_x = omega_i[0] - omega_j[0];
+            let or_y = omega_i[1] - omega_j[1];
+            let or_z = omega_i[2] - omega_j[2];
+            let twist = or_x.mul_add(nx, or_y.mul_add(ny, or_z * nz));
             if twist.abs() > 1e-30 {
                 let tau = mu_tw * f_n_mag.abs() * r_eff;
                 let sign_tw = if twist > 0.0 { -1.0 } else { 1.0 };
@@ -377,9 +379,9 @@ pub fn hertz_mindlin_contact_force(
         }
 
         // Virial: force on i from j = (-fn + ft)
-        if let Some(ref mut v) = virial {
-            if v.active {
-                v.add_pair(dx, dy, dz, -fn_x + ft_x, -fn_y + ft_y, -fn_z + ft_z);
+        if virial_active {
+            if let Some(ref mut virial_stress) = virial {
+                virial_stress.add_pair(dx, dy, dz, -fn_x + ft_x, -fn_y + ft_y, -fn_z + ft_z);
             }
         }
 
@@ -441,12 +443,16 @@ pub fn hooke_contact_force(
     let bond_store = registry.get::<BondStore>();
     let dt = atoms.dt;
 
-    while history.contacts.len() < atoms.len() {
-        history.contacts.push(Vec::new());
+    let natoms = atoms.len();
+    if history.contacts.len() < natoms {
+        history.contacts.resize_with(natoms, Vec::new);
     }
 
     let nlocal = atoms.nlocal as usize;
     let mut overlap_warnings = 0usize;
+
+    let has_bonds = bond_store.is_some();
+    let virial_active = virial.as_ref().map_or(false, |v| v.active);
 
     for i in 0..nlocal {
         for entry in &mut history.contacts[i] {
@@ -455,9 +461,11 @@ pub fn hooke_contact_force(
     }
 
     for (i, j) in neighbor.pairs(nlocal) {
-        if let Some(ref bonds) = bond_store {
-            if bonds.are_excluded(i, j, &atoms.tag) {
-                continue;
+        if has_bonds {
+            if let Some(ref bonds) = bond_store {
+                if bonds.are_excluded(i, j, &atoms.tag) {
+                    continue;
+                }
             }
         }
 
@@ -467,7 +475,7 @@ pub fn hooke_contact_force(
         let dx = atoms.pos[j][0] - atoms.pos[i][0];
         let dy = atoms.pos[j][1] - atoms.pos[i][1];
         let dz = atoms.pos[j][2] - atoms.pos[i][2];
-        let dist_sq = dx * dx + dy * dy + dz * dz;
+        let dist_sq = dx.mul_add(dx, dy.mul_add(dy, dz * dz));
         let sum_r = r1 + r2;
 
         if dist_sq >= sum_r * sum_r {
@@ -515,38 +523,34 @@ pub fn hooke_contact_force(
         let gamma_n = 2.0 * beta * (kn * m_r).sqrt();
 
         // Relative velocity
-        let omega_ix = dem.omega[i][0];
-        let omega_iy = dem.omega[i][1];
-        let omega_iz = dem.omega[i][2];
-        let omega_jx = dem.omega[j][0];
-        let omega_jy = dem.omega[j][1];
-        let omega_jz = dem.omega[j][2];
+        let omega_i = dem.omega[i];
+        let omega_j = dem.omega[j];
 
         let r1n_x = r1 * nx;
         let r1n_y = r1 * ny;
         let r1n_z = r1 * nz;
-        let vc_ix = atoms.vel[i][0] + (omega_iy * r1n_z - omega_iz * r1n_y);
-        let vc_iy = atoms.vel[i][1] + (omega_iz * r1n_x - omega_ix * r1n_z);
-        let vc_iz = atoms.vel[i][2] + (omega_ix * r1n_y - omega_iy * r1n_x);
+        let vc_ix = atoms.vel[i][0] + omega_i[1].mul_add(r1n_z, -omega_i[2] * r1n_y);
+        let vc_iy = atoms.vel[i][1] + omega_i[2].mul_add(r1n_x, -omega_i[0] * r1n_z);
+        let vc_iz = atoms.vel[i][2] + omega_i[0].mul_add(r1n_y, -omega_i[1] * r1n_x);
 
         let r2n_x = r2 * nx;
         let r2n_y = r2 * ny;
         let r2n_z = r2 * nz;
-        let vc_jx = atoms.vel[j][0] + (-omega_jy * r2n_z + omega_jz * r2n_y);
-        let vc_jy = atoms.vel[j][1] + (-omega_jz * r2n_x + omega_jx * r2n_z);
-        let vc_jz = atoms.vel[j][2] + (-omega_jx * r2n_y + omega_jy * r2n_x);
+        let vc_jx = atoms.vel[j][0] + (-omega_j[1]).mul_add(r2n_z, omega_j[2] * r2n_y);
+        let vc_jy = atoms.vel[j][1] + (-omega_j[2]).mul_add(r2n_x, omega_j[0] * r2n_z);
+        let vc_jz = atoms.vel[j][2] + (-omega_j[0]).mul_add(r2n_y, omega_j[1] * r2n_x);
 
         let vr_x = vc_jx - vc_ix;
         let vr_y = vc_jy - vc_iy;
         let vr_z = vc_jz - vc_iz;
-        let v_n = vr_x * nx + vr_y * ny + vr_z * nz;
+        let v_n = vr_x.mul_add(nx, vr_y.mul_add(ny, vr_z * nz));
 
         // Normal force
         let f_n_mag = if cohesion_energy > 0.0 {
             let f_cohesion = cohesion_energy * std::f64::consts::PI * delta * r_eff;
-            kn * delta - gamma_n * v_n - f_cohesion
+            kn.mul_add(delta, -gamma_n * v_n) - f_cohesion
         } else {
-            (kn * delta - gamma_n * v_n).max(0.0)
+            kn.mul_add(delta, -gamma_n * v_n).max(0.0)
         };
 
         let fn_x = f_n_mag * nx;
@@ -580,7 +584,7 @@ pub fn hooke_contact_force(
         let mut sx = sign * stored_spring[0];
         let mut sy = sign * stored_spring[1];
         let mut sz = sign * stored_spring[2];
-        let s_dot_n = sx * nx + sy * ny + sz * nz;
+        let s_dot_n = sx.mul_add(nx, sy.mul_add(ny, sz * nz));
         sx -= s_dot_n * nx;
         sy -= s_dot_n * ny;
         sz -= s_dot_n * nz;
@@ -588,7 +592,7 @@ pub fn hooke_contact_force(
         sy += vt_y * dt;
         sz += vt_z * dt;
 
-        let s_mag = (sx * sx + sy * sy + sz * sz).sqrt();
+        let s_mag = sx.mul_add(sx, sy.mul_add(sy, sz * sz)).sqrt();
         let f_t_spring_mag = kt * s_mag;
         let f_t_max = mu * f_n_mag.abs();
         if f_t_spring_mag > f_t_max && f_t_spring_mag > TANGENTIAL_EPSILON {
@@ -603,7 +607,7 @@ pub fn hooke_contact_force(
         let mut ft_y = kt * sy - gamma_t * vt_y;
         let mut ft_z = kt * sz - gamma_t * vt_z;
 
-        let f_t_mag = (ft_x * ft_x + ft_y * ft_y + ft_z * ft_z).sqrt();
+        let f_t_mag = ft_x.mul_add(ft_x, ft_y.mul_add(ft_y, ft_z * ft_z)).sqrt();
         if f_t_mag > f_t_max && f_t_mag > TANGENTIAL_EPSILON {
             let scale = f_t_max / f_t_mag;
             ft_x *= scale;
@@ -612,12 +616,12 @@ pub fn hooke_contact_force(
         }
 
         // Torques
-        let ti_x = r1n_y * ft_z - r1n_z * ft_y;
-        let ti_y = r1n_z * ft_x - r1n_x * ft_z;
-        let ti_z = r1n_x * ft_y - r1n_y * ft_x;
-        let tj_x = r2n_y * ft_z - r2n_z * ft_y;
-        let tj_y = r2n_z * ft_x - r2n_x * ft_z;
-        let tj_z = r2n_x * ft_y - r2n_y * ft_x;
+        let ti_x = r1n_y.mul_add(ft_z, -r1n_z * ft_y);
+        let ti_y = r1n_z.mul_add(ft_x, -r1n_x * ft_z);
+        let ti_z = r1n_x.mul_add(ft_y, -r1n_y * ft_x);
+        let tj_x = r2n_y.mul_add(ft_z, -r2n_z * ft_y);
+        let tj_y = r2n_z.mul_add(ft_x, -r2n_x * ft_z);
+        let tj_z = r2n_x.mul_add(ft_y, -r2n_y * ft_x);
 
         atoms.force[i][0] += ft_x;
         atoms.force[i][1] += ft_y;
@@ -634,14 +638,14 @@ pub fn hooke_contact_force(
 
         // Rolling resistance
         if mu_r > 0.0 {
-            let or_x = omega_ix - omega_jx;
-            let or_y = omega_iy - omega_jy;
-            let or_z = omega_iz - omega_jz;
-            let or_dot_n = or_x * nx + or_y * ny + or_z * nz;
+            let or_x = omega_i[0] - omega_j[0];
+            let or_y = omega_i[1] - omega_j[1];
+            let or_z = omega_i[2] - omega_j[2];
+            let or_dot_n = or_x.mul_add(nx, or_y.mul_add(ny, or_z * nz));
             let roll_x = or_x - or_dot_n * nx;
             let roll_y = or_y - or_dot_n * ny;
             let roll_z = or_z - or_dot_n * nz;
-            let roll_mag = (roll_x * roll_x + roll_y * roll_y + roll_z * roll_z).sqrt();
+            let roll_mag = roll_x.mul_add(roll_x, roll_y.mul_add(roll_y, roll_z * roll_z)).sqrt();
             if roll_mag > 1e-30 {
                 let tau_mag = mu_r * f_n_mag.abs() * r_eff;
                 let inv_roll = tau_mag / roll_mag;
@@ -659,10 +663,10 @@ pub fn hooke_contact_force(
 
         // Twisting friction
         if mu_tw > 0.0 {
-            let or_x = omega_ix - omega_jx;
-            let or_y = omega_iy - omega_jy;
-            let or_z = omega_iz - omega_jz;
-            let twist = or_x * nx + or_y * ny + or_z * nz;
+            let or_x = omega_i[0] - omega_j[0];
+            let or_y = omega_i[1] - omega_j[1];
+            let or_z = omega_i[2] - omega_j[2];
+            let twist = or_x.mul_add(nx, or_y.mul_add(ny, or_z * nz));
             if twist.abs() > 1e-30 {
                 let tau = mu_tw * f_n_mag.abs() * r_eff;
                 let sign_tw = if twist > 0.0 { -1.0 } else { 1.0 };
@@ -679,9 +683,9 @@ pub fn hooke_contact_force(
         }
 
         // Virial
-        if let Some(ref mut v) = virial {
-            if v.active {
-                v.add_pair(dx, dy, dz, -fn_x + ft_x, -fn_y + ft_y, -fn_z + ft_z);
+        if virial_active {
+            if let Some(ref mut virial_stress) = virial {
+                virial_stress.add_pair(dx, dy, dz, -fn_x + ft_x, -fn_y + ft_y, -fn_z + ft_z);
             }
         }
 
