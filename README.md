@@ -225,6 +225,7 @@ cargo run --release -- config.toml --schedule
 | [lj_per_atom_energy](examples/lj_per_atom_energy/) | Per-atom energy output via DumpRegistry | `cargo run --release --example lj_per_atom_energy -- examples/lj_per_atom_energy/config.toml` |
 | [group_freeze](examples/group_freeze/) | Group-based freeze fix demonstration | `cargo run --release --example group_freeze -- examples/group_freeze/config.toml` |
 | [poiseuille_flow](examples/poiseuille_flow/) | Poiseuille flow with body force and frozen walls | `cargo run --release --example poiseuille_flow -- examples/poiseuille_flow/config.toml` |
+| [lj_type_rdf](examples/lj_type_rdf/) | LJ fluid with type-filtered RDF measurement | `cargo run --release --example lj_type_rdf -- examples/lj_type_rdf/config.toml` |
 | [toml_single](examples/toml_single/) | Programmatic config — no TOML file needed | `cargo run --example toml_single` |
 
 DEM examples include `validate.py` scripts for physics checks (Haff's law cooling, hopper settling). The `lj_argon` example validates against known liquid Argon properties (RDF, MSD, pressure) and generates diagnostic plots. Run `./validate.sh` to execute all tests and validations.
@@ -354,6 +355,7 @@ These are specialized features that won't be in core. Users can write plugins fo
 | [`md_thermostat`](crates/md_thermostat/) | Nose-Hoover NVT and Langevin thermostats (group-aware) |
 | [`md_lattice`](crates/md_lattice/) | FCC lattice initialization |
 | [`md_measure`](crates/md_measure/) | RDF, MSD, virial pressure |
+| [`md_type_rdf`](crates/md_type_rdf/) | Type-filtered RDF: g(r) between specific atom type pairs |
 | [`mddem_test_utils`](crates/mddem_test_utils/) | Shared test helpers |
 
 A simulation is composed by adding plugin groups to an `App`:
