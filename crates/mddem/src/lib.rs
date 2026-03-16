@@ -11,6 +11,7 @@ pub use dem_wall;
 pub use md_lattice;
 pub use md_lj;
 pub use md_measure;
+pub use md_water;
 pub use md_thermostat;
 pub use mddem_core;
 pub use mddem_fixes;
@@ -97,6 +98,7 @@ pub mod prelude {
     pub use md_lattice::{LatticeConfig, LatticePlugin};
     pub use md_lj::{LJConfig, LJForcePlugin, LJPairTable, LJTailCorrections};
     pub use md_measure::{MeasureConfig, MeasurePlugin};
+    pub use md_water::{WaterConfig, WaterPlugin};
     pub use md_thermostat::{LangevinConfig, LangevinPlugin, LangevinState, NoseHooverPlugin, NoseHooverState, ThermostatConfig};
     pub use mddem_fixes::{AddForceDef, FixesPlugin, FixesRegistry, FreezeDef, MoveLinearDef, SetForceDef, ViscousDef};
     pub use mddem_app::prelude::*;
