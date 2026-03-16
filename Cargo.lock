@@ -184,6 +184,7 @@ name = "dem_thermal"
 version = "0.1.3"
 dependencies = [
  "dem_atom",
+ "dem_wall",
  "mddem_app",
  "mddem_core",
  "mddem_derive",

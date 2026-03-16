@@ -9,6 +9,7 @@ use mddem_scheduler::prelude::*;
 use serde::Deserialize;
 
 use dem_atom::DemAtom;
+use dem_wall::Walls;
 use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, Config};
 use mddem_neighbor::Neighbor;
 
@@ -109,6 +110,13 @@ impl Plugin for ThermalPlugin {
 
         app.add_setup_system(initialize_temperatures, ScheduleSetupSet::PostSetup);
         app.add_update_system(compute_heat_conduction, ScheduleSet::Force);
+
+        // Register wall heat conduction if walls resource exists
+        let has_walls = app.get_resource_ref::<Walls>().is_some();
+        if has_walls {
+            app.add_update_system(compute_wall_heat_conduction, ScheduleSet::Force);
+        }
+
         app.add_update_system(integrate_temperature, ScheduleSet::PostFinalIntegration);
     }
 }
@@ -185,6 +193,186 @@ pub fn compute_heat_conduction(
     }
 }
 
+/// Compute heat conduction between walls with temperature and contacting particles.
+///
+/// For each wall with a temperature set, computes `Q = k * 2*a * (T_wall - T_particle)`
+/// where `a = sqrt(R_eff * delta)` is the contact radius. Walls have infinite thermal mass
+/// so wall temperature does not change.
+pub fn compute_wall_heat_conduction(
+    atoms: Res<Atom>,
+    walls: Res<Walls>,
+    registry: Res<AtomDataRegistry>,
+    config: Res<ThermalConfig>,
+) {
+    let dem = registry.expect::<DemAtom>("compute_wall_heat_conduction");
+    let mut thermal = registry.expect_mut::<ThermalAtom>("compute_wall_heat_conduction");
+
+    let nlocal = atoms.nlocal as usize;
+    let k = config.conductivity;
+
+    // ── Plane walls ──────────────────────────────────────────────────────
+    for (wall_idx, wall) in walls.planes.iter().enumerate() {
+        if !walls.active[wall_idx] {
+            continue;
+        }
+        let wall_temp = match wall.temperature {
+            Some(t) => t,
+            None => continue,
+        };
+
+        for i in 0..nlocal {
+            let px = atoms.pos[i][0];
+            let py = atoms.pos[i][1];
+            let pz = atoms.pos[i][2];
+
+            if !wall.in_bounds(px, py, pz) {
+                continue;
+            }
+
+            let dx = px - wall.point_x;
+            let dy = py - wall.point_y;
+            let dz = pz - wall.point_z;
+            let distance = dx * wall.normal_x + dy * wall.normal_y + dz * wall.normal_z;
+
+            if distance <= 0.0 {
+                continue;
+            }
+
+            let radius = dem.radius[i];
+            let delta = radius - distance;
+            if delta <= 0.0 {
+                continue;
+            }
+
+            // Wall has infinite radius → r_eff = r_particle
+            let r_eff = radius;
+            let a = (r_eff * delta).sqrt();
+            let q = k * 2.0 * a * (wall_temp - thermal.temperature[i]);
+            thermal.heat_flux[i] += q;
+        }
+    }
+
+    // ── Cylinder walls ───────────────────────────────────────────────────
+    for (cyl_idx, cyl) in walls.cylinders.iter().enumerate() {
+        if !walls.cylinder_active[cyl_idx] {
+            continue;
+        }
+        let wall_temp = match cyl.temperature {
+            Some(t) => t,
+            None => continue,
+        };
+
+        for i in 0..nlocal {
+            let pos = atoms.pos[i];
+            let radius = dem.radius[i];
+
+            let (axial, d0, d1) = match cyl.axis {
+                0 => (pos[0], pos[1] - cyl.center[0], pos[2] - cyl.center[1]),
+                1 => (pos[1], pos[0] - cyl.center[0], pos[2] - cyl.center[1]),
+                _ => (pos[2], pos[0] - cyl.center[0], pos[1] - cyl.center[1]),
+            };
+
+            if axial < cyl.lo || axial > cyl.hi {
+                continue;
+            }
+
+            let radial_dist = (d0 * d0 + d1 * d1).sqrt();
+            if radial_dist < 1e-30 {
+                continue;
+            }
+
+            let delta = if cyl.inside {
+                let gap = cyl.radius - radial_dist;
+                radius - gap
+            } else {
+                let gap = radial_dist - cyl.radius;
+                radius - gap
+            };
+
+            if delta <= 0.0 {
+                continue;
+            }
+
+            // For curved walls: R_eff = R_particle * R_wall / (R_particle + R_wall)
+            let r_eff = radius * cyl.radius / (radius + cyl.radius);
+            let a = (r_eff * delta).sqrt();
+            let q = k * 2.0 * a * (wall_temp - thermal.temperature[i]);
+            thermal.heat_flux[i] += q;
+        }
+    }
+
+    // ── Sphere walls ─────────────────────────────────────────────────────
+    for (sph_idx, sph) in walls.spheres.iter().enumerate() {
+        if !walls.sphere_active[sph_idx] {
+            continue;
+        }
+        let wall_temp = match sph.temperature {
+            Some(t) => t,
+            None => continue,
+        };
+
+        for i in 0..nlocal {
+            let pos = atoms.pos[i];
+            let radius = dem.radius[i];
+
+            let dx = pos[0] - sph.center[0];
+            let dy = pos[1] - sph.center[1];
+            let dz = pos[2] - sph.center[2];
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            if dist < 1e-30 {
+                continue;
+            }
+
+            let delta = if sph.inside {
+                let gap = sph.radius - dist;
+                radius - gap
+            } else {
+                let gap = dist - sph.radius;
+                radius - gap
+            };
+
+            if delta <= 0.0 {
+                continue;
+            }
+
+            // For curved walls: R_eff = R_particle * R_wall / (R_particle + R_wall)
+            let r_eff = radius * sph.radius / (radius + sph.radius);
+            let a = (r_eff * delta).sqrt();
+            let q = k * 2.0 * a * (wall_temp - thermal.temperature[i]);
+            thermal.heat_flux[i] += q;
+        }
+    }
+
+    // ── Region walls ─────────────────────────────────────────────────────
+    for (reg_idx, reg) in walls.regions.iter().enumerate() {
+        if !walls.region_active[reg_idx] {
+            continue;
+        }
+        let wall_temp = match reg.temperature {
+            Some(t) => t,
+            None => continue,
+        };
+
+        for i in 0..nlocal {
+            let pos = atoms.pos[i];
+            let radius = dem.radius[i];
+
+            let sr = reg.region.closest_point_on_surface(&pos);
+            let gap = if reg.inside { -sr.distance } else { sr.distance };
+            let delta = radius - gap;
+            if delta <= 0.0 {
+                continue;
+            }
+
+            // Region walls treated as planar locally → r_eff = r_particle
+            let r_eff = radius;
+            let a = (r_eff * delta).sqrt();
+            let q = k * 2.0 * a * (wall_temp - thermal.temperature[i]);
+            thermal.heat_flux[i] += q;
+        }
+    }
+}
+
 /// Integrate temperature: T += dt * heat_flux / (mass * cp).
 pub fn integrate_temperature(
     atoms: Res<Atom>,
@@ -207,6 +395,7 @@ pub fn integrate_temperature(
 mod tests {
     use super::*;
     use dem_atom::DemAtom;
+    use dem_wall::{WallMotion, WallPlane, Walls};
     use mddem_core::{Atom, AtomDataRegistry};
     use mddem_neighbor::Neighbor;
     use mddem_test_utils::push_dem_test_atom;
@@ -506,5 +695,203 @@ mod tests {
         assert!(thermal.temperature[0] < 400.0);
         // Cold atom should have warmed
         assert!(thermal.temperature[1] > 300.0);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Wall heat conduction tests
+    // ══════════════════════════════════════════════════════════════════════
+
+    fn make_test_wall_plane(
+        point_z: f64,
+        normal_z: f64,
+        temperature: Option<f64>,
+    ) -> WallPlane {
+        WallPlane {
+            point_x: 0.0,
+            point_y: 0.0,
+            point_z,
+            normal_x: 0.0,
+            normal_y: 0.0,
+            normal_z,
+            material_index: 0,
+            name: None,
+            bound_x_low: f64::NEG_INFINITY,
+            bound_x_high: f64::INFINITY,
+            bound_y_low: f64::NEG_INFINITY,
+            bound_y_high: f64::INFINITY,
+            bound_z_low: f64::NEG_INFINITY,
+            bound_z_high: f64::INFINITY,
+            velocity: [0.0; 3],
+            motion: WallMotion::Static,
+            origin: [0.0, 0.0, point_z],
+            force_accumulator: 0.0,
+            temperature,
+        }
+    }
+
+    fn make_test_walls(planes: Vec<WallPlane>) -> Walls {
+        let n = planes.len();
+        Walls {
+            planes,
+            active: vec![true; n],
+            cylinders: Vec::new(),
+            cylinder_active: Vec::new(),
+            spheres: Vec::new(),
+            sphere_active: Vec::new(),
+            regions: Vec::new(),
+            region_active: Vec::new(),
+            time: 0.0,
+        }
+    }
+
+    fn setup_wall_test(
+        particle_temp: f64,
+        wall_temp: Option<f64>,
+        particle_z: f64,
+        radius: f64,
+    ) -> App {
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        atom.dt = 1e-7;
+
+        push_dem_test_atom(&mut atom, &mut dem, 0, [0.0, 0.0, particle_z], radius);
+        atom.nlocal = 1;
+        atom.natoms = 1;
+
+        let mut thermal = ThermalAtom::new();
+        thermal.temperature.push(particle_temp);
+        thermal.heat_flux.push(0.0);
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(thermal);
+
+        let config = ThermalConfig {
+            conductivity: 1.0,
+            specific_heat: 500.0,
+            initial_temperature: 300.0,
+        };
+
+        // Wall at z=0 with normal pointing up (+z)
+        let walls = make_test_walls(vec![make_test_wall_plane(0.0, 1.0, wall_temp)]);
+
+        let mut app = App::new();
+        app.add_resource(atom);
+        app.add_resource(registry);
+        app.add_resource(config);
+        app.add_resource(walls);
+        app.add_update_system(compute_wall_heat_conduction, ScheduleSet::Force);
+        app.organize_systems();
+        app
+    }
+
+    #[test]
+    fn wall_hot_heats_cold_particle() {
+        let radius = 0.001;
+        let particle_z = 0.0005; // overlap = radius - distance = 0.001 - 0.0005 = 0.0005
+        let mut app = setup_wall_test(300.0, Some(500.0), particle_z, radius);
+        app.run();
+
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let thermal = registry.expect::<ThermalAtom>("test");
+        assert!(
+            thermal.heat_flux[0] > 0.0,
+            "hot wall should heat cold particle, got {}",
+            thermal.heat_flux[0]
+        );
+    }
+
+    #[test]
+    fn wall_cold_cools_hot_particle() {
+        let radius = 0.001;
+        let particle_z = 0.0005;
+        let mut app = setup_wall_test(500.0, Some(300.0), particle_z, radius);
+        app.run();
+
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let thermal = registry.expect::<ThermalAtom>("test");
+        assert!(
+            thermal.heat_flux[0] < 0.0,
+            "cold wall should cool hot particle, got {}",
+            thermal.heat_flux[0]
+        );
+    }
+
+    #[test]
+    fn wall_equal_temp_zero_flux() {
+        let radius = 0.001;
+        let particle_z = 0.0005;
+        let mut app = setup_wall_test(400.0, Some(400.0), particle_z, radius);
+        app.run();
+
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let thermal = registry.expect::<ThermalAtom>("test");
+        assert!(
+            thermal.heat_flux[0].abs() < 1e-20,
+            "equal temperature should give zero flux, got {}",
+            thermal.heat_flux[0]
+        );
+    }
+
+    #[test]
+    fn wall_no_temperature_no_heat_transfer() {
+        let radius = 0.001;
+        let particle_z = 0.0005;
+        let mut app = setup_wall_test(300.0, None, particle_z, radius);
+        app.run();
+
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let thermal = registry.expect::<ThermalAtom>("test");
+        assert!(
+            thermal.heat_flux[0].abs() < 1e-20,
+            "no wall temperature should give zero flux, got {}",
+            thermal.heat_flux[0]
+        );
+    }
+
+    #[test]
+    fn wall_no_contact_no_heat_transfer() {
+        let radius = 0.001;
+        let particle_z = 0.002; // no overlap (distance > radius)
+        let mut app = setup_wall_test(300.0, Some(500.0), particle_z, radius);
+        app.run();
+
+        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+        let thermal = registry.expect::<ThermalAtom>("test");
+        assert!(
+            thermal.heat_flux[0].abs() < 1e-20,
+            "no contact should give zero flux, got {}",
+            thermal.heat_flux[0]
+        );
+    }
+
+    #[test]
+    fn wall_heat_flux_proportional_to_temperature_difference() {
+        let radius = 0.001;
+        let particle_z = 0.0005;
+
+        let run_with_dt = |wall_temp: f64| -> f64 {
+            let mut app = setup_wall_test(300.0, Some(wall_temp), particle_z, radius);
+            app.run();
+            let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
+            let thermal = registry.expect::<ThermalAtom>("test");
+            thermal.heat_flux[0]
+        };
+
+        let q1 = run_with_dt(400.0); // dT = 100
+        let q2 = run_with_dt(500.0); // dT = 200
+        let q3 = run_with_dt(600.0); // dT = 300
+
+        // Flux should scale linearly with temperature difference
+        assert!(
+            (q2 / q1 - 2.0).abs() < 0.01,
+            "double dT should double flux: ratio = {:.4}",
+            q2 / q1
+        );
+        assert!(
+            (q3 / q1 - 3.0).abs() < 0.01,
+            "triple dT should triple flux: ratio = {:.4}",
+            q3 / q1
+        );
     }
 }

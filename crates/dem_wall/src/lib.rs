@@ -106,6 +106,9 @@ pub struct WallDef {
     /// Region definition for type = "region" walls.
     #[serde(default)]
     pub region: Option<Region>,
+    /// Wall temperature in K (None = no wall heat transfer).
+    #[serde(default)]
+    pub temperature: Option<f64>,
 }
 
 // ── Runtime types ───────────────────────────────────────────────────────────
@@ -142,12 +145,14 @@ pub struct WallPlane {
     pub origin: [f64; 3],
     /// Accumulated contact force this step (scalar, along normal).
     pub force_accumulator: f64,
+    /// Wall temperature in K (None = no wall heat transfer).
+    pub temperature: Option<f64>,
 }
 
 impl WallPlane {
     /// Check if atom position is within the wall's bounding region.
     #[inline]
-    fn in_bounds(&self, x: f64, y: f64, z: f64) -> bool {
+    pub fn in_bounds(&self, x: f64, y: f64, z: f64) -> bool {
         x >= self.bound_x_low
             && x <= self.bound_x_high
             && y >= self.bound_y_low
@@ -174,6 +179,8 @@ pub struct WallCylinder {
     pub material_index: usize,
     pub name: Option<String>,
     pub force_accumulator: f64,
+    /// Wall temperature in K (None = no wall heat transfer).
+    pub temperature: Option<f64>,
 }
 
 /// Runtime sphere wall.
@@ -187,6 +194,8 @@ pub struct WallSphere {
     pub material_index: usize,
     pub name: Option<String>,
     pub force_accumulator: f64,
+    /// Wall temperature in K (None = no wall heat transfer).
+    pub temperature: Option<f64>,
 }
 
 /// Runtime region wall: uses a `Region` surface for contact detection.
@@ -198,6 +207,8 @@ pub struct WallRegion {
     pub material_index: usize,
     pub name: Option<String>,
     pub force_accumulator: f64,
+    /// Wall temperature in K (None = no wall heat transfer).
+    pub temperature: Option<f64>,
 }
 
 /// Collection of all wall types with per-wall active/inactive flags.
@@ -359,6 +370,7 @@ impl Plugin for WallPlugin {
                             material_index: mat_idx,
                             name: w.name.clone(),
                             force_accumulator: 0.0,
+                            temperature: w.temperature,
                         });
                     }
                     "sphere" => {
@@ -377,6 +389,7 @@ impl Plugin for WallPlugin {
                             material_index: mat_idx,
                             name: w.name.clone(),
                             force_accumulator: 0.0,
+                            temperature: w.temperature,
                         });
                     }
                     "region" => {
@@ -391,6 +404,7 @@ impl Plugin for WallPlugin {
                             material_index: mat_idx,
                             name: w.name.clone(),
                             force_accumulator: 0.0,
+                            temperature: w.temperature,
                         });
                     }
                     "plane" | _ => {
@@ -447,6 +461,7 @@ impl Plugin for WallPlugin {
                             motion,
                             origin: [w.point_x, w.point_y, w.point_z],
                             force_accumulator: 0.0,
+                            temperature: w.temperature,
                         });
                     }
                 }
@@ -974,6 +989,7 @@ mod tests {
             motion: WallMotion::Static,
             origin: [point_x, point_y, point_z],
             force_accumulator: 0.0,
+            temperature: None,
         }
     }
 
@@ -1412,6 +1428,7 @@ mod tests {
             material_index: 0,
             name: None,
             force_accumulator: 0.0,
+            temperature: None,
         });
 
         let mut app = App::new();
@@ -1458,6 +1475,7 @@ mod tests {
             material_index: 0,
             name: None,
             force_accumulator: 0.0,
+            temperature: None,
         });
 
         let mut app = App::new();
@@ -1495,6 +1513,7 @@ mod tests {
             material_index: 0,
             name: None,
             force_accumulator: 0.0,
+            temperature: None,
         });
 
         let mut app = App::new();
@@ -1538,6 +1557,7 @@ mod tests {
             material_index: 0,
             name: None,
             force_accumulator: 0.0,
+            temperature: None,
         });
 
         let mut app = App::new();
@@ -1593,6 +1613,7 @@ mod tests {
                 material_index: 0,
                 name: None,
                 force_accumulator: 0.0,
+                temperature: None,
             });
 
             let mut app = App::new();
@@ -1669,6 +1690,7 @@ mod tests {
             material_index: 0,
             name: None,
             force_accumulator: 0.0,
+            temperature: None,
         });
 
         let mut app = App::new();
@@ -1731,6 +1753,7 @@ mod tests {
                 material_index: 0,
                 name: None,
                 force_accumulator: 0.0,
+                temperature: None,
             });
 
             let mut app = App::new();
@@ -1877,6 +1900,7 @@ mod tests {
             material_index: 0,
             name: None,
             force_accumulator: 0.0,
+            temperature: None,
         });
 
         let mut app = App::new();
@@ -1921,6 +1945,7 @@ mod tests {
             material_index: 0,
             name: None,
             force_accumulator: 0.0,
+            temperature: None,
         });
 
         let mut app = App::new();
@@ -1960,6 +1985,7 @@ mod tests {
             material_index: 0,
             name: None,
             force_accumulator: 0.0,
+            temperature: None,
         });
 
         let mut app = App::new();
@@ -2010,6 +2036,7 @@ mod tests {
             material_index: 0,
             name: None,
             force_accumulator: 0.0,
+            temperature: None,
         });
 
         let mut app = App::new();
@@ -2054,6 +2081,7 @@ mod tests {
                 material_index: 0,
                 name: None,
                 force_accumulator: 0.0,
+                temperature: None,
             });
             let mut app = App::new();
             app.add_resource(atom);
@@ -2085,6 +2113,7 @@ mod tests {
                 material_index: 0,
                 name: None,
                 force_accumulator: 0.0,
+                temperature: None,
             });
             let mut app = App::new();
             app.add_resource(atom);
