@@ -554,8 +554,11 @@ pub fn wall_contact_force(
             let e_eff = material_table.e_eff_ij[mat_i][wall_mat];
             let surface_energy = material_table.surface_energy_ij[mat_i][wall_mat];
 
+            let use_dmt = material_table.adhesion_model == "dmt";
+
             // JKR pull-off distance for extended interaction range
-            let delta_pulloff = if surface_energy > 0.0 {
+            // DMT: no extended range (particles separate at delta = 0)
+            let delta_pulloff = if surface_energy > 0.0 && !use_dmt {
                 let gamma = surface_energy;
                 (std::f64::consts::PI * std::f64::consts::PI * gamma * gamma * r_eff
                     / (4.0 * e_eff * e_eff))
@@ -574,7 +577,8 @@ pub fn wall_contact_force(
                 continue;
             }
 
-            let jkr_adhesion_only = surface_energy > 0.0 && delta <= 0.0;
+            // JKR adhesion-only regime; DMT has no adhesion-only regime
+            let jkr_adhesion_only = surface_energy > 0.0 && !use_dmt && delta <= 0.0;
 
             // Hertz stiffness (only when delta > 0)
             let (s_n, k_n) = if delta > 0.0 {
@@ -598,7 +602,12 @@ pub fn wall_contact_force(
             let beta = material_table.beta_ij[mat_i][wall_mat];
             let cohesion_energy = material_table.cohesion_energy_ij[mat_i][wall_mat];
 
-            let f_net = if surface_energy > 0.0 {
+            let f_net = if surface_energy > 0.0 && use_dmt {
+                // DMT model: pure Hertz contact + constant attractive force
+                let f_dmt = 2.0 * std::f64::consts::PI * surface_energy * r_eff;
+                let f_diss = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
+                k_n * delta - f_diss - f_dmt
+            } else if surface_energy > 0.0 {
                 // JKR simplified explicit model
                 let f_adhesion = 1.5 * std::f64::consts::PI * surface_energy * r_eff;
                 if jkr_adhesion_only {

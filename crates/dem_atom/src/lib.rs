@@ -67,6 +67,10 @@ pub struct MaterialConfig {
     pub kt: f64,
 }
 
+fn default_adhesion_model() -> String {
+    "jkr".to_string()
+}
+
 /// TOML `[dem]` — top-level DEM configuration containing material definitions.
 #[derive(Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
@@ -75,6 +79,14 @@ pub struct DemConfig {
     /// Contact model: "hertz" (default) or "hooke".
     #[serde(default = "default_contact_model")]
     pub contact_model: String,
+    /// Adhesion model when `surface_energy > 0`: "jkr" (default) or "dmt".
+    ///
+    /// - **JKR** (Johnson-Kendall-Roberts): Modified contact area with pull-off force = 1.5πγR*.
+    ///   Suitable for soft materials with high surface energy (Tabor parameter > 5).
+    /// - **DMT** (Derjaguin-Muller-Toporov): Pure Hertz contact area with constant attractive
+    ///   force = 2πγR*. Suitable for stiff materials with low surface energy (Tabor parameter < 0.1).
+    #[serde(default = "default_adhesion_model")]
+    pub adhesion_model: String,
 }
 
 // ── MaterialTable — per-material and per-pair precomputed properties ────────
@@ -112,6 +124,8 @@ pub struct MaterialTable {
     pub kt_ij: Vec<Vec<f64>>,
     /// Contact model: "hertz" or "hooke".
     pub contact_model: String,
+    /// Adhesion model: "jkr" (default) or "dmt".
+    pub adhesion_model: String,
 }
 
 impl Default for MaterialTable {
@@ -145,6 +159,7 @@ impl MaterialTable {
             kn_ij: Vec::new(),
             kt_ij: Vec::new(),
             contact_model: "hertz".to_string(),
+            adhesion_model: "jkr".to_string(),
         }
     }
 
@@ -355,7 +370,8 @@ restitution = 0.95
 friction = 0.4
 # rolling_friction = 0.1      # rolling resistance coefficient (default 0.0 = disabled)
 # cohesion_energy = 0.05       # SJKR cohesion energy density J/m² (default 0.0 = disabled)
-# surface_energy = 0.05        # JKR surface energy J/m² (default 0.0 = disabled)
+# surface_energy = 0.05        # JKR/DMT surface energy J/m² (default 0.0 = disabled)
+# adhesion_model = "jkr"       # "jkr" (default) or "dmt" when surface_energy > 0
 
 # Additional materials can be added:
 # [[dem.materials]]
@@ -378,6 +394,7 @@ friction = 0.4
         let mut material_table = MaterialTable::new();
 
         material_table.contact_model = dem_config.contact_model.clone();
+        material_table.adhesion_model = dem_config.adhesion_model.clone();
 
         if let Some(ref materials) = dem_config.materials {
             for mat in materials {

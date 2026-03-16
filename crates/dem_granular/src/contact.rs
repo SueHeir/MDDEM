@@ -105,11 +105,13 @@ pub fn hertz_mindlin_contact_force(
         let mat_i = atoms.atom_type[i] as usize;
         let mat_j = atoms.atom_type[j] as usize;
         let surface_energy = material_table.surface_energy_ij[mat_i][mat_j];
+        let use_dmt = material_table.adhesion_model == "dmt";
 
         // JKR: compute pull-off distance for extended interaction range
+        // DMT: no extended range (particles separate at delta = 0)
         let r_eff = (r1 * r2) / sum_r;
         let e_eff = material_table.e_eff_ij[mat_i][mat_j];
-        let delta_pulloff = if surface_energy > 0.0 {
+        let delta_pulloff = if surface_energy > 0.0 && !use_dmt {
             let gamma = surface_energy;
             (std::f64::consts::PI * std::f64::consts::PI * gamma * gamma * r_eff
                 / (4.0 * e_eff * e_eff))
@@ -179,7 +181,8 @@ pub fn hertz_mindlin_contact_force(
         let cohesion_energy = material_table.cohesion_energy_ij[mat_i][mat_j];
 
         // JKR adhesion-only regime: gap exists but within pull-off distance
-        let jkr_adhesion_only = surface_energy > 0.0 && delta <= 0.0;
+        // DMT has no adhesion-only regime (no force beyond contact)
+        let jkr_adhesion_only = surface_energy > 0.0 && !use_dmt && delta <= 0.0;
 
         // Hertz stiffness (only meaningful when delta > 0)
         let (s_n, k_n, k_t) = if delta > 0.0 {
@@ -219,7 +222,12 @@ pub fn hertz_mindlin_contact_force(
         let v_n = vr_x.mul_add(nx, vr_y.mul_add(ny, vr_z * nz));
 
         // ── Normal force ─────────────────────────────────────────────────
-        let f_n_mag = if surface_energy > 0.0 {
+        let f_n_mag = if surface_energy > 0.0 && use_dmt {
+            // DMT model: pure Hertz contact + constant attractive force
+            let f_dmt = 2.0 * std::f64::consts::PI * surface_energy * r_eff;
+            let f_diss_n = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
+            k_n * delta - f_diss_n - f_dmt
+        } else if surface_energy > 0.0 {
             // JKR simplified explicit model
             let f_adhesion = 1.5 * std::f64::consts::PI * surface_energy * r_eff;
             if jkr_adhesion_only {
@@ -1304,6 +1312,233 @@ mod tests {
             torque_mag < 1e-20,
             "no twisting torque when no spin, got {}",
             torque_mag
+        );
+    }
+
+    // ── DMT adhesion tests ──────────────────────────────────────────────
+
+    fn make_material_table_dmt() -> MaterialTable {
+        let mut mt = MaterialTable::new();
+        // Use high surface energy (1.0 J/m²) so adhesion clearly dominates at small overlaps
+        mt.add_material_full("glass", 8.7e9, 0.3, 0.95, 0.4, 0.0, 0.0, 1.0);
+        mt.adhesion_model = "dmt".to_string();
+        mt.build_pair_tables();
+        mt
+    }
+
+    #[test]
+    fn dmt_pulloff_force_matches_theory() {
+        // DMT pull-off force = 2 * pi * gamma * r_eff (at contact, delta = 0+)
+        let radius = 0.001;
+        let gamma = 1.0;
+        let r_eff = radius / 2.0; // two equal spheres
+
+        // Use a very small overlap so Hertz contribution is negligible
+        // At tiny delta, F_hertz ~ 0 but F_dmt = 2*pi*gamma*r_eff
+        let tiny_overlap = 1e-12; // extremely small overlap
+        let sep = 2.0 * radius - tiny_overlap;
+
+        let mut app = App::new();
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let mut hist = ContactHistoryStore::new();
+        atom.dt = 1e-7;
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 1, [sep, 0.0, 0.0], radius);
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let mut neighbor = Neighbor::new();
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(hist);
+
+        app.add_resource(atom);
+        app.add_resource(neighbor);
+        app.add_resource(registry);
+        app.add_resource(make_material_table_dmt());
+        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        let expected_dmt = 2.0 * std::f64::consts::PI * gamma * r_eff;
+        // Force on atom 0 should be positive (attracted toward atom 1)
+        // f_n_mag = k_n*delta - f_diss - f_dmt ≈ -f_dmt (since delta ≈ 0, v=0)
+        // force[0] -= f_n_mag * nx → force[0] ≈ +f_dmt
+        assert!(
+            atom.force[0][0] > 0.0,
+            "DMT should produce attractive force, got {}",
+            atom.force[0][0]
+        );
+        assert!(
+            (atom.force[0][0] - expected_dmt).abs() / expected_dmt < 1e-3,
+            "DMT pull-off force should match 2*pi*gamma*r_eff = {}, got {}",
+            expected_dmt, atom.force[0][0]
+        );
+    }
+
+    #[test]
+    fn dmt_no_force_beyond_contact() {
+        // DMT has no adhesion-only regime — no force when delta < 0 (gap)
+        let mut app = App::new();
+        let radius = 0.001;
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let mut hist = ContactHistoryStore::new();
+        atom.dt = 1e-7;
+
+        // Place particles with a gap
+        let gap = 1e-9;
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
+        push_test_atom_with_history(
+            &mut atom, &mut dem, &mut hist, 1,
+            [2.0 * radius + gap, 0.0, 0.0], radius,
+        );
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let mut neighbor = Neighbor::new();
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(hist);
+
+        app.add_resource(atom);
+        app.add_resource(neighbor);
+        app.add_resource(registry);
+        app.add_resource(make_material_table_dmt());
+        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        // DMT: no force when particles are not in geometric contact
+        assert!(
+            atom.force[0][0].abs() < 1e-20,
+            "DMT should have no force beyond contact, got {}",
+            atom.force[0][0]
+        );
+    }
+
+    #[test]
+    fn dmt_pulloff_less_than_jkr() {
+        // DMT pull-off = 2*pi*gamma*r_eff, JKR pull-off = 1.5*pi*gamma*r_eff
+        // At same surface energy, DMT has HIGHER pull-off force than JKR (2 > 1.5)
+        // But JKR has extended range (adhesion across gap), so effective sticking is stronger
+        let gamma = 1.0;
+        let radius = 0.001;
+        let r_eff = radius / 2.0;
+
+        let f_dmt = 2.0 * std::f64::consts::PI * gamma * r_eff;
+        let f_jkr = 1.5 * std::f64::consts::PI * gamma * r_eff;
+        assert!(
+            f_dmt > f_jkr,
+            "DMT pull-off ({}) should be larger than JKR pull-off ({})",
+            f_dmt, f_jkr
+        );
+    }
+
+    #[test]
+    fn dmt_newtons_third_law() {
+        // Verify equal and opposite forces for DMT contact
+        let mut app = App::new();
+        let radius = 0.001;
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let mut hist = ContactHistoryStore::new();
+        atom.dt = 1e-7;
+
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
+        push_test_atom_with_history(
+            &mut atom, &mut dem, &mut hist, 1,
+            [0.0019, 0.0, 0.0], radius,
+        );
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let mut neighbor = Neighbor::new();
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(hist);
+
+        app.add_resource(atom);
+        app.add_resource(neighbor);
+        app.add_resource(registry);
+        app.add_resource(make_material_table_dmt());
+        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        for d in 0..3 {
+            assert!(
+                (atom.force[0][d] + atom.force[1][d]).abs() < 1e-10,
+                "Newton's 3rd law violated in dim {}: {} + {} != 0",
+                d, atom.force[0][d], atom.force[1][d]
+            );
+        }
+    }
+
+    #[test]
+    fn dmt_does_not_break_jkr() {
+        // Run the JKR test with default adhesion_model (should still work as JKR)
+        let mut app = App::new();
+        let radius = 0.001;
+        let gamma = 1.0;
+        let r_eff = radius / 2.0;
+        let mut atom = Atom::new();
+        let mut dem = DemAtom::new();
+        let mut hist = ContactHistoryStore::new();
+        atom.dt = 1e-7;
+
+        // Place particles with a tiny gap (adhesion-only regime for JKR)
+        let gap = 1e-9;
+        push_test_atom_with_history(&mut atom, &mut dem, &mut hist, 0, [0.0, 0.0, 0.0], radius);
+        push_test_atom_with_history(
+            &mut atom, &mut dem, &mut hist, 1,
+            [2.0 * radius + gap, 0.0, 0.0], radius,
+        );
+        atom.nlocal = 2;
+        atom.natoms = 2;
+
+        let mut neighbor = Neighbor::new();
+        neighbor.neighbor_offsets = vec![0, 1, 1];
+        neighbor.neighbor_indices = vec![1];
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(dem);
+        registry.register(hist);
+
+        // Use JKR material table (default adhesion_model = "jkr")
+        app.add_resource(atom);
+        app.add_resource(neighbor);
+        app.add_resource(registry);
+        app.add_resource(make_material_table_jkr());
+        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let atom = app.get_resource_ref::<Atom>().unwrap();
+        let expected_jkr = 1.5 * std::f64::consts::PI * gamma * r_eff;
+        // JKR should still attract across gap
+        assert!(
+            atom.force[0][0] > 0.0,
+            "JKR should still work with DMT feature added, got {}",
+            atom.force[0][0]
+        );
+        assert!(
+            (atom.force[0][0] - expected_jkr).abs() / expected_jkr < 1e-6,
+            "JKR pull-off force should still match 1.5*pi*gamma*r_eff = {}, got {}",
+            expected_jkr, atom.force[0][0]
         );
     }
 
