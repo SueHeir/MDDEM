@@ -352,6 +352,15 @@ pub fn domain_read_input(
 ) {
     let boundary_types = config.resolved_boundary_types();
 
+    let has_shrink_wrap = boundary_types.iter().any(|bt| *bt == BoundaryType::ShrinkWrap);
+
+    // Shrink-wrap is not yet supported with MPI — fail early to prevent silent wrong results.
+    // MPI support requires correct sub-domain bound updates and global reductions across ranks.
+    if comm.size() > 1 && has_shrink_wrap {
+        panic!("Shrink-wrap boundaries are not yet supported with MPI (nprocs > 1). \
+                Use fixed or periodic boundaries, or run with a single process.");
+    }
+
     if comm.rank() == 0 {
         println!(
             "Domain: {} {} {} {} {} {}",
@@ -363,15 +372,11 @@ pub fn domain_read_input(
             boundary_type_char(boundary_types[1]),
             boundary_type_char(boundary_types[2]),
         );
-        if boundary_types.iter().any(|bt| *bt == BoundaryType::ShrinkWrap) {
+        if has_shrink_wrap {
             if config.shrink_wrap_padding > 0.0 {
                 println!("Domain: shrink-wrap padding = {}", config.shrink_wrap_padding);
             } else {
                 println!("Domain: shrink-wrap padding = auto (ghost cutoff)");
-            }
-            if comm.size() > 1 {
-                println!("WARNING: Shrink-wrap boundaries are not yet optimized for MPI.");
-                println!("         All ranks will participate in global min/max reduction.");
             }
         }
     }
@@ -379,56 +384,32 @@ pub fn domain_read_input(
     *domain = decomp.decompose(&config, &**comm);
 }
 
-/// Update shrink-wrap boundaries to encompass all local atoms + padding.
+/// Core shrink-wrap logic: update domain bounds to encompass all atom positions + padding.
 ///
-/// Runs at `PreExchange` before `pbc`. On shrink-wrap axes, finds the min/max
-/// atom positions and expands the domain bounds with padding so that no atoms
-/// are outside the box. This prevents the `pbc` system from removing atoms
-/// on shrink-wrap axes.
+/// Returns `true` if any bounds changed. This is extracted as a standalone function
+/// so it can be unit-tested without the ECS resource wrappers.
 ///
-/// **MPI note**: Uses `all_reduce_min/max` to find global extremes across ranks.
-/// This is correct but may not be optimal for multi-rank decomposition where
-/// sub-domain bounds also need adjustment. Single-process is the primary target.
-pub fn shrink_wrap(
-    atoms: Res<Atom>,
-    mut domain: ResMut<Domain>,
-    comm: Res<CommResource>,
-) {
+/// **MPI note**: Shrink-wrap is currently single-process only (see the panic in
+/// `domain_read_input`). Future MPI support would need `all_reduce_min/max` for
+/// global extremes and correct sub-domain bound updates per rank.
+pub fn shrink_wrap_update(domain: &mut Domain, positions: &[[f64; 3]], nlocal: usize) -> bool {
     let any_shrink = domain.is_shrink_wrap[0] || domain.is_shrink_wrap[1] || domain.is_shrink_wrap[2];
-    if !any_shrink {
-        return;
+    if !any_shrink || nlocal == 0 {
+        return false;
     }
 
-    let nlocal = atoms.nlocal as usize;
-    if nlocal == 0 {
-        // With MPI, still need to participate in reductions if other ranks have atoms.
-        // For single-process, no atoms means nothing to wrap.
-        if comm.size() > 1 {
-            for d in 0..3 {
-                if domain.is_shrink_wrap[d] {
-                    // Send +inf/-inf so this rank doesn't constrain the global bounds
-                    let _ = comm.all_reduce_min_f64(f64::MAX);
-                    let _ = -comm.all_reduce_min_f64(f64::MAX); // max via negated min
-                }
-            }
-        }
-        return;
-    }
-
-    // Padding: use explicit value if > 0, otherwise use ghost_cutoff (which
-    // encompasses the max particle interaction radius + skin).
+    // Padding: use explicit value if > 0, otherwise fall back to ghost_cutoff.
+    // ghost_cutoff encompasses the max pairwise interaction distance + skin buffer,
+    // so it is a conservative but safe choice for any unit system.
     let padding = if domain.shrink_wrap_padding > 0.0 {
         domain.shrink_wrap_padding
     } else if domain.ghost_cutoff > 0.0 {
-        // Use a fraction of ghost_cutoff as padding — just enough to prevent
-        // atoms from being immediately outside bounds after a single timestep.
-        // Full ghost_cutoff would be very conservative; max particle radius is better.
-        // But we don't have direct access to max radius here, so use ghost_cutoff / 4
-        // which is roughly max_skin (= max particle radius for DEM).
-        domain.ghost_cutoff * 0.25
+        domain.ghost_cutoff
     } else {
-        // Fallback: small absolute padding
-        1e-6
+        // ghost_cutoff not yet set (shrink_wrap runs before neighbor_setup on first step).
+        // Use 1% of the current domain size as a unit-independent fallback.
+        let max_size = domain.size[0].max(domain.size[1]).max(domain.size[2]);
+        if max_size > 0.0 { max_size * 0.01 } else { 1.0 }
     };
 
     let mut changed = false;
@@ -438,42 +419,31 @@ pub fn shrink_wrap(
             continue;
         }
 
-        // Find local min/max positions on this axis
-        let mut local_min = f64::MAX;
-        let mut local_max = f64::MIN;
+        // Find min/max positions on this axis
+        let mut pos_min = f64::MAX;
+        let mut pos_max = f64::MIN;
         for i in 0..nlocal {
-            let p = atoms.pos[i][d];
-            if p < local_min {
-                local_min = p;
+            let p = positions[i][d];
+            if p < pos_min {
+                pos_min = p;
             }
-            if p > local_max {
-                local_max = p;
+            if p > pos_max {
+                pos_max = p;
             }
         }
 
-        // Global reduction for MPI
-        let global_min = if comm.size() > 1 {
-            comm.all_reduce_min_f64(local_min)
-        } else {
-            local_min
-        };
-        let global_max = if comm.size() > 1 {
-            -comm.all_reduce_min_f64(-local_max) // global max via negated min
-        } else {
-            local_max
-        };
+        let new_low = pos_min - padding;
+        let new_high = pos_max + padding;
 
-        let new_low = global_min - padding;
-        let new_high = global_max + padding;
-
-        // Check if bounds actually changed (with small tolerance to avoid churn)
-        let tol = 1e-15;
+        // Check if bounds actually changed (with tolerance to avoid churn)
+        let tol = 1e-12;
         if (new_low - domain.boundaries_low[d]).abs() > tol
             || (new_high - domain.boundaries_high[d]).abs() > tol
         {
             domain.boundaries_low[d] = new_low;
             domain.boundaries_high[d] = new_high;
-            // For single-process, sub-domain = global domain
+            // Single-process: sub-domain = global domain.
+            // TODO: For MPI, sub-domain bounds must be recomputed via domain decomposition.
             domain.sub_domain_low[d] = new_low;
             domain.sub_domain_high[d] = new_high;
             changed = true;
@@ -484,6 +454,17 @@ pub fn shrink_wrap(
         domain.update_derived();
         domain.bounds_changed = true;
     }
+    changed
+}
+
+/// ECS system wrapper: update shrink-wrap boundaries each step.
+///
+/// Runs at `PreExchange` before `pbc`. Delegates to [`shrink_wrap_update`].
+pub fn shrink_wrap(
+    atoms: Res<Atom>,
+    mut domain: ResMut<Domain>,
+) {
+    shrink_wrap_update(&mut domain, &atoms.pos, atoms.nlocal as usize);
 }
 
 /// Wrap a position into [low, low+size) with periodic boundaries.
@@ -686,6 +667,128 @@ mod tests {
     }
 
     // ── Shrink-wrap update tests ────────────────────────────────────────────
+
+    // ── Shrink-wrap system tests ───────────────────────────────────────────
+
+    #[test]
+    fn shrink_wrap_expands_to_atom_positions() {
+        let mut domain = Domain::new();
+        domain.boundaries_low = [0.0, 0.0, 0.0];
+        domain.boundaries_high = [10.0, 10.0, 10.0];
+        domain.sub_domain_low = [0.0, 0.0, 0.0];
+        domain.sub_domain_high = [10.0, 10.0, 10.0];
+        domain.size = [10.0, 10.0, 10.0];
+        domain.sub_length = [10.0, 10.0, 10.0];
+        domain.is_shrink_wrap = [false, false, true]; // only z is shrink-wrap
+        domain.shrink_wrap_padding = 0.5;
+
+        let positions = vec![
+            [1.0, 2.0, 3.0],
+            [5.0, 5.0, 8.0],
+            [9.0, 1.0, 1.0],
+        ];
+
+        let changed = super::shrink_wrap_update(&mut domain, &positions, 3);
+        assert!(changed);
+        // z bounds should wrap to [min_z - padding, max_z + padding] = [1.0 - 0.5, 8.0 + 0.5]
+        assert!((domain.boundaries_low[2] - 0.5).abs() < 1e-10);
+        assert!((domain.boundaries_high[2] - 8.5).abs() < 1e-10);
+        // x and y should be unchanged (not shrink-wrap)
+        assert!((domain.boundaries_low[0] - 0.0).abs() < 1e-10);
+        assert!((domain.boundaries_high[0] - 10.0).abs() < 1e-10);
+        assert!(domain.bounds_changed);
+    }
+
+    #[test]
+    fn shrink_wrap_no_change_when_within_tolerance() {
+        // Set bounds to exactly match what shrink_wrap would compute:
+        // z positions are [3.0, 8.0, 1.0], so min=1.0, max=8.0
+        // With padding=0.5: low=0.5, high=8.5
+        let mut domain = Domain::new();
+        domain.boundaries_low = [0.0, 0.0, 0.5];
+        domain.boundaries_high = [10.0, 10.0, 8.5];
+        domain.sub_domain_low = [0.0, 0.0, 0.5];
+        domain.sub_domain_high = [10.0, 10.0, 8.5];
+        domain.size = [10.0, 10.0, 8.0];
+        domain.sub_length = [10.0, 10.0, 8.0];
+        domain.is_shrink_wrap = [false, false, true];
+        domain.shrink_wrap_padding = 0.5;
+        domain.bounds_changed = false;
+
+        let positions = vec![
+            [1.0, 2.0, 3.0],
+            [5.0, 5.0, 8.0],
+            [9.0, 1.0, 1.0],
+        ];
+
+        let changed = super::shrink_wrap_update(&mut domain, &positions, 3);
+        assert!(!changed);
+        assert!(!domain.bounds_changed);
+    }
+
+    #[test]
+    fn shrink_wrap_no_atoms_is_noop() {
+        let mut domain = Domain::new();
+        domain.is_shrink_wrap = [true, true, true];
+        domain.bounds_changed = false;
+        let positions: Vec<[f64; 3]> = vec![];
+
+        let changed = super::shrink_wrap_update(&mut domain, &positions, 0);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn shrink_wrap_all_axes() {
+        let mut domain = Domain::new();
+        domain.boundaries_low = [0.0, 0.0, 0.0];
+        domain.boundaries_high = [100.0, 100.0, 100.0];
+        domain.sub_domain_low = [0.0, 0.0, 0.0];
+        domain.sub_domain_high = [100.0, 100.0, 100.0];
+        domain.size = [100.0, 100.0, 100.0];
+        domain.sub_length = [100.0, 100.0, 100.0];
+        domain.is_shrink_wrap = [true, true, true];
+        domain.shrink_wrap_padding = 1.0;
+
+        let positions = vec![
+            [10.0, 20.0, 30.0],
+            [50.0, 60.0, 70.0],
+        ];
+
+        let changed = super::shrink_wrap_update(&mut domain, &positions, 2);
+        assert!(changed);
+        // x: [10-1, 50+1] = [9, 51]
+        assert!((domain.boundaries_low[0] - 9.0).abs() < 1e-10);
+        assert!((domain.boundaries_high[0] - 51.0).abs() < 1e-10);
+        // y: [20-1, 60+1] = [19, 61]
+        assert!((domain.boundaries_low[1] - 19.0).abs() < 1e-10);
+        assert!((domain.boundaries_high[1] - 61.0).abs() < 1e-10);
+        // z: [30-1, 70+1] = [29, 71]
+        assert!((domain.boundaries_low[2] - 29.0).abs() < 1e-10);
+        assert!((domain.boundaries_high[2] - 71.0).abs() < 1e-10);
+        // Derived fields should be updated
+        assert!((domain.size[0] - 42.0).abs() < 1e-10);
+        assert!((domain.volume - 42.0 * 42.0 * 42.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shrink_wrap_uses_ghost_cutoff_fallback() {
+        let mut domain = Domain::new();
+        domain.boundaries_low = [0.0, 0.0, 0.0];
+        domain.boundaries_high = [10.0, 10.0, 10.0];
+        domain.sub_domain_low = [0.0, 0.0, 0.0];
+        domain.sub_domain_high = [10.0, 10.0, 10.0];
+        domain.size = [10.0, 10.0, 10.0];
+        domain.sub_length = [10.0, 10.0, 10.0];
+        domain.is_shrink_wrap = [false, false, true];
+        domain.shrink_wrap_padding = 0.0; // no explicit padding
+        domain.ghost_cutoff = 2.0; // should use this as fallback
+
+        let positions = vec![[5.0, 5.0, 5.0]];
+        super::shrink_wrap_update(&mut domain, &positions, 1);
+        // z bounds: [5.0 - 2.0, 5.0 + 2.0] = [3.0, 7.0]
+        assert!((domain.boundaries_low[2] - 3.0).abs() < 1e-10);
+        assert!((domain.boundaries_high[2] - 7.0).abs() < 1e-10);
+    }
 
     #[test]
     fn domain_update_derived() {
