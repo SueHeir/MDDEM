@@ -4,6 +4,7 @@
 
 pub use dem_atom;
 pub use dem_bond;
+pub use dem_clump;
 pub use dem_contact_analysis;
 pub use dem_measure_plane;
 pub use dem_granular;
@@ -96,6 +97,7 @@ pub mod prelude {
     pub use dem_atom::{DemAtomPlugin, DemConfig, MaterialTable};
     pub use dem_atom::{DemAtomInsertPlugin, ParticlesConfig};
     pub use dem_bond::DemBondPlugin;
+    pub use dem_clump::{ClumpPlugin, ClumpRegistry, ClumpAtom, ClumpDef};
     pub use dem_granular::GranularDefaultPlugins;
     pub use mddem_velocity_distribution::VelocityDistributionPlugin;
     pub use mddem_fixes::{GravityConfig, GravityPlugin};

@@ -141,6 +141,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dem_clump"
+version = "0.1.3"
+dependencies = [
+ "dem_atom",
+ "mddem_app",
+ "mddem_core",
+ "mddem_derive",
+ "mddem_scheduler",
+ "mddem_test_utils",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "dem_contact_analysis"
 version = "0.1.3"
 dependencies = [
@@ -160,6 +174,7 @@ name = "dem_granular"
 version = "0.1.3"
 dependencies = [
  "dem_atom",
+ "dem_clump",
  "mddem_app",
  "mddem_core",
  "mddem_neighbor",
@@ -432,6 +447,7 @@ version = "0.1.3"
 dependencies = [
  "dem_atom",
  "dem_bond",
+ "dem_clump",
  "dem_contact_analysis",
  "dem_granular",
  "dem_measure_plane",
@@ -461,6 +477,7 @@ dependencies = [
 name = "mddem-bin"
 version = "0.1.3"
 dependencies = [
+ "dem_clump",
  "dem_measure_plane",
  "libffi-sys",
  "md_msd",

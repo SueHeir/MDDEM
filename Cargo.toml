@@ -134,6 +134,7 @@ panic = "abort"
 
 [dependencies]
 mddem = { path = "./crates/mddem", default-features = false }
+dem_clump = { path = "./crates/dem_clump" }
 dem_measure_plane = { path = "./crates/dem_measure_plane" }
 md_type_rdf = { path = "./crates/md_type_rdf" }
 md_msd = { path = "./crates/md_msd" }

@@ -7,6 +7,7 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 
 use dem_atom::{DemAtom, MaterialTable};
+use dem_clump::ClumpAtom;
 use mddem_core::{register_atom_data, Atom, AtomDataRegistry, BondStore, VirialStress, VirialStressPlugin};
 use mddem_neighbor::Neighbor;
 
@@ -63,6 +64,7 @@ pub fn hertz_mindlin_contact_force(
     let mut history =
         registry.expect_mut::<ContactHistoryStore>("hertz_mindlin_contact_force");
     let bond_store = registry.get::<BondStore>();
+    let clump_store = registry.get::<ClumpAtom>();
     let dt = atoms.dt;
 
     let natoms = atoms.len();
@@ -90,8 +92,20 @@ pub fn hertz_mindlin_contact_force(
             }
         }
 
+        // Skip same-clump pairs (sub-spheres of the same rigid body don't interact)
+        if let Some(ref clump) = clump_store {
+            if dem_clump::same_clump(clump, i, j) {
+                continue;
+            }
+        }
+
         let r1 = dem.radius[i];
         let r2 = dem.radius[j];
+
+        // Skip clump parent atoms (they have radius 0 and don't participate in contacts)
+        if r1 <= 0.0 || r2 <= 0.0 {
+            continue;
+        }
 
         let dx = atoms.pos[j][0] - atoms.pos[i][0];
         let dy = atoms.pos[j][1] - atoms.pos[i][1];
@@ -535,6 +549,7 @@ pub fn hooke_contact_force(
     let mut dem = registry.expect_mut::<DemAtom>("hooke_contact_force");
     let mut history = registry.expect_mut::<ContactHistoryStore>("hooke_contact_force");
     let bond_store = registry.get::<BondStore>();
+    let clump_store = registry.get::<ClumpAtom>();
     let dt = atoms.dt;
 
     while history.contacts.len() < atoms.len() {
@@ -557,8 +572,20 @@ pub fn hooke_contact_force(
             }
         }
 
+        // Skip same-clump pairs (sub-spheres of the same rigid body don't interact)
+        if let Some(ref clump) = clump_store {
+            if dem_clump::same_clump(clump, i, j) {
+                continue;
+            }
+        }
+
         let r1 = dem.radius[i];
         let r2 = dem.radius[j];
+
+        // Skip clump parent atoms (radius 0)
+        if r1 <= 0.0 || r2 <= 0.0 {
+            continue;
+        }
 
         let dx = atoms.pos[j][0] - atoms.pos[i][0];
         let dy = atoms.pos[j][1] - atoms.pos[i][1];
