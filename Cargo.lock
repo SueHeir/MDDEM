@@ -532,6 +532,7 @@ version = "0.1.3"
 dependencies = [
  "mddem_app",
  "mddem_core",
+ "mddem_print",
  "mddem_scheduler",
  "mddem_test_utils",
  "serde",

@@ -5,6 +5,7 @@ use mddem_scheduler::prelude::*;
 use serde::Deserialize;
 
 use mddem_core::{Atom, CommResource, Config, GroupRegistry};
+use mddem_print::Thermo;
 
 // ── Config structs ─────────────────────────────────────────────────────────
 
@@ -61,6 +62,13 @@ pub struct ViscousDef {
     pub gamma: f64,
 }
 
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct NveLimitDef {
+    pub group: String,
+    pub max_displacement: f64,
+}
+
 // ── Registry ───────────────────────────────────────────────────────────────
 
 pub struct FixesRegistry {
@@ -69,6 +77,7 @@ pub struct FixesRegistry {
     pub move_linears: Vec<MoveLinearDef>,
     pub freezes: Vec<FreezeDef>,
     pub viscous: Vec<ViscousDef>,
+    pub nve_limit: Vec<NveLimitDef>,
 }
 
 // ── Plugin ─────────────────────────────────────────────────────────────────
@@ -97,7 +106,11 @@ impl Plugin for FixesPlugin {
 # vz = -0.001
 
 # [[freeze]]
-# group = "frozen""#,
+# group = "frozen"
+
+# [[nve_limit]]
+# group = "all"
+# max_displacement = 0.0001  # max distance any atom can move per step"#,
         )
     }
 
@@ -112,6 +125,7 @@ impl Plugin for FixesPlugin {
             move_linears: config.parse_array::<MoveLinearDef>("move_linear"),
             freezes: config.parse_array::<FreezeDef>("freeze"),
             viscous: config.parse_array::<ViscousDef>("viscous"),
+            nve_limit: config.parse_array::<NveLimitDef>("nve_limit"),
         };
 
         drop(config);
@@ -120,7 +134,8 @@ impl Plugin for FixesPlugin {
             || !registry.set_forces.is_empty()
             || !registry.move_linears.is_empty()
             || !registry.freezes.is_empty()
-            || !registry.viscous.is_empty();
+            || !registry.viscous.is_empty()
+            || !registry.nve_limit.is_empty();
 
         if !has_any {
             app.add_resource(registry);
@@ -132,6 +147,7 @@ impl Plugin for FixesPlugin {
         let has_set = !registry.set_forces.is_empty();
         let has_freeze = !registry.freezes.is_empty();
         let has_viscous = !registry.viscous.is_empty();
+        let has_nve_limit = !registry.nve_limit.is_empty();
 
         app.add_resource(registry)
             .add_setup_system(setup_fixes, ScheduleSetupSet::PostSetup);
@@ -151,6 +167,9 @@ impl Plugin for FixesPlugin {
         }
         if has_viscous {
             app.add_update_system(apply_viscous, ScheduleSet::PostForce);
+        }
+        if has_nve_limit {
+            app.add_update_system(apply_nve_limit, ScheduleSet::PostFinalIntegration);
         }
     }
 }
@@ -173,6 +192,9 @@ fn setup_fixes(registry: Res<FixesRegistry>, comm: Res<CommResource>, groups: Re
     }
     for f in &registry.viscous {
         groups.validate_name(&f.group, "fix viscous");
+    }
+    for f in &registry.nve_limit {
+        groups.validate_name(&f.group, "fix nve_limit");
     }
 
     if comm.rank() != 0 {
@@ -201,6 +223,12 @@ fn setup_fixes(registry: Res<FixesRegistry>, comm: Res<CommResource>, groups: Re
     }
     for f in &registry.viscous {
         println!("Fix viscous: group='{}', gamma={}", f.group, f.gamma);
+    }
+    for f in &registry.nve_limit {
+        println!(
+            "Fix nve_limit: group='{}', max_displacement={}",
+            f.group, f.max_displacement
+        );
     }
 }
 
@@ -322,6 +350,42 @@ fn apply_viscous(
     }
 }
 
+/// Cap maximum displacement per timestep by scaling velocity.
+/// Preserves direction; only reduces magnitude when `|v| * dt > max_displacement`.
+fn apply_nve_limit(
+    mut atoms: ResMut<Atom>,
+    registry: Res<FixesRegistry>,
+    groups: Res<GroupRegistry>,
+    mut thermo: Option<ResMut<Thermo>>,
+) {
+    let nlocal = atoms.nlocal as usize;
+    let dt = atoms.dt;
+    let mut n_limited: usize = 0;
+    for def in &registry.nve_limit {
+        let group = groups.expect(&def.group);
+        let vmax = def.max_displacement / dt;
+        for i in 0..nlocal {
+            if !group.mask[i] {
+                continue;
+            }
+            let vx = atoms.vel[i][0];
+            let vy = atoms.vel[i][1];
+            let vz = atoms.vel[i][2];
+            let vmag = (vx * vx + vy * vy + vz * vz).sqrt();
+            if vmag > vmax {
+                let scale = vmax / vmag;
+                atoms.vel[i][0] *= scale;
+                atoms.vel[i][1] *= scale;
+                atoms.vel[i][2] *= scale;
+                n_limited += 1;
+            }
+        }
+    }
+    if let Some(ref mut t) = thermo {
+        t.set("n_limited", n_limited as f64);
+    }
+}
+
 // ── Gravity ─────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone)]
@@ -403,6 +467,7 @@ mod tests {
             move_linears: vec![],
             freezes: vec![],
             viscous: vec![],
+            nve_limit: vec![],
         };
 
         // Set some initial force
@@ -444,6 +509,7 @@ mod tests {
             move_linears: vec![],
             freezes: vec![],
             viscous: vec![],
+            nve_limit: vec![],
         };
 
         let mut app = App::new();
@@ -479,6 +545,7 @@ mod tests {
                 group: "frozen".to_string(),
             }],
             viscous: vec![],
+            nve_limit: vec![],
         };
 
         let mut app = App::new();
@@ -513,6 +580,7 @@ mod tests {
             }],
             freezes: vec![],
             viscous: vec![],
+            nve_limit: vec![],
         };
 
         // Pre step: sets velocity
@@ -551,6 +619,7 @@ mod tests {
                 group: "all".to_string(),
                 gamma: 0.1,
             }],
+            nve_limit: vec![],
         };
 
         let mut app = App::new();
@@ -580,6 +649,7 @@ mod tests {
                 group: "all".to_string(),
                 gamma: 0.1,
             }],
+            nve_limit: vec![],
         };
 
         let mut app = App::new();
@@ -656,5 +726,150 @@ mod tests {
         assert!((atom.force[0][2] - mass * gz).abs() < 1e-15);
         // Ghost atom does not
         assert!((atom.force[1][2]).abs() < 1e-15);
+    }
+
+    // ── NVE/Limit tests ─────────────────────────────────────────────────
+
+    fn make_nve_limit_registry(group: &str, max_displacement: f64) -> FixesRegistry {
+        FixesRegistry {
+            add_forces: vec![],
+            set_forces: vec![],
+            move_linears: vec![],
+            freezes: vec![],
+            viscous: vec![],
+            nve_limit: vec![NveLimitDef {
+                group: group.to_string(),
+                max_displacement,
+            }],
+        }
+    }
+
+    #[test]
+    fn nve_limit_caps_high_velocity() {
+        let mut atoms = make_atoms(1);
+        atoms.dt = 0.001;
+        // Velocity of 100 → displacement = 100 * 0.001 = 0.1 per step
+        atoms.vel[0] = [100.0, 0.0, 0.0];
+
+        let max_d = 0.01; // limit to 0.01 per step
+        let groups = make_group_registry("all", vec![true]);
+        let registry = make_nve_limit_registry("all", max_d);
+
+        let mut app = App::new();
+        app.add_resource(atoms);
+        app.add_resource(groups);
+        app.add_resource(registry);
+        app.add_update_system(apply_nve_limit, ScheduleSet::PostFinalIntegration);
+        app.organize_systems();
+        app.run();
+
+        let a = app.get_resource_ref::<Atom>().unwrap();
+        let vmag = (a.vel[0][0].powi(2) + a.vel[0][1].powi(2) + a.vel[0][2].powi(2)).sqrt();
+        let displacement = vmag * a.dt;
+        assert!(
+            (displacement - max_d).abs() < 1e-12,
+            "displacement {} should equal max_displacement {}",
+            displacement,
+            max_d
+        );
+    }
+
+    #[test]
+    fn nve_limit_does_not_change_small_velocity() {
+        let mut atoms = make_atoms(1);
+        atoms.dt = 0.001;
+        // Velocity of 1.0 → displacement = 0.001 per step, well under limit
+        atoms.vel[0] = [0.6, 0.8, 0.0];
+
+        let max_d = 0.01;
+        let groups = make_group_registry("all", vec![true]);
+        let registry = make_nve_limit_registry("all", max_d);
+
+        let mut app = App::new();
+        app.add_resource(atoms);
+        app.add_resource(groups);
+        app.add_resource(registry);
+        app.add_update_system(apply_nve_limit, ScheduleSet::PostFinalIntegration);
+        app.organize_systems();
+        app.run();
+
+        let a = app.get_resource_ref::<Atom>().unwrap();
+        assert!((a.vel[0][0] - 0.6).abs() < 1e-15);
+        assert!((a.vel[0][1] - 0.8).abs() < 1e-15);
+        assert!((a.vel[0][2]).abs() < 1e-15);
+    }
+
+    #[test]
+    fn nve_limit_preserves_direction() {
+        let mut atoms = make_atoms(1);
+        atoms.dt = 0.001;
+        atoms.vel[0] = [3.0, 4.0, 0.0]; // magnitude = 5.0, displacement = 0.005
+
+        let max_d = 0.001; // limit to 0.001 → vmax = 1.0
+        let groups = make_group_registry("all", vec![true]);
+        let registry = make_nve_limit_registry("all", max_d);
+
+        let mut app = App::new();
+        app.add_resource(atoms);
+        app.add_resource(groups);
+        app.add_resource(registry);
+        app.add_update_system(apply_nve_limit, ScheduleSet::PostFinalIntegration);
+        app.organize_systems();
+        app.run();
+
+        let a = app.get_resource_ref::<Atom>().unwrap();
+        // Direction should be (3/5, 4/5, 0) = (0.6, 0.8, 0)
+        let vmag = (a.vel[0][0].powi(2) + a.vel[0][1].powi(2) + a.vel[0][2].powi(2)).sqrt();
+        assert!((vmag - 1.0).abs() < 1e-12, "vmag should be 1.0, got {}", vmag);
+        assert!((a.vel[0][0] / vmag - 0.6).abs() < 1e-12, "direction x preserved");
+        assert!((a.vel[0][1] / vmag - 0.8).abs() < 1e-12, "direction y preserved");
+    }
+
+    #[test]
+    fn nve_limit_zero_velocity_no_panic() {
+        let mut atoms = make_atoms(1);
+        atoms.dt = 0.001;
+        atoms.vel[0] = [0.0, 0.0, 0.0];
+
+        let groups = make_group_registry("all", vec![true]);
+        let registry = make_nve_limit_registry("all", 0.01);
+
+        let mut app = App::new();
+        app.add_resource(atoms);
+        app.add_resource(groups);
+        app.add_resource(registry);
+        app.add_update_system(apply_nve_limit, ScheduleSet::PostFinalIntegration);
+        app.organize_systems();
+        app.run();
+
+        let a = app.get_resource_ref::<Atom>().unwrap();
+        assert!((a.vel[0][0]).abs() < 1e-15);
+        assert!((a.vel[0][1]).abs() < 1e-15);
+        assert!((a.vel[0][2]).abs() < 1e-15);
+    }
+
+    #[test]
+    fn nve_limit_respects_group_filter() {
+        let mut atoms = make_atoms(2);
+        atoms.dt = 0.001;
+        atoms.vel[0] = [100.0, 0.0, 0.0]; // in group, should be capped
+        atoms.vel[1] = [100.0, 0.0, 0.0]; // not in group, unchanged
+
+        let groups = make_group_registry("limited", vec![true, false]);
+        let registry = make_nve_limit_registry("limited", 0.01);
+
+        let mut app = App::new();
+        app.add_resource(atoms);
+        app.add_resource(groups);
+        app.add_resource(registry);
+        app.add_update_system(apply_nve_limit, ScheduleSet::PostFinalIntegration);
+        app.organize_systems();
+        app.run();
+
+        let a = app.get_resource_ref::<Atom>().unwrap();
+        // Atom 0: capped to 0.01 / 0.001 = 10.0
+        assert!((a.vel[0][0] - 10.0).abs() < 1e-12, "atom 0 should be capped");
+        // Atom 1: unchanged at 100.0
+        assert!((a.vel[1][0] - 100.0).abs() < 1e-12, "atom 1 should be unchanged");
     }
 }
