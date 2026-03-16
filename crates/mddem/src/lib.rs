@@ -104,7 +104,7 @@ pub mod prelude {
     pub use md_bond::{MdBondConfig, MdBondPlugin};
     pub use md_measure::{MeasureConfig, MeasurePlugin};
     pub use md_type_rdf::{TypeRdfConfig, TypeRdfPlugin};
-    pub use md_polymer::{PolymerConfig, PolymerPlugin};
+    pub use md_polymer::{ChainStatsConfig, ChainStatsPlugin, PolymerConfig, PolymerInitConfig, PolymerInitPlugin, PolymerPlugin};
     pub use md_thermostat::{LangevinConfig, LangevinPlugin, LangevinState, NoseHooverPlugin, NoseHooverState, ThermostatConfig};
     pub use mddem_fixes::{AddForceDef, FixesPlugin, FixesRegistry, FreezeDef, MoveLinearDef, SetForceDef, ViscousDef};
     pub use mddem_app::prelude::*;

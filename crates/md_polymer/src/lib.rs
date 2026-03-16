@@ -1,11 +1,16 @@
-//! Polymer chain initialization and measurements (R_ee, R_g) for MDDEM.
+//! Polymer chain initialization and chain statistics (R_ee, R_g) for MDDEM.
 //!
-//! Provides:
-//! - Chain initialization as a straight line or random walk of bonded beads
-//! - End-to-end distance R_ee measurement
-//! - Radius of gyration R_g measurement
-//! - Periodic output to files
+//! This crate provides two independent plugins:
+//!
+//! - [`PolymerInitPlugin`] — Creates bead-spring polymer chains (straight or random walk)
+//!   and populates bond topology. Reads `[polymer_init]` TOML config.
+//! - [`ChainStatsPlugin`] — Measures end-to-end distance R_ee and radius of gyration R_g
+//!   for any bonded linear chains. Reads `[chain_stats]` TOML config.
+//!   Auto-discovers chain topology from [`BondStore`] if not populated by init.
+//!
+//! A convenience [`PolymerPlugin`] adds both.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 
@@ -17,46 +22,21 @@ use rand_chacha::ChaCha8Rng;
 use rand::SeedableRng;
 use serde::Deserialize;
 
-// ── Config ──────────────────────────────────────────────────────────────────
+// ── Init Config ─────────────────────────────────────────────────────────────
 
-fn default_n_chains() -> usize {
-    1
-}
-fn default_chain_length() -> usize {
-    50
-}
-fn default_bond_length() -> f64 {
-    0.97
-}
-fn default_mass() -> f64 {
-    1.0
-}
-fn default_init_style() -> String {
-    "random_walk".to_string()
-}
-fn default_seed() -> u64 {
-    42
-}
-fn default_measure_interval() -> usize {
-    100
-}
-fn default_output_interval() -> usize {
-    1000
-}
-fn default_skin() -> f64 {
-    1.0
-}
-fn default_temperature() -> f64 {
-    1.0
-}
-fn default_equilibration_steps() -> usize {
-    0
-}
+fn default_n_chains() -> usize { 1 }
+fn default_chain_length() -> usize { 50 }
+fn default_bond_length() -> f64 { 0.97 }
+fn default_mass() -> f64 { 1.0 }
+fn default_init_style() -> String { "random_walk".to_string() }
+fn default_seed() -> u64 { 42 }
+fn default_skin() -> f64 { 1.0 }
+fn default_temperature() -> f64 { 1.0 }
 
-/// TOML `[polymer]` configuration.
+/// TOML `[polymer_init]` configuration for chain creation.
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-pub struct PolymerConfig {
+pub struct PolymerInitConfig {
     /// Number of polymer chains.
     #[serde(default = "default_n_chains")]
     pub n_chains: usize,
@@ -75,19 +55,88 @@ pub struct PolymerConfig {
     /// Random seed for random walk initialization and initial velocities.
     #[serde(default = "default_seed")]
     pub seed: u64,
-    /// Measure R_ee and R_g every N steps.
-    #[serde(default = "default_measure_interval")]
-    pub measure_interval: usize,
-    /// Write measurement output files every N steps.
-    #[serde(default = "default_output_interval")]
-    pub output_interval: usize,
     /// Cutoff skin for neighbor list.
     #[serde(default = "default_skin")]
     pub skin: f64,
     /// Initial temperature for Maxwell-Boltzmann velocity sampling.
     #[serde(default = "default_temperature")]
     pub temperature: f64,
+}
+
+impl Default for PolymerInitConfig {
+    fn default() -> Self {
+        PolymerInitConfig {
+            n_chains: 1,
+            chain_length: 50,
+            bond_length: 0.97,
+            mass: 1.0,
+            init_style: "random_walk".to_string(),
+            seed: 42,
+            skin: 1.0,
+            temperature: 1.0,
+        }
+    }
+}
+
+// ── Chain Stats Config ──────────────────────────────────────────────────────
+
+fn default_measure_interval() -> usize { 100 }
+fn default_output_interval() -> usize { 1000 }
+fn default_equilibration_steps() -> usize { 0 }
+
+/// TOML `[chain_stats]` configuration for R_ee / R_g measurements.
+#[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ChainStatsConfig {
+    /// Measure R_ee and R_g every N steps.
+    #[serde(default = "default_measure_interval")]
+    pub measure_interval: usize,
+    /// Write measurement output files every N steps.
+    #[serde(default = "default_output_interval")]
+    pub output_interval: usize,
     /// Number of equilibration steps before starting measurements.
+    #[serde(default = "default_equilibration_steps")]
+    pub equilibration_steps: usize,
+}
+
+impl Default for ChainStatsConfig {
+    fn default() -> Self {
+        ChainStatsConfig {
+            measure_interval: 100,
+            output_interval: 1000,
+            equilibration_steps: 0,
+        }
+    }
+}
+
+// ── Backward-compat PolymerConfig ───────────────────────────────────────────
+
+/// Legacy TOML `[polymer]` configuration that combines init + measurements.
+/// Kept for backward compatibility — prefer using separate `[polymer_init]`
+/// and `[chain_stats]` sections.
+#[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PolymerConfig {
+    #[serde(default = "default_n_chains")]
+    pub n_chains: usize,
+    #[serde(default = "default_chain_length")]
+    pub chain_length: usize,
+    #[serde(default = "default_bond_length")]
+    pub bond_length: f64,
+    #[serde(default = "default_mass")]
+    pub mass: f64,
+    #[serde(default = "default_init_style")]
+    pub init_style: String,
+    #[serde(default = "default_seed")]
+    pub seed: u64,
+    #[serde(default = "default_measure_interval")]
+    pub measure_interval: usize,
+    #[serde(default = "default_output_interval")]
+    pub output_interval: usize,
+    #[serde(default = "default_skin")]
+    pub skin: f64,
+    #[serde(default = "default_temperature")]
+    pub temperature: f64,
     #[serde(default = "default_equilibration_steps")]
     pub equilibration_steps: usize,
 }
@@ -110,14 +159,38 @@ impl Default for PolymerConfig {
     }
 }
 
+impl PolymerConfig {
+    /// Extract the init portion.
+    pub fn to_init_config(&self) -> PolymerInitConfig {
+        PolymerInitConfig {
+            n_chains: self.n_chains,
+            chain_length: self.chain_length,
+            bond_length: self.bond_length,
+            mass: self.mass,
+            init_style: self.init_style.clone(),
+            seed: self.seed,
+            skin: self.skin,
+            temperature: self.temperature,
+        }
+    }
+    /// Extract the measurement portion.
+    pub fn to_stats_config(&self) -> ChainStatsConfig {
+        ChainStatsConfig {
+            measure_interval: self.measure_interval,
+            output_interval: self.output_interval,
+            equilibration_steps: self.equilibration_steps,
+        }
+    }
+}
+
 // ── Measurement storage ─────────────────────────────────────────────────────
 
 /// Stores chain topology (first/last bead tags) and measurement history.
-pub struct PolymerMeasure {
-    /// (first_tag, last_tag) for each chain.
-    pub chain_endpoints: Vec<(u32, u32)>,
+pub struct ChainStatsData {
     /// All bead tags per chain, ordered along the chain.
     pub chain_tags: Vec<Vec<u32>>,
+    /// Whether chain topology has been discovered from bonds.
+    pub discovered: bool,
     /// (step, R_ee) values over time.
     pub ree_history: Vec<(usize, f64)>,
     /// (step, R_g) values over time.
@@ -128,11 +201,11 @@ pub struct PolymerMeasure {
     pub n_samples: usize,
 }
 
-impl Default for PolymerMeasure {
+impl Default for ChainStatsData {
     fn default() -> Self {
-        PolymerMeasure {
-            chain_endpoints: Vec::new(),
+        ChainStatsData {
             chain_tags: Vec::new(),
+            discovered: false,
             ree_history: Vec::new(),
             rg_history: Vec::new(),
             ree_sum: 0.0,
@@ -142,9 +215,56 @@ impl Default for PolymerMeasure {
     }
 }
 
-// ── Plugin ──────────────────────────────────────────────────────────────────
+// ── Plugins ─────────────────────────────────────────────────────────────────
 
-/// Polymer chain initialization and R_ee/R_g measurement plugin.
+/// Polymer chain initialization plugin. Reads `[polymer_init]` config.
+pub struct PolymerInitPlugin;
+
+impl Plugin for PolymerInitPlugin {
+    fn default_config(&self) -> Option<&str> {
+        Some(
+            r#"[polymer_init]
+n_chains = 1
+chain_length = 50
+bond_length = 0.97
+mass = 1.0
+init_style = "random_walk"
+seed = 42"#,
+        )
+    }
+
+    fn build(&self, app: &mut App) {
+        Config::load::<PolymerInitConfig>(app, "polymer_init");
+        app.add_plugins(mddem_core::BondPlugin);
+        ensure_chain_stats_data(app);
+        app.add_setup_system(init_polymer_chains, ScheduleSetupSet::Setup);
+    }
+}
+
+/// Chain statistics plugin (R_ee, R_g). Reads `[chain_stats]` config.
+/// Works independently — auto-discovers chain topology from [`BondStore`].
+pub struct ChainStatsPlugin;
+
+impl Plugin for ChainStatsPlugin {
+    fn default_config(&self) -> Option<&str> {
+        Some(
+            r#"[chain_stats]
+measure_interval = 100
+output_interval = 1000"#,
+        )
+    }
+
+    fn build(&self, app: &mut App) {
+        Config::load::<ChainStatsConfig>(app, "chain_stats");
+        app.add_plugins(mddem_core::BondPlugin);
+        ensure_chain_stats_data(app);
+        app.add_update_system(measure_chain_stats, ScheduleSet::PostFinalIntegration)
+            .add_update_system(write_chain_stats, ScheduleSet::PostFinalIntegration);
+    }
+}
+
+/// Convenience plugin that adds both [`PolymerInitPlugin`] and [`ChainStatsPlugin`].
+/// Reads the combined `[polymer]` TOML section for backward compatibility.
 pub struct PolymerPlugin;
 
 impl Plugin for PolymerPlugin {
@@ -163,27 +283,38 @@ output_interval = 1000"#,
     }
 
     fn build(&self, app: &mut App) {
-        Config::load::<PolymerConfig>(app, "polymer");
+        // Load combined config then split into the two independent configs
+        let combined = Config::load::<PolymerConfig>(app, "polymer");
 
-        // Register BondStore if not already present
+        // Register the split configs so the individual systems can read them
+        app.add_resource(combined.to_init_config());
+        app.add_resource(combined.to_stats_config());
+
         app.add_plugins(mddem_core::BondPlugin);
+        ensure_chain_stats_data(app);
 
-        app.add_resource(PolymerMeasure::default())
-            .add_setup_system(init_polymer_chains, ScheduleSetupSet::Setup)
-            .add_update_system(measure_polymer, ScheduleSet::PostFinalIntegration)
-            .add_update_system(write_polymer_measurements, ScheduleSet::PostFinalIntegration);
+        app.add_setup_system(init_polymer_chains, ScheduleSetupSet::Setup)
+            .add_update_system(measure_chain_stats, ScheduleSet::PostFinalIntegration)
+            .add_update_system(write_chain_stats, ScheduleSet::PostFinalIntegration);
+    }
+}
+
+/// Register [`ChainStatsData`] if not already present.
+fn ensure_chain_stats_data(app: &mut App) {
+    if app.get_resource_ref::<ChainStatsData>().is_none() {
+        app.add_resource(ChainStatsData::default());
     }
 }
 
 // ── Chain initialization ────────────────────────────────────────────────────
 
 pub fn init_polymer_chains(
-    config: Res<PolymerConfig>,
+    config: Res<PolymerInitConfig>,
     mut atoms: ResMut<Atom>,
     registry: Res<AtomDataRegistry>,
     domain: Res<Domain>,
     comm: Res<CommResource>,
-    mut measure: ResMut<PolymerMeasure>,
+    mut stats_data: ResMut<ChainStatsData>,
 ) {
     // Only initialize on rank 0 for single-process (non-MPI) runs
     if comm.rank() != 0 {
@@ -215,9 +346,9 @@ pub fn init_polymer_chains(
 
         // Starting position: random within the box (with some margin)
         let margin = bond_len * 2.0;
-        let start_x = x0 + margin + rng.gen::<f64>() * (lx - 2.0 * margin);
-        let start_y = y0 + margin + rng.gen::<f64>() * (ly - 2.0 * margin);
-        let start_z = z0 + margin + rng.gen::<f64>() * (lz - 2.0 * margin);
+        let start_x = x0 + margin + rng.random::<f64>() * (lx - 2.0 * margin);
+        let start_y = y0 + margin + rng.random::<f64>() * (ly - 2.0 * margin);
+        let start_z = z0 + margin + rng.random::<f64>() * (lz - 2.0 * margin);
 
         let mut pos = [start_x, start_y, start_z];
 
@@ -239,9 +370,9 @@ pub fn init_polymer_chains(
             // Initial velocity: Maxwell-Boltzmann
             let sigma_v = (config.temperature / mass).sqrt();
             atoms.vel.push([
-                rng.gen::<f64>() * 2.0 * sigma_v - sigma_v,
-                rng.gen::<f64>() * 2.0 * sigma_v - sigma_v,
-                rng.gen::<f64>() * 2.0 * sigma_v - sigma_v,
+                rng.random::<f64>() * 2.0 * sigma_v - sigma_v,
+                rng.random::<f64>() * 2.0 * sigma_v - sigma_v,
+                rng.random::<f64>() * 2.0 * sigma_v - sigma_v,
             ]);
             atoms.force.push([0.0; 3]);
             atoms.mass.push(mass);
@@ -257,10 +388,10 @@ pub fn init_polymer_chains(
                     "straight" => {
                         pos[0] += bond_len;
                     }
-                    "random_walk" | _ => {
+                    _ => {
                         // Random direction on unit sphere
-                        let theta = std::f64::consts::PI * rng.gen::<f64>();
-                        let phi = 2.0 * std::f64::consts::PI * rng.gen::<f64>();
+                        let theta = std::f64::consts::PI * rng.random::<f64>();
+                        let phi = 2.0 * std::f64::consts::PI * rng.random::<f64>();
                         pos[0] += bond_len * theta.sin() * phi.cos();
                         pos[1] += bond_len * theta.sin() * phi.sin();
                         pos[2] += bond_len * theta.cos();
@@ -269,11 +400,10 @@ pub fn init_polymer_chains(
             }
         }
 
-        // Store chain endpoints
+        // Store chain topology for measurements
         let first_tag = chain_tag_list[0];
         let last_tag = chain_tag_list[chain_len - 1];
-        measure.chain_endpoints.push((first_tag, last_tag));
-        measure.chain_tags.push(chain_tag_list);
+        stats_data.chain_tags.push(chain_tag_list);
 
         if comm.rank() == 0 {
             println!(
@@ -313,11 +443,10 @@ pub fn init_polymer_chains(
         bond_store.bonds.push(Vec::new());
     }
 
-    for chain_tags in &measure.chain_tags {
+    for chain_tags in &stats_data.chain_tags {
         for w in chain_tags.windows(2) {
             let tag_a = w[0];
             let tag_b = w[1];
-            // Both atoms store the bond
             bond_store.bonds[tag_a as usize].push(BondEntry {
                 partner_tag: tag_b,
                 bond_type: 0,
@@ -331,15 +460,16 @@ pub fn init_polymer_chains(
         }
     }
 
+    // Mark topology as known
+    stats_data.discovered = true;
+
     if comm.rank() == 0 {
-        let total_bonds: usize = measure.chain_tags.iter()
+        let total_bonds: usize = stats_data.chain_tags.iter()
             .map(|c| if c.len() > 1 { c.len() - 1 } else { 0 })
             .sum();
         println!(
             "Polymer init: {} chains, {} beads total, {} bonds",
-            n_chains,
-            n_total,
-            total_bonds,
+            n_chains, n_total, total_bonds,
         );
     }
 }
@@ -359,15 +489,85 @@ fn wrap_coord(x: f64, lo: f64, hi: f64, periodic: bool) -> f64 {
     val
 }
 
+// ── Chain discovery from BondStore ──────────────────────────────────────────
+
+/// Discover linear chains from the bond topology in [`BondStore`].
+///
+/// Finds all atoms with exactly 1 bond partner (chain endpoints), then walks
+/// the bond graph to reconstruct each chain. Only discovers simple linear chains
+/// (atoms with ≤2 bond partners).
+fn discover_chains_from_bonds(atoms: &Atom, registry: &AtomDataRegistry) -> Vec<Vec<u32>> {
+    let nlocal = atoms.nlocal as usize;
+    if nlocal == 0 {
+        return Vec::new();
+    }
+
+    let bond_store = match registry.get::<BondStore>() {
+        Some(bs) => bs,
+        None => return Vec::new(),
+    };
+
+    // Build adjacency: tag → set of partner tags
+    let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
+    for i in 0..nlocal.min(bond_store.bonds.len()) {
+        let tag = atoms.tag[i];
+        for bond in &bond_store.bonds[i] {
+            adj.entry(tag).or_default().push(bond.partner_tag);
+        }
+    }
+
+    // Find endpoints: atoms with exactly 1 bond partner
+    let mut endpoints: Vec<u32> = Vec::new();
+    for (&tag, partners) in &adj {
+        if partners.len() == 1 {
+            endpoints.push(tag);
+        }
+    }
+    endpoints.sort();
+
+    // Walk from each endpoint to build chains
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut chains: Vec<Vec<u32>> = Vec::new();
+
+    for &start in &endpoints {
+        if visited.contains(&start) {
+            continue;
+        }
+
+        let mut chain = vec![start];
+        visited.insert(start);
+        let mut current = start;
+
+        while let Some(partners) = adj.get(&current) {
+            let next = partners.iter().find(|p| !visited.contains(p)).copied();
+            match next {
+                Some(n) => {
+                    chain.push(n);
+                    visited.insert(n);
+                    current = n;
+                }
+                None => break,
+            }
+        }
+
+        if chain.len() >= 2 {
+            chains.push(chain);
+        }
+    }
+
+    chains
+}
+
 // ── Measurements ────────────────────────────────────────────────────────────
 
-pub fn measure_polymer(
+pub fn measure_chain_stats(
     atoms: Res<Atom>,
-    config: Res<PolymerConfig>,
+    registry: Res<AtomDataRegistry>,
+    config: Res<ChainStatsConfig>,
     domain: Res<Domain>,
     run_state: Res<RunState>,
     comm: Res<CommResource>,
-    mut measure: ResMut<PolymerMeasure>,
+    mut stats: ResMut<ChainStatsData>,
 ) {
     let step = run_state.total_cycle;
     if config.measure_interval == 0 || step == 0 || !step.is_multiple_of(config.measure_interval) {
@@ -377,11 +577,25 @@ pub fn measure_polymer(
         return;
     }
     if comm.rank() != 0 {
-        return; // single-process only for now
+        return;
+    }
+
+    // Auto-discover chain topology if not already known
+    if !stats.discovered {
+        let chains = discover_chains_from_bonds(&atoms, &registry);
+        if chains.is_empty() {
+            return;
+        }
+        stats.chain_tags = chains;
+        stats.discovered = true;
+        println!(
+            "ChainStats: auto-discovered {} chains from bond topology",
+            stats.chain_tags.len()
+        );
     }
 
     let nlocal = atoms.nlocal as usize;
-    if nlocal == 0 || measure.chain_tags.is_empty() {
+    if nlocal == 0 || stats.chain_tags.is_empty() {
         return;
     }
 
@@ -403,7 +617,7 @@ pub fn measure_polymer(
     let mut total_rg = 0.0;
     let mut n_measured = 0usize;
 
-    for chain_tags in &measure.chain_tags {
+    for chain_tags in &stats.chain_tags {
         if chain_tags.len() < 2 {
             continue;
         }
@@ -485,27 +699,27 @@ pub fn measure_polymer(
         let avg_ree = total_ree / n_measured as f64;
         let avg_rg = total_rg / n_measured as f64;
 
-        measure.ree_history.push((step, avg_ree));
-        measure.rg_history.push((step, avg_rg));
-        measure.ree_sum += avg_ree;
-        measure.rg_sum += avg_rg;
-        measure.n_samples += 1;
+        stats.ree_history.push((step, avg_ree));
+        stats.rg_history.push((step, avg_rg));
+        stats.ree_sum += avg_ree;
+        stats.rg_sum += avg_rg;
+        stats.n_samples += 1;
 
         if step.is_multiple_of(config.output_interval.max(config.measure_interval)) {
-            let running_ree = measure.ree_sum / measure.n_samples as f64;
-            let running_rg = measure.rg_sum / measure.n_samples as f64;
+            let running_ree = stats.ree_sum / stats.n_samples as f64;
+            let running_rg = stats.rg_sum / stats.n_samples as f64;
             println!(
                 "Step {}: R_ee={:.4}, R_g={:.4} (avg R_ee={:.4}, avg R_g={:.4}, samples={})",
-                step, avg_ree, avg_rg, running_ree, running_rg, measure.n_samples
+                step, avg_ree, avg_rg, running_ree, running_rg, stats.n_samples
             );
         }
     }
 }
 
-pub fn write_polymer_measurements(
+pub fn write_chain_stats(
     run_state: Res<RunState>,
-    config: Res<PolymerConfig>,
-    measure: Res<PolymerMeasure>,
+    config: Res<ChainStatsConfig>,
+    stats: Res<ChainStatsData>,
     comm: Res<CommResource>,
     input: Res<Input>,
 ) {
@@ -522,11 +736,11 @@ pub fn write_polymer_measurements(
     let _ = fs::create_dir_all(&data_dir);
 
     // Write R_ee history
-    if !measure.ree_history.is_empty() {
+    if !stats.ree_history.is_empty() {
         let path = format!("{}/ree.txt", data_dir);
         if let Ok(mut f) = fs::File::create(&path) {
             writeln!(f, "# step R_ee").ok();
-            for &(s, ree) in &measure.ree_history {
+            for &(s, ree) in &stats.ree_history {
                 writeln!(f, "{} {:.6}", s, ree).ok();
             }
             println!("Wrote R_ee to {}", path);
@@ -534,11 +748,11 @@ pub fn write_polymer_measurements(
     }
 
     // Write R_g history
-    if !measure.rg_history.is_empty() {
+    if !stats.rg_history.is_empty() {
         let path = format!("{}/rg.txt", data_dir);
         if let Ok(mut f) = fs::File::create(&path) {
             writeln!(f, "# step R_g").ok();
-            for &(s, rg) in &measure.rg_history {
+            for &(s, rg) in &stats.rg_history {
                 writeln!(f, "{} {:.6}", s, rg).ok();
             }
             println!("Wrote R_g to {}", path);
@@ -546,12 +760,12 @@ pub fn write_polymer_measurements(
     }
 
     // Print final averages
-    if measure.n_samples > 0 {
-        let avg_ree = measure.ree_sum / measure.n_samples as f64;
-        let avg_rg = measure.rg_sum / measure.n_samples as f64;
+    if stats.n_samples > 0 {
+        let avg_ree = stats.ree_sum / stats.n_samples as f64;
+        let avg_rg = stats.rg_sum / stats.n_samples as f64;
         println!(
-            "Polymer averages ({} samples): <R_ee>={:.4}, <R_g>={:.4}, <R_ee>/<R_g>={:.4}",
-            measure.n_samples, avg_ree, avg_rg, avg_ree / avg_rg
+            "Chain stats averages ({} samples): <R_ee>={:.4}, <R_g>={:.4}, <R_ee>/<R_g>={:.4}",
+            stats.n_samples, avg_ree, avg_rg, avg_ree / avg_rg
         );
     }
 }
@@ -582,7 +796,6 @@ mod tests {
         let b = 1.0;
         let expected_ree = (n - 1) as f64 * b;
 
-        // Manually compute
         let mut positions = Vec::new();
         for i in 0..n {
             positions.push([i as f64 * b, 0.0, 0.0]);
