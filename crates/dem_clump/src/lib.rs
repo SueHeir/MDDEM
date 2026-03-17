@@ -8,7 +8,7 @@
 //! # Configuration
 //!
 //! ```toml
-//! [[dem.clumps]]
+//! [[clump.definitions]]
 //! name = "dimer"
 //! spheres = [
 //!     { offset = [-0.0003, 0.0, 0.0], radius = 0.001 },
@@ -49,7 +49,7 @@ pub struct ClumpSphereConfig {
     pub radius: f64,
 }
 
-/// A clump type definition from `[[dem.clumps]]`.
+/// A clump type definition from `[[clump.definitions]]`.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ClumpDef {
@@ -59,17 +59,24 @@ pub struct ClumpDef {
     pub spheres: Vec<ClumpSphereConfig>,
 }
 
-/// Extended DEM config with optional clump definitions.
-/// Uses `#[serde(flatten)]` with a HashMap to absorb unknown `[dem]` keys
-/// (materials, contact_model, etc.) without failing deserialization.
+/// Top-level `[clump]` configuration section with clump type definitions.
+///
+/// Loaded from the `[clump]` TOML section (separate from `[dem]`) so that
+/// `DemConfig`'s `deny_unknown_fields` doesn't reject the `clumps` key.
+///
+/// ```toml
+/// [[clump.definitions]]
+/// name = "dimer"
+/// spheres = [
+///     { offset = [-0.0003, 0.0, 0.0], radius = 0.001 },
+///     { offset = [0.0003, 0.0, 0.0], radius = 0.001 },
+/// ]
+/// ```
 #[derive(Deserialize, Clone, Default)]
-pub struct DemClumpConfig {
+pub struct ClumpPluginConfig {
     /// Clump type definitions.
     #[serde(default)]
-    pub clumps: Option<Vec<ClumpDef>>,
-    /// Pass-through fields we don't care about.
-    #[serde(flatten)]
-    pub _rest: std::collections::HashMap<String, toml::Value>,
+    pub definitions: Option<Vec<ClumpDef>>,
 }
 
 // ── Per-atom clump data ─────────────────────────────────────────────────────
@@ -238,9 +245,9 @@ impl Plugin for ClumpPlugin {
         // Load clump definitions from config
         let mut registry = ClumpRegistry::new();
 
-        // Try to load dem.clumps from config
-        let dem_clump_config = Config::load::<DemClumpConfig>(app, "dem");
-        if let Some(clumps) = dem_clump_config.clumps {
+        // Load clump definitions from [clump] section
+        let clump_config = Config::load::<ClumpPluginConfig>(app, "clump");
+        if let Some(clumps) = clump_config.definitions {
             for def in clumps {
                 assert!(
                     !def.spheres.is_empty(),

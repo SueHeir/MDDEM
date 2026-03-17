@@ -45,7 +45,9 @@ rolling_friction = 0.1  # Rolling friction [dimensionless]
 # --- Dimer clump definition ---
 # Two overlapping spheres offset along x, each with radius 1.0 mm.
 # Center-to-center distance 1.0 mm → aspect ratio ≈ 1.5
-[[dem.clumps]]
+# Note: clump definitions live under [clump], not [dem], because DemConfig
+# uses deny_unknown_fields.
+[[clump.definitions]]
 name = "dimer"
 spheres = [
     { offset = [-0.0005, 0.0, 0.0], radius = 0.001 },
