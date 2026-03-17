@@ -1,0 +1,144 @@
+# Triaxial compression benchmark — σ₃ = 200 kPa confining pressure
+#
+# Box: 0.01 × 0.01 × 0.04 m (walled, non-periodic)
+# Particles: 300 spheres, r = 1 mm, ρ = 2500 kg/m³
+# Material: E = 1e7 Pa (soft for fast timestep), ν = 0.3, e = 0.3, μ = 0.5
+# Servo walls maintain lateral confining pressure; top wall compressed axially.
+
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[domain]
+x_low  = 0.0
+x_high = 0.01        # 10 mm width [m]
+y_low  = 0.0
+y_high = 0.01        # 10 mm depth [m]
+z_low  = 0.0
+z_high = 0.04        # 40 mm tall for insertion [m]
+periodic_x = false
+periodic_y = false
+periodic_z = false
+
+[neighbor]
+skin_fraction = 1.1  # neighbor search radius multiplier [–]
+bin_size = 0.003     # bin width [m], ≥ largest particle diameter
+
+[gravity]
+gz = -9.81           # gravitational acceleration [m/s²]
+
+[[dem.materials]]
+name = "granular"
+youngs_mod = 1e7     # Young's modulus [Pa] — soft for fast auto-dt
+poisson_ratio = 0.3  # Poisson's ratio [–]
+restitution = 0.3    # coefficient of restitution [–] — high damping for fast settling
+friction = 0.5       # sliding friction coefficient [–]
+
+[[particles.insert]]
+material = "granular"
+count = 300          # number of particles
+radius = 0.001       # particle radius [m]
+density = 2500.0     # particle density [kg/m³]
+
+[contact_analysis]
+coordination = true
+fabric_tensor = true
+
+[output]
+dir = "examples/bench_triaxial/data_200kPa"
+
+# ── Walls ────────────────────────────────────────────────────────────────────
+# Walls 0–3: lateral servo walls for confining pressure
+# Wall  4:   static floor
+# Wall  5:   top wall (moved by custom system during compress stage)
+#
+# Servo target_force = σ₃ × wall_area
+#   σ₃ = 200 kPa = 200000 Pa
+#   Wall area ≈ Ly × H_bed ≈ 0.01 × 0.02 = 2e-4 m²
+#   target_force = 200000 × 2e-4 = 40.0 N
+
+# Wall 0: x = 0, normal +x (left, servo)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 1.0
+normal_y = 0.0
+normal_z = 0.0
+material = "granular"
+servo = { target_force = 40.0, max_velocity = 0.005, gain = 0.005 }
+
+# Wall 1: x = 0.01, normal −x (right, servo)
+[[wall]]
+point_x = 0.01
+point_y = 0.0
+point_z = 0.0
+normal_x = -1.0
+normal_y = 0.0
+normal_z = 0.0
+material = "granular"
+servo = { target_force = 40.0, max_velocity = 0.005, gain = 0.005 }
+
+# Wall 2: y = 0, normal +y (front, servo)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 0.0
+normal_y = 1.0
+normal_z = 0.0
+material = "granular"
+servo = { target_force = 40.0, max_velocity = 0.005, gain = 0.005 }
+
+# Wall 3: y = 0.01, normal −y (back, servo)
+[[wall]]
+point_x = 0.0
+point_y = 0.01
+point_z = 0.0
+normal_x = 0.0
+normal_y = -1.0
+normal_z = 0.0
+material = "granular"
+servo = { target_force = 40.0, max_velocity = 0.005, gain = 0.005 }
+
+# Wall 4: z = 0, normal +z (floor, static)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "granular"
+
+# Wall 5: z = 0.04, normal −z (top, static — moved by custom system)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.04
+normal_x = 0.0
+normal_y = 0.0
+normal_z = -1.0
+material = "granular"
+
+# ── Stages ───────────────────────────────────────────────────────────────────
+
+# Stage 1: insert and settle under gravity
+[[run]]
+name = "insert"
+steps = 300000
+thermo = 5000
+
+# Stage 2: relax to low KE
+[[run]]
+name = "relax"
+steps = 200000
+thermo = 2000
+
+# Stage 3: axial compression with zero gravity for uniform stress
+[[run]]
+name = "compress"
+steps = 500000
+thermo = 500
+gravity.gz = 0.0     # zero gravity during compression for uniform stress [m/s²]
