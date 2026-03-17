@@ -1,4 +1,63 @@
-//! Lennard-Jones 12-6 pair force with virial accumulator and tail corrections.
+//! # Lennard-Jones 12-6 Pair Potential
+//!
+//! This crate implements the standard Lennard-Jones 12-6 pair force for molecular dynamics
+//! simulations in MDDEM. The LJ potential models van der Waals interactions between
+//! neutral atoms or molecules:
+//!
+//! ```text
+//!   V(r) = 4ε [ (σ/r)^12 − (σ/r)^6 ]
+//! ```
+//!
+//! where **ε** (epsilon) is the depth of the potential well and **σ** (sigma) is the
+//! finite distance at which the inter-particle potential is zero. The potential is
+//! truncated at a cutoff distance `r_c` (specified in units of σ).
+//!
+//! ## Features
+//!
+//! - Single-type and multi-type pair interactions with mixing rules
+//! - Precomputed pair coefficient table for fast inner-loop evaluation
+//! - Virial stress accumulation for pressure computation
+//! - Long-range tail corrections for energy and pressure beyond the cutoff
+//! - Newton's third law optimization (half neighbor list)
+//!
+//! ## TOML Configuration
+//!
+//! ```toml
+//! [lj]
+//! epsilon = 1.0          # well depth ε (energy units), default: 1.0
+//! sigma = 1.0            # particle diameter σ (length units), default: 1.0
+//! cutoff = 2.5           # cutoff distance in units of σ, default: 2.5
+//!
+//! # Optional: mixing rule for multi-type ("geometric" or "arithmetic")
+//! # mixing = "geometric"
+//!
+//! # Optional: per-type parameters (enables multi-type mode)
+//! # [[lj.types]]
+//! # epsilon = 1.0
+//! # sigma = 1.0
+//! #
+//! # [[lj.types]]
+//! # epsilon = 0.5
+//! # sigma = 1.2
+//!
+//! # Optional: explicit pair coefficient overrides
+//! # [[lj.pair_coeffs]]
+//! # types = [0, 1]
+//! # epsilon = 0.8
+//! # sigma = 1.1
+//! # cutoff = 3.0          # optional per-pair cutoff (in σ units)
+//! ```
+//!
+//! ## Usage
+//!
+//! Register the [`LJForcePlugin`] with your app:
+//!
+//! ```rust,ignore
+//! app.add_plugins(LJForcePlugin);
+//! ```
+//!
+//! The plugin depends on `NeighborPlugin` and automatically registers the
+//! [`VirialStressPlugin`](mddem_core::VirialStressPlugin) for pressure computation.
 
 use std::f64::consts::PI;
 
@@ -21,26 +80,61 @@ fn default_cutoff() -> f64 {
     2.5
 }
 
+/// TOML configuration for the Lennard-Jones 12-6 pair potential.
+///
+/// Parsed from the `[lj]` section of the simulation config file.
+/// Supports both single-type mode (using top-level `epsilon`/`sigma`) and
+/// multi-type mode (using the `types` array with optional `mixing` rule).
+///
+/// # Example
+///
+/// Single-type (default):
+/// ```toml
+/// [lj]
+/// epsilon = 1.0
+/// sigma = 1.0
+/// cutoff = 2.5
+/// ```
+///
+/// Multi-type with mixing:
+/// ```toml
+/// [lj]
+/// cutoff = 2.5
+/// mixing = "geometric"
+///
+/// [[lj.types]]
+/// epsilon = 1.0
+/// sigma = 1.0
+///
+/// [[lj.types]]
+/// epsilon = 0.5
+/// sigma = 1.2
+/// ```
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-/// TOML `[lj]` — Lennard-Jones potential parameters.
 pub struct LJConfig {
-    /// Well depth (energy units). Used as default for single-type mode.
+    /// Well depth ε (energy units). Default: `1.0`.
+    /// Used in single-type mode; ignored when `types` is present.
     #[serde(default = "default_epsilon")]
     pub epsilon: f64,
-    /// Particle diameter (length units). Used as default for single-type mode.
+    /// Particle diameter σ (length units). Default: `1.0`.
+    /// Used in single-type mode; ignored when `types` is present.
     #[serde(default = "default_sigma")]
     pub sigma: f64,
-    /// Cutoff distance in units of sigma.
+    /// Cutoff distance in units of σ. Default: `2.5`.
+    /// Applied to all pairs unless overridden in `pair_coeffs`.
     #[serde(default = "default_cutoff")]
     pub cutoff: f64,
-    /// Mixing rule for multi-type: "geometric" or "arithmetic".
+    /// Mixing rule for cross-type interactions: `"geometric"` (default) or `"arithmetic"`.
+    /// Only relevant when `types` is present.
     #[serde(default)]
     pub mixing: Option<String>,
-    /// Per-type LJ parameters. If present, enables multi-type mode.
+    /// Per-type LJ parameters. When present, enables multi-type mode
+    /// and the top-level `epsilon`/`sigma` are ignored.
     #[serde(default)]
     pub types: Option<Vec<LJTypeConfig>>,
-    /// Explicit pair coefficient overrides.
+    /// Explicit pair coefficient overrides that bypass mixing rules.
+    /// Each entry specifies the two type indices and their LJ parameters.
     #[serde(default)]
     pub pair_coeffs: Option<Vec<LJPairOverride>>,
 }
@@ -59,20 +153,32 @@ impl Default for LJConfig {
 }
 
 /// Per-type LJ parameters from `[[lj.types]]`.
+///
+/// Each entry defines ε and σ for one atom type. The index in the array
+/// corresponds to the atom type index (0-based).
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct LJTypeConfig {
+    /// Well depth ε for this type (energy units).
     pub epsilon: f64,
+    /// Particle diameter σ for this type (length units).
     pub sigma: f64,
 }
 
-/// Explicit pair override from `[[lj.pair_coeffs]]`.
+/// Explicit pair coefficient override from `[[lj.pair_coeffs]]`.
+///
+/// Allows specifying exact ε, σ, and optionally a per-pair cutoff for a
+/// specific type pair, bypassing the mixing rule.
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct LJPairOverride {
+    /// The two atom type indices (0-based) this override applies to.
     pub types: [usize; 2],
+    /// Well depth ε for this pair (energy units).
     pub epsilon: f64,
+    /// Particle diameter σ for this pair (length units).
     pub sigma: f64,
+    /// Optional per-pair cutoff in units of σ. Falls back to the global `cutoff` if absent.
     #[serde(default)]
     pub cutoff: Option<f64>,
 }
@@ -80,15 +186,26 @@ pub struct LJPairOverride {
 // ── Precomputed pair coefficients ───────────────────────────────────────────
 
 /// Precomputed LJ pair coefficients for fast inner-loop evaluation.
+///
+/// The force between two particles at distance `r` is computed as:
+///
+/// ```text
+///   F(r) = r⁻² × r⁻⁶ × (lj1 × r⁻⁶ − lj2)
+/// ```
+///
+/// where `lj1 = 48εσ¹²` and `lj2 = 24εσ⁶`. This avoids recomputing powers
+/// of σ on every pair interaction.
 #[derive(Clone)]
 pub struct LJPairCoeffs {
-    /// 48 * eps * sigma^12
+    /// `48 × ε × σ¹²` — coefficient for the repulsive r⁻¹² term.
     pub lj1: f64,
-    /// 24 * eps * sigma^6
+    /// `24 × ε × σ⁶` — coefficient for the attractive r⁻⁶ term.
     pub lj2: f64,
-    /// cutoff^2 (in absolute length units)
+    /// Squared cutoff distance `(cutoff × σ)²` in absolute length units.
     pub cutoff2: f64,
+    /// Original ε value, retained for tail correction calculations.
     pub epsilon: f64,
+    /// Original σ value, retained for tail correction calculations.
     pub sigma: f64,
 }
 
@@ -105,6 +222,11 @@ impl Default for LJPairCoeffs {
 }
 
 impl LJPairCoeffs {
+    /// Create precomputed coefficients from physical parameters.
+    ///
+    /// - `epsilon`: well depth ε (energy units)
+    /// - `sigma`: particle diameter σ (length units)
+    /// - `cutoff_sigma`: cutoff distance in units of σ
     pub fn from_params(epsilon: f64, sigma: f64, cutoff_sigma: f64) -> Self {
         let sigma6 = (sigma * sigma).powi(3);
         LJPairCoeffs {
@@ -117,14 +239,28 @@ impl LJPairCoeffs {
     }
 }
 
-/// Wrapper resource for the LJ pair coefficient table.
+/// Wrapper resource holding the symmetric pair coefficient table for all LJ type pairs.
 pub struct LJPairTable(pub PairCoeffTable<LJPairCoeffs>);
 
 // ── Resources ───────────────────────────────────────────────────────────────
 
 /// Long-range tail corrections for energy and pressure beyond the LJ cutoff.
+///
+/// Because the LJ potential is truncated at `r_c`, the contributions from
+/// pairs beyond the cutoff are approximated analytically assuming a uniform
+/// pair distribution function g(r) = 1 for r > r_c:
+///
+/// ```text
+///   E_tail = (8/3) π N ρ ε σ³ [ σ⁹/(3 r_c⁹) − σ³/r_c³ ]
+///   P_tail = (16/3) π ρ² ε σ³ [ 2σ⁹/(3 r_c⁹) − σ³/r_c³ ]
+/// ```
+///
+/// These corrections are computed once during setup and added to thermodynamic
+/// output quantities.
 pub struct LJTailCorrections {
+    /// Total tail correction to energy (energy units).
     pub energy_tail: f64,
+    /// Tail correction to pressure (pressure units).
     pub pressure_tail: f64,
 }
 
@@ -139,7 +275,18 @@ impl Default for LJTailCorrections {
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
-/// Registers LJ 12-6 pair force, virial accumulator, and tail correction systems.
+/// Plugin that registers the LJ 12-6 pair force, virial accumulator, and tail corrections.
+///
+/// # Dependencies
+///
+/// Requires `NeighborPlugin` for neighbor list construction.
+/// Automatically registers [`VirialStressPlugin`](mddem_core::VirialStressPlugin).
+///
+/// # Systems
+///
+/// - **`build_lj_pair_table`** (Setup): builds the pair coefficient table from config
+/// - **`setup_lj_tails`** (PostSetup, first stage only): computes long-range tail corrections
+/// - **`lj_force`** (Force): evaluates pair forces and accumulates virial stress
 pub struct LJForcePlugin;
 
 impl Plugin for LJForcePlugin {
@@ -160,7 +307,7 @@ cutoff = 2.5     # in sigma units"#,
         Config::load::<LJConfig>(app, "lj");
 
         app.add_plugins(VirialStressPlugin);
-        // Add a default 1x1 pair table; build_lj_pair_table will replace it.
+        // Add a default 1×1 pair table; build_lj_pair_table will replace it during setup.
         let mut default_table = PairCoeffTable::new(1, LJPairCoeffs::default());
         default_table.set(0, 0, LJPairCoeffs::from_params(1.0, 1.0, 2.5));
         app.add_resource(LJPairTable(default_table));
@@ -179,6 +326,11 @@ cutoff = 2.5     # in sigma units"#,
 
 // ── Pair table construction ─────────────────────────────────────────────────
 
+/// Builds the LJ pair coefficient table from the `[lj]` config section.
+///
+/// In multi-type mode, applies the configured mixing rule to compute cross-type
+/// parameters, then applies any explicit `pair_coeffs` overrides. In single-type
+/// mode, uses the top-level `epsilon` and `sigma` directly.
 pub fn build_lj_pair_table(
     lj: Res<LJConfig>,
     mut atoms: ResMut<Atom>,
@@ -191,6 +343,7 @@ pub fn build_lj_pair_table(
     };
 
     if let Some(ref types) = lj.types {
+        // Multi-type mode: build NxN pair table using mixing rules
         let n = types.len();
         atoms.ntypes = n;
         let mut table = PairCoeffTable::new(n, LJPairCoeffs::default());
@@ -209,7 +362,7 @@ pub fn build_lj_pair_table(
             }
         }
 
-        // Apply explicit overrides
+        // Apply explicit pair coefficient overrides (bypass mixing rules)
         if let Some(ref overrides) = lj.pair_coeffs {
             for ov in overrides {
                 let cut = ov.cutoff.unwrap_or(lj.cutoff);
@@ -222,7 +375,7 @@ pub fn build_lj_pair_table(
         }
         pair_table_res.0 = table;
     } else {
-        // Single-type legacy mode
+        // Single-type mode: 1×1 table from top-level epsilon/sigma
         atoms.ntypes = 1;
         let mut table = PairCoeffTable::new(1, LJPairCoeffs::default());
         table.set(0, 0, LJPairCoeffs::from_params(lj.epsilon, lj.sigma, lj.cutoff));
@@ -232,6 +385,15 @@ pub fn build_lj_pair_table(
 
 // ── Systems ─────────────────────────────────────────────────────────────────
 
+/// Computes long-range tail corrections for energy and pressure.
+///
+/// These analytical corrections account for the truncation of the LJ potential
+/// at the cutoff distance, assuming a uniform radial distribution function
+/// g(r) = 1 for r > r_c.
+///
+/// For multi-type systems, assumes an equimolar (uniform) type distribution.
+/// A warning is printed for non-single-type systems since the correction is
+/// approximate for non-equimolar mixtures.
 pub fn setup_lj_tails(
     lj: Res<LJConfig>,
     atoms: Res<Atom>,
@@ -242,7 +404,7 @@ pub fn setup_lj_tails(
 ) {
     let n = comm.all_reduce_sum_f64(atoms.nlocal as f64);
     let v = domain.volume;
-    let rho = n / v;
+    let rho = n / v; // number density
 
     let pair_table = &pair_table_res.0;
     let ntypes = pair_table.ntypes();
@@ -250,8 +412,8 @@ pub fn setup_lj_tails(
     let mut e_tail = 0.0;
     let mut p_tail = 0.0;
 
-    // For simplicity, assume uniform type distribution when multi-type.
-    // Single-type case: frac = 1.0, so result is identical to original.
+    // Assume uniform type distribution: each type has fraction 1/ntypes.
+    // For single-type, frac = 1.0, so the result is exact.
     let frac = 1.0 / ntypes as f64;
 
     for i in 0..ntypes {
@@ -264,9 +426,14 @@ pub fn setup_lj_tails(
             let sigma6 = sigma3 * sigma3;
             let sigma9 = sigma6 * sigma3;
 
+            // Weight by type fraction squared (x_i * x_j) for the pair contribution
             let w = frac * frac;
+
+            // E_tail = (8/3) π N ρ ε σ³ [ σ⁹/(3 r_c⁹) − σ³/r_c³ ]
             e_tail += w * (8.0 / 3.0) * PI * n * rho * c.epsilon * sigma3
                 * (sigma9 / (3.0 * rc9) - sigma3 / rc3);
+
+            // P_tail = (16/3) π ρ² ε σ³ [ 2σ⁹/(3 r_c⁹) − σ³/r_c³ ]
             p_tail += w * (16.0 / 3.0) * PI * rho * rho * c.epsilon * sigma3
                 * (2.0 * sigma9 / (3.0 * rc9) - sigma3 / rc3);
         }
@@ -297,6 +464,27 @@ pub fn setup_lj_tails(
     }
 }
 
+/// Evaluates LJ 12-6 pair forces for all local atoms using the neighbor list.
+///
+/// Uses Newton's third law (half neighbor list): each pair (i, j) is visited once,
+/// and forces are applied to both atoms. When virial stress tracking is active,
+/// the virial tensor components are accumulated simultaneously.
+///
+/// # Force computation
+///
+/// For each pair within the cutoff:
+/// ```text
+///   r²_inv = 1 / r²
+///   r⁶_inv = r²_inv³
+///   F_pair = r²_inv × r⁶_inv × (lj1 × r⁶_inv − lj2)
+///   F_ij   = −F_pair × Δr
+/// ```
+///
+/// # Safety
+///
+/// Uses raw pointer arithmetic for performance in the inner loop. This is safe
+/// because neighbor list indices are guaranteed to be within bounds by the
+/// neighbor list builder.
 pub fn lj_force(
     mut atoms: ResMut<Atom>,
     neighbor: Res<Neighbor>,
@@ -309,6 +497,7 @@ pub fn lj_force(
     let nlocal = atoms.nlocal as usize;
     let multi_type = pair_table.ntypes() > 1;
 
+    // Raw pointers for inner-loop performance (avoids bounds checks)
     let pos_ptr = atoms.pos.as_ptr();
     let force_ptr = atoms.force.as_mut_ptr();
     let offsets_ptr = neighbor.neighbor_offsets.as_ptr();
@@ -318,6 +507,7 @@ pub fn lj_force(
     let virial_active = virial.as_ref().map_or(false, |v| v.active);
 
     if virial_active {
+        // Force loop with virial stress accumulation
         let mut vxx = 0.0f64;
         let mut vyy = 0.0f64;
         let mut vzz = 0.0f64;
@@ -351,6 +541,7 @@ pub fn lj_force(
                     continue;
                 }
 
+                // LJ force: F = r⁻² × r⁻⁶ × (48εσ¹² × r⁻⁶ − 24εσ⁶)
                 let r2inv = 1.0 / r2;
                 let r6inv = r2inv * r2inv * r2inv;
                 let fpair = r2inv * r6inv * c.lj1.mul_add(r6inv, -c.lj2);
@@ -358,6 +549,8 @@ pub fn lj_force(
                 let fx = -fpair * dx;
                 let fy = -fpair * dy;
                 let fz = -fpair * dz;
+
+                // Virial: W_αβ = Σ r_α × F_β (summed over all pairs)
                 vxx += dx * fx;
                 vyy += dy * fy;
                 vzz += dz * fz;
@@ -365,6 +558,7 @@ pub fn lj_force(
                 vxz += dx * fz;
                 vyz += dy * fz;
 
+                // Newton's third law: equal and opposite forces
                 fi[0] += fx;
                 fi[1] += fy;
                 fi[2] += fz;
@@ -385,6 +579,7 @@ pub fn lj_force(
             virial.yz += vyz;
         }
     } else {
+        // Force-only loop (no virial accumulation)
         for i in 0..nlocal {
             let pi = unsafe { *pos_ptr.add(i) };
             let mut fi = unsafe { *force_ptr.add(i) };
@@ -411,10 +606,12 @@ pub fn lj_force(
                     continue;
                 }
 
+                // LJ force: F = r⁻² × r⁻⁶ × (48εσ¹² × r⁻⁶ − 24εσ⁶)
                 let r2inv = 1.0 / r2;
                 let r6inv = r2inv * r2inv * r2inv;
                 let fpair = r2inv * r6inv * c.lj1.mul_add(r6inv, -c.lj2);
 
+                // Newton's third law: equal and opposite forces
                 fi[0] = (-fpair).mul_add(dx, fi[0]);
                 fi[1] = (-fpair).mul_add(dy, fi[1]);
                 fi[2] = (-fpair).mul_add(dz, fi[2]);
