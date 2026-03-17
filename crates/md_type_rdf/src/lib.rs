@@ -28,6 +28,32 @@
 //! Each entry produces a separate output file: `data/type_rdf_0_0.txt`,
 //! `data/type_rdf_0_1.txt`, etc.
 //!
+//! # Config fields
+//!
+//! | Field             | Type  | Default | Description                          |
+//! |-------------------|-------|---------|--------------------------------------|
+//! | `type_i`          | u32   | 0       | First atom type index for the pair   |
+//! | `type_j`          | u32   | 0       | Second atom type index for the pair  |
+//! | `bins`            | usize | 200     | Number of histogram bins             |
+//! | `cutoff`          | f64   | 3.0     | RDF cutoff distance (length units)   |
+//! | `interval`        | usize | 100     | Accumulate histogram every N steps   |
+//! | `output_interval` | usize | 1000    | Write output file every N steps      |
+//!
+//! # Output format
+//!
+//! Each output file is a two-column text file with a header:
+//!
+//! ```text
+//! # Type-filtered RDF: types (0, 1), 10 samples
+//! # r g(r)
+//! 0.007500 0.000000
+//! 0.022500 0.000000
+//! ...
+//! ```
+//!
+//! The `r` column is the bin center and `g(r)` is the time-averaged pair
+//! correlation function. For an ideal gas, g(r) = 1.0 at all distances.
+//!
 //! # Relationship to `md_measure`
 //!
 //! The existing [`md_measure`] crate computes a single global RDF over all
@@ -68,25 +94,31 @@ fn default_type_rdf_output_interval() -> usize {
 /// Configuration for a single type-filtered RDF measurement.
 ///
 /// Each `[[type_rdf]]` entry in the TOML config produces one of these.
+/// When `type_i == type_j`, the RDF measures same-type correlations (e.g.,
+/// solvent–solvent). When `type_i != type_j`, it measures cross-type
+/// correlations (e.g., solvent–solute). The order does not matter:
+/// `(type_i=0, type_j=1)` and `(type_i=1, type_j=0)` produce identical results.
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct TypeRdfEntry {
-    /// First atom type index for the RDF pair.
+    /// First atom type index for the RDF pair (default: `0`).
     #[serde(default)]
     pub type_i: u32,
-    /// Second atom type index for the RDF pair.
+    /// Second atom type index for the RDF pair (default: `0`).
     #[serde(default)]
     pub type_j: u32,
-    /// Number of histogram bins.
+    /// Number of histogram bins (default: `200`). More bins give finer radial
+    /// resolution but noisier curves for small systems.
     #[serde(default = "default_type_rdf_bins")]
     pub bins: usize,
-    /// RDF cutoff distance.
+    /// RDF cutoff distance in simulation length units (default: `3.0`).
+    /// Should not exceed half the smallest periodic box dimension.
     #[serde(default = "default_type_rdf_cutoff")]
     pub cutoff: f64,
-    /// Accumulate RDF every N steps.
+    /// Accumulate the RDF histogram every N timesteps (default: `100`).
     #[serde(default = "default_type_rdf_interval")]
     pub interval: usize,
-    /// Write output every N steps.
+    /// Write the averaged g(r) to disk every N timesteps (default: `1000`).
     #[serde(default = "default_type_rdf_output_interval")]
     pub output_interval: usize,
 }
@@ -121,27 +153,34 @@ impl Default for TypeRdfConfig {
 
 // ── Resources ───────────────────────────────────────────────────────────────
 
-/// Accumulates type-filtered radial distribution function histogram for one type pair.
+/// Accumulates the type-filtered radial distribution function histogram for one
+/// (type_i, type_j) pair.
+///
+/// Each bin stores the *cumulative* normalized g(r) contribution across all
+/// samples. To obtain the time-averaged g(r), divide each bin value by
+/// [`n_samples`](Self::n_samples).
 pub struct TypeRdfAccumulator {
-    /// Histogram bins (unnormalized, accumulated across samples).
+    /// Histogram bins storing cumulative g(r) contributions (divide by
+    /// `n_samples` for the time-averaged g(r)).
     pub bins: Vec<f64>,
-    /// Number of accumulated samples.
+    /// Number of accumulated RDF samples so far.
     pub n_samples: usize,
-    /// Bin width.
+    /// Bin width in simulation length units: `cutoff / num_bins`.
     pub dr: f64,
-    /// Cutoff distance.
+    /// RDF cutoff distance in simulation length units.
     pub cutoff: f64,
-    /// Atom type i.
+    /// First atom type index for this pair.
     pub type_i: u32,
-    /// Atom type j.
+    /// Second atom type index for this pair.
     pub type_j: u32,
-    /// Accumulate every N steps.
+    /// Accumulate the histogram every N timesteps.
     pub interval: usize,
-    /// Write output every N steps.
+    /// Write output every N timesteps.
     pub output_interval: usize,
 }
 
 impl TypeRdfAccumulator {
+    /// Create a new accumulator from a config entry, with all bins zeroed.
     fn new(entry: &TypeRdfEntry) -> Self {
         TypeRdfAccumulator {
             bins: vec![0.0; entry.bins],
@@ -401,9 +440,20 @@ pub fn accumulate_type_rdf(
         let n_j = comm.all_reduce_sum_f64(n_type_j_local);
         let v = domain.volume;
 
-        // Normalize: g(r) = hist[k] * V / (N_pairs * 4*pi*r^2*dr)
-        // For same-type: N_pairs = N_i * (N_i - 1) / 2
-        // For cross-type: N_pairs = N_i * N_j
+        // ── Normalization ──
+        //
+        // The radial distribution function is defined as:
+        //   g(r) = (V / N_pairs) * n(r) / (4π r² dr)
+        //
+        // where n(r) is the number of pairs in the shell [r, r+dr], V is
+        // the box volume, and N_pairs is the total number of distinct
+        // type-matched pairs:
+        //   same-type:  N_pairs = N_i * (N_i - 1) / 2
+        //   cross-type: N_pairs = N_i * N_j
+        //
+        // We use the exact shell volume 4π/3 * (r_high³ - r_low³) instead
+        // of the thin-shell approximation 4π r² dr for better accuracy at
+        // small r where dr/r is not negligible.
         let n_pairs = if same_type {
             n_i * (n_i - 1.0) / 2.0
         } else {
@@ -422,7 +472,11 @@ pub fn accumulate_type_rdf(
     }
 }
 
-/// Write type-filtered RDF to `data/type_rdf_<i>_<j>.txt` for each configured pair.
+/// Write the time-averaged type-filtered g(r) to disk for each configured pair.
+///
+/// Output path: `<output_dir>/data/type_rdf_<type_i>_<type_j>.txt`.
+/// Only rank 0 writes. Each write overwrites the previous file, so the file
+/// always contains the latest cumulative average.
 pub fn write_type_rdf(
     run_state: Res<RunState>,
     accumulators: Res<TypeRdfAccumulators>,
@@ -460,7 +514,9 @@ pub fn write_type_rdf(
             writeln!(f, "# r g(r)").ok();
             let n_bins = acc.bins.len();
             for k in 0..n_bins {
+                // Bin center: midpoint of [k*dr, (k+1)*dr]
                 let r = (k as f64 + 0.5) * acc.dr;
+                // Time-averaged g(r) = cumulative g(r) / number of samples
                 let gr = acc.bins[k] / acc.n_samples as f64;
                 writeln!(f, "{:.6} {:.6}", r, gr).ok();
             }
