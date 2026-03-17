@@ -1,3 +1,20 @@
+//! Granular temperature output — measures velocity fluctuations in the system.
+//!
+//! Granular temperature `T_g` quantifies the kinetic energy of velocity fluctuations
+//! (deviations from the mean flow velocity):
+//!
+//! ```text
+//! T_g = Σ m_i |v_i - v_mean|² / (3 M_total)
+//! ```
+//!
+//! This module writes `T_g`, total kinetic energy, and total momentum magnitude
+//! to `data/GranularTemp.txt` at each thermo output interval. The file is
+//! truncated at step 0 and appended thereafter.
+//!
+//! # Output format
+//!
+//! Each line: `step  time  T_granular  KE_total  |p_total|`
+
 use std::{
     fs::{self, OpenOptions},
     io::Write,
@@ -8,7 +25,11 @@ use mddem_scheduler::prelude::*;
 
 use mddem_core::{Atom, CommResource, Input, RunConfig, RunState};
 
-/// Writes granular temperature (average KE per particle) to a data file each thermo interval.
+/// Plugin that outputs granular temperature to `data/GranularTemp.txt`.
+///
+/// Registers [`print_granular_temperature`] at [`ScheduleSet::PreExchange`],
+/// writing one line per thermo interval with step, time, granular temperature,
+/// total kinetic energy, and total momentum magnitude.
 pub struct GranularTempPlugin;
 
 impl Plugin for GranularTempPlugin {
@@ -17,6 +38,9 @@ impl Plugin for GranularTempPlugin {
     }
 }
 
+/// Compute and write granular temperature, KE, and momentum to file.
+///
+/// All ranks participate in the allreduce; only rank 0 writes the file.
 pub fn print_granular_temperature(
     atoms: Res<Atom>,
     run_state: Res<RunState>,
@@ -88,13 +112,13 @@ pub fn print_granular_temperature(
             .write(true)
             .truncate(true)
             .open(&data_path)
-            .unwrap()
+            .expect("failed to create GranularTemp.txt — check output directory permissions")
     } else {
         OpenOptions::new()
             .create(true)
             .append(true)
             .open(&data_path)
-            .unwrap()
+            .expect("failed to open GranularTemp.txt for append — check file permissions")
     };
 
     writeln!(
@@ -102,5 +126,5 @@ pub fn print_granular_temperature(
         "{} {:.6e} {:.10e} {:.10e} {:.10e}",
         run_state.total_cycle, physical_time, granular_temperature, global_ke, mom_mag
     )
-    .unwrap();
+    .expect("failed to write to GranularTemp.txt — disk may be full");
 }

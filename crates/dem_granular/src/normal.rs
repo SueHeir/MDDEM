@@ -1,3 +1,22 @@
+//! Standalone Hertz normal contact force (without tangential friction).
+//!
+//! This module provides a normal-only Hertz contact force for cases where
+//! tangential friction is not needed. For full contact physics including
+//! tangential, rolling, and twisting, use [`crate::contact::HertzMindlinContactPlugin`].
+//!
+//! # Physics
+//!
+//! The Hertz contact force for two elastic spheres with overlap `δ`:
+//!
+//! - Elastic stiffness: `k_n = 4/3 E* √(R* δ)`
+//! - Spring force: `F_spring = k_n δ`
+//! - Damping force: `F_damp = 2 β √(5/3) √(S_n m_r) v_n`
+//! - Net force: `F_n = max(F_spring - F_damp, 0)` (no tensile normal force)
+//!
+//! where `E*` is the effective Young's modulus, `R*` is the effective radius,
+//! `β` is the damping coefficient (derived from restitution), `S_n = 2 E* √(R* δ)`,
+//! and `m_r` is the reduced mass.
+
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 
@@ -7,7 +26,11 @@ use mddem_neighbor::Neighbor;
 
 use crate::{LARGE_OVERLAP_WARN_THRESHOLD, MAX_OVERLAP_WARNINGS, SQRT_5_3};
 
-/// Hertz elastic contact force with viscoelastic normal damping.
+/// Standalone Hertz elastic normal contact force plugin.
+///
+/// Registers the [`hertz_normal_force`] system at [`ScheduleSet::Force`].
+/// Does **not** include tangential friction, rolling, or twisting — for full
+/// contact physics use [`crate::contact::HertzMindlinContactPlugin`].
 pub struct HertzNormalForcePlugin;
 
 impl Plugin for HertzNormalForcePlugin {
@@ -16,6 +39,11 @@ impl Plugin for HertzNormalForcePlugin {
     }
 }
 
+/// Compute Hertz elastic normal contact forces for all neighbor pairs.
+///
+/// For each overlapping pair, computes the repulsive normal force from Hertz
+/// contact theory with viscoelastic damping. Forces are accumulated into
+/// `atoms.force` with Newton's third law (equal and opposite).
 pub fn hertz_normal_force(
     mut atoms: ResMut<Atom>,
     neighbor: Res<Neighbor>,
@@ -84,24 +112,35 @@ pub fn hertz_normal_force(
         let mat_i = atoms.atom_type[i] as usize;
         let mat_j = atoms.atom_type[j] as usize;
 
+        // Effective radius: R* = R1 R2 / (R1 + R2)
         let r_eff = (r1 * r2) / (r1 + r2);
+        // Effective Young's modulus: 1/E* = (1-ν1²)/E1 + (1-ν2²)/E2
         let e_eff = material_table.e_eff_ij[mat_i][mat_j];
 
+        // √(δ R*) appears in both stiffness and damping terms
         let sqrt_dr = (delta * r_eff).sqrt();
+        // Normal stiffness parameter: S_n = 2 E* √(δ R*)
         let s_n = 2.0 * e_eff * sqrt_dr;
+        // Hertz spring constant: k_n = 4/3 E* √(δ R*)
         let k_n = 4.0 / 3.0 * e_eff * sqrt_dr;
 
+        // Reduced mass: m_r = m1 m2 / (m1 + m2) = 1 / (1/m1 + 1/m2)
         let m_r = 1.0 / (atoms.inv_mass[i] + atoms.inv_mass[j]);
 
+        // Relative velocity (j relative to i) projected onto contact normal
         let vrx = atoms.vel[j][0] - atoms.vel[i][0];
         let vry = atoms.vel[j][1] - atoms.vel[i][1];
         let vrz = atoms.vel[j][2] - atoms.vel[i][2];
         let v_n = vrx*nx + vry*ny + vrz*nz;
 
+        // Damping coefficient: β = ln(e) / √(ln²(e) + π²) where e = restitution
         let beta = material_table.beta_ij[mat_i][mat_j];
 
+        // F_spring = k_n δ (repulsive, proportional to overlap)
         let f_spring = k_n * delta;
+        // F_damp = 2 β √(5/3) √(S_n m_r) v_n (dissipative, proportional to approach velocity)
         let f_diss = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
+        // Net force clamped to ≥ 0 (no tensile normal force without adhesion)
         let f_net = (f_spring - f_diss).max(0.0);
 
         let fx = f_net * nx;

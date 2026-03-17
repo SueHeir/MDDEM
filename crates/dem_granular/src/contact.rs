@@ -1,7 +1,37 @@
-//! Fused Hertz-Mindlin contact force: computes normal and tangential forces in a single
-//! pair loop, eliminating redundant shared computation (distance, material lookups, Hertz
-//! stiffness, normal force magnitude).
-
+//! Fused Hertz-Mindlin contact force computation.
+//!
+//! This is the primary contact force module and the recommended code path for DEM
+//! simulations. It computes normal, tangential, rolling, and twisting forces in a
+//! **single pair loop**, eliminating redundant computation of shared quantities
+//! (distance, material lookups, Hertz stiffness, normal force magnitude).
+//!
+//! # Supported models
+//!
+//! | Component   | Models                                    |
+//! |-------------|-------------------------------------------|
+//! | Normal      | Hertz (nonlinear), Hooke (linear)         |
+//! | Tangential  | Mindlin incremental spring + Coulomb cap  |
+//! | Rolling     | Constant torque, SDS (spring-dashpot-slider) |
+//! | Twisting    | Constant torque, SDS (spring-dashpot-slider) |
+//! | Adhesion    | JKR, DMT                                  |
+//! | Cohesion    | SJKR (area-proportional)                  |
+//!
+//! # Contact detection
+//!
+//! Two particles are in contact when their geometric overlap `δ = R1 + R2 - d > 0`.
+//! With JKR adhesion, the interaction range extends beyond geometric contact by a
+//! pull-off distance derived from the surface energy and elastic properties.
+//!
+//! # TOML configuration
+//!
+//! The contact model is selected via `contact_model` in the `[materials]` section:
+//!
+//! ```toml
+//! [materials]
+//! contact_model = "hertz"  # or "hooke"
+//! ```
+//!
+//! See the [crate-level documentation](crate) for the full material parameter list.
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
@@ -43,7 +73,7 @@ impl Plugin for HertzMindlinContactPlugin {
                     ScheduleSet::Force,
                 );
             }
-            "hertz" | _ => {
+            _ => {
                 app.add_update_system(
                     hertz_mindlin_contact_force.label("hertz_mindlin_contact"),
                     ScheduleSet::Force,
@@ -53,6 +83,16 @@ impl Plugin for HertzMindlinContactPlugin {
     }
 }
 
+/// Fused Hertz-Mindlin contact force for all neighbor pairs.
+///
+/// Computes normal (Hertz), tangential (Mindlin), rolling, and twisting forces
+/// in a single pass over the neighbor list. Supports JKR/DMT adhesion and SJKR
+/// cohesion. Forces and torques are accumulated with Newton's third law symmetry.
+///
+/// # Panics
+///
+/// Panics if more than [`MAX_OVERLAP_WARNINGS`] pairs have excessive overlap
+/// in a single timestep, indicating an unstable simulation.
 pub fn hertz_mindlin_contact_force(
     mut atoms: ResMut<Atom>,
     neighbor: Res<Neighbor>,
@@ -74,9 +114,6 @@ pub fn hertz_mindlin_contact_force(
 
     let nlocal = atoms.nlocal as usize;
     let mut overlap_warnings = 0usize;
-
-    let _has_bonds = bond_store.is_some();
-    let _virial_active = virial.as_ref().map_or(false, |v| v.active);
 
     // Reset all active flags before pair loop
     for i in 0..nlocal {
@@ -121,8 +158,11 @@ pub fn hertz_mindlin_contact_force(
 
         // JKR: compute pull-off distance for extended interaction range
         // DMT: no extended range (particles separate at delta = 0)
+        // Effective radius: R* = R1 R2 / (R1 + R2)
         let r_eff = (r1 * r2) / sum_r;
+        // Effective Young's modulus: 1/E* = (1-ν1²)/E1 + (1-ν2²)/E2
         let e_eff = material_table.e_eff_ij[mat_i][mat_j];
+        // JKR pull-off distance: particles interact beyond geometric contact
         let delta_pulloff = if surface_energy > 0.0 && !use_dmt {
             let gamma = surface_energy;
             (std::f64::consts::PI * std::f64::consts::PI * gamma * gamma * r_eff
@@ -182,8 +222,10 @@ pub fn hertz_mindlin_contact_force(
         let ny = dy * inv_dist;
         let nz = dz * inv_dist;
 
+        // Effective shear modulus: 1/G* = (2-ν1)/G1 + (2-ν2)/G2
         let g_eff = material_table.g_eff_ij[mat_i][mat_j];
 
+        // Reduced mass: m_r = 1 / (1/m1 + 1/m2)
         let m_r = 1.0 / (atoms.inv_mass[i] + atoms.inv_mass[j]);
 
         let beta = material_table.beta_ij[mat_i][mat_j];
@@ -196,7 +238,10 @@ pub fn hertz_mindlin_contact_force(
         // DMT has no adhesion-only regime (no force beyond contact)
         let jkr_adhesion_only = surface_energy > 0.0 && !use_dmt && delta <= 0.0;
 
-        // Hertz stiffness (only meaningful when delta > 0)
+        // Hertz stiffness parameters (only meaningful when δ > 0)
+        // S_n = 2 E* √(R* δ)  — normal stiffness parameter (used in damping)
+        // k_n = 4/3 E* √(R* δ) — normal spring constant
+        // k_t = 8 G* √(R* δ)  — tangential spring constant (Mindlin)
         let (s_n, k_n, k_t) = if delta > 0.0 {
             let sdr = (delta * r_eff).sqrt();
             let sn = 2.0 * e_eff * sdr;
@@ -238,28 +283,31 @@ pub fn hertz_mindlin_contact_force(
         let v_n = vr_x * nx + vr_y * ny + vr_z * nz;
 
         // ── Normal force ─────────────────────────────────────────────────
+        // F_n > 0 → repulsive (along contact normal from i to j)
+        // F_n < 0 → attractive (adhesion/cohesion pulls particles together)
         let f_n_mag = if surface_energy > 0.0 && use_dmt {
-            // DMT model: pure Hertz contact + constant attractive force
+            // DMT: Hertz contact + constant adhesive force F_dmt = 2π γ R*
             let f_dmt = 2.0 * std::f64::consts::PI * surface_energy * r_eff;
             let f_diss_n = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
             k_n * delta - f_diss_n - f_dmt
         } else if surface_energy > 0.0 {
-            // JKR simplified explicit model
+            // JKR: adhesion force F_adh = 3/2 π γ R* (simplified explicit model)
             let f_adhesion = 1.5 * std::f64::consts::PI * surface_energy * r_eff;
             if jkr_adhesion_only {
-                // Adhesion-only regime: no Hertz, no damping
+                // Gap regime (δ ≤ 0): pure adhesion, no Hertz contact or damping
                 -f_adhesion
             } else {
-                // Full contact: Hertz + damping + adhesion
+                // Contact regime (δ > 0): Hertz repulsion + damping − adhesion
                 let f_diss_n = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
                 k_n * delta - f_diss_n - f_adhesion
             }
         } else if cohesion_energy > 0.0 {
-            // SJKR cohesion: contact area A = pi * delta * r_eff
+            // SJKR: cohesion proportional to contact area A = π δ R*
             let f_diss_n = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
             let f_cohesion = cohesion_energy * std::f64::consts::PI * delta * r_eff;
             k_n * delta - f_diss_n - f_cohesion // can go negative (attractive)
         } else {
+            // Standard Hertz: repulsive only (clamped to ≥ 0)
             let f_diss_n = 2.0 * beta * SQRT_5_3 * (s_n * m_r).sqrt() * v_n;
             (k_n * delta - f_diss_n).max(0.0)
         };
@@ -276,6 +324,7 @@ pub fn hertz_mindlin_contact_force(
         atoms.force[j][2] += fn_z;
 
         // ── Tangential force (skip in JKR adhesion-only regime) ──────────
+        // No tangential friction when particles are not in geometric contact
         if jkr_adhesion_only {
             // No tangential, rolling, or spring history in adhesion-only regime
             // Virial contribution from normal only
@@ -304,16 +353,19 @@ pub fn hertz_mindlin_contact_force(
             None => [0.0; 7],
         };
 
+        // Convert stored spring from canonical form to local (i,j) frame
         let mut sx = sign * stored[0];
         let mut sy = sign * stored[1];
         let mut sz = sign * stored[2];
+        // Rotate spring into current tangent plane (remove normal component)
         let s_dot_n = sx*nx + sy*ny + sz*nz;
         sx -= s_dot_n * nx; sy -= s_dot_n * ny; sz -= s_dot_n * nz;
+        // Integrate tangential velocity into spring displacement
         sx += vt_x * dt;
         sy += vt_y * dt;
         sz += vt_z * dt;
 
-        // Coulomb cap on spring
+        // Coulomb cap on spring: |k_t s| ≤ μ |F_n|
         let s_mag = (sx*sx + sy*sy + sz*sz).sqrt();
         let f_t_spring_mag = k_t * s_mag;
         let f_t_max = mu * f_n_mag.abs();
@@ -322,7 +374,7 @@ pub fn hertz_mindlin_contact_force(
             sx *= scale; sy *= scale; sz *= scale;
         }
 
-        // Tangential force with damping (gamma_t > 0, opposes sliding velocity)
+        // Tangential damping coefficient: γ_t = 2 β √(5/3) √(k_t m_r)
         let gamma_t = 2.0 * SQRT_5_3 * beta * (k_t * m_r).sqrt();
         let mut ft_x = k_t * sx - gamma_t * vt_x;
         let mut ft_y = k_t * sy - gamma_t * vt_y;
