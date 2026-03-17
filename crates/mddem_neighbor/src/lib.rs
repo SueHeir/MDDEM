@@ -1,6 +1,32 @@
-//! Neighbor list construction: brute-force, sweep-and-prune, and CSR bin-based algorithms.
+//! Neighbor list construction for particle simulations.
 //!
-//! Provides displacement-based and periodic rebuild strategies with configurable skin fraction.
+//! This crate provides three neighbor-finding strategies, each with different
+//! performance characteristics:
+//!
+//! | Strategy | Complexity | Best for |
+//! |---|---|---|
+//! | [`BruteForce`](NeighborStyle::BruteForce) | O(N²) | Tiny systems (< 100 atoms), debugging |
+//! | [`SweepAndPrune`](NeighborStyle::SweepAndPrune) | O(N log N) | Small-to-medium systems without binning |
+//! | [`Bin`](NeighborStyle::Bin) | O(N) expected | Production runs, large systems |
+//!
+//! All strategies produce a **half neighbor list** in CSR (Compressed Sparse Row)
+//! format: each local atom `i` stores its neighbor indices `j > i` (or ghost atoms)
+//! in a flat array, with offsets delimiting each atom's neighbors. Use
+//! [`Neighbor::pairs()`] to iterate over `(i, j)` pairs efficiently.
+//!
+//! # Rebuild strategies
+//!
+//! Neighbor lists are rebuilt based on configurable criteria:
+//!
+//! - **Displacement-based** (`every = 0`): rebuilds when any atom moves more than
+//!   `(skin_fraction - 1) * min_cutoff_radius` since the last build.
+//! - **Periodic** (`every = N`): rebuilds every N steps.
+//! - **Hybrid** (`every = N, check = true`): rebuilds every N steps OR on displacement,
+//!   whichever comes first (like LAMMPS `neigh_modify every N check yes`).
+//!
+//! # Configuration
+//!
+//! Configure via the `[neighbor]` TOML section (see [`NeighborConfig`]).
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
@@ -60,51 +86,98 @@ impl Default for NeighborConfig {
 }
 
 /// Algorithm used to build the neighbor list.
+///
+/// Choose based on system size and whether spatial binning overhead is worthwhile.
 pub enum NeighborStyle {
+    /// Check all N*(N-1)/2 pairs. O(N²) time, zero setup cost.
+    /// Only suitable for very small systems or correctness testing.
     BruteForce,
+    /// Sort atoms along the x-axis, then sweep to prune distant pairs.
+    /// O(N log N) from the sort, with a linear sweep. No spatial grid needed.
     SweepAndPrune,
+    /// Spatial binning with CSR (Compressed Sparse Row) layout and a precomputed
+    /// stencil of neighbor cells. O(N) expected time for uniform distributions.
+    /// Includes cache-friendly sorted position arrays and optional atom reordering.
     Bin,
 }
 
 /// Neighbor list state: pair lists, CSR indices, bin grid, and rebuild tracking.
+///
+/// The primary output is the CSR neighbor list stored in [`neighbor_offsets`](Self::neighbor_offsets)
+/// and [`neighbor_indices`](Self::neighbor_indices). Use [`pairs()`](Self::pairs) to iterate
+/// over `(i, j)` neighbor pairs.
 pub struct Neighbor {
+    /// Multiplier on pairwise cutoff: pair cutoff = `(r_i + r_j) * skin_fraction`.
+    /// Values > 1.0 add a "skin" buffer to reduce rebuild frequency.
     pub skin_fraction: f64,
+    /// Legacy pair list used by brute-force and sweep-and-prune (not used by bin strategy).
     pub neighbor_list: Vec<(usize, usize)>,
-    // Merged CSR neighbor list: neighbor_offsets[i]..neighbor_offsets[i+1] gives j indices for atom i
-    pub neighbor_offsets: Vec<u32>,    // length = nlocal + 1
-    pub neighbor_indices: Vec<u32>,   // flat j indices (all pairs, local + ghost)
+    /// CSR row offsets: `neighbor_offsets[i]..neighbor_offsets[i+1]` gives the range
+    /// of neighbor indices for local atom `i`. Length = `nlocal + 1`.
+    pub neighbor_offsets: Vec<u32>,
+    /// CSR column indices: flat array of neighbor atom indices (local or ghost).
+    pub neighbor_indices: Vec<u32>,
+    /// Scratch space for sweep-and-prune: `(atom_index, x_position)` sorted by x.
     pub sweep_and_prune: Vec<(usize, f64)>,
+    /// User-configured minimum bin size (may be increased to match cutoff).
     pub bin_min_size: f64,
+    /// Actual bin dimensions in each axis `[bx, by, bz]`, computed from domain / bin count.
     pub bin_size: [f64; 3],
+    /// Number of bins in each axis `[nx, ny, nz]` (including ghost layers).
     pub bin_count: [i32; 3],
+    /// Saved atom positions from the last neighbor build, for displacement checking.
     pub last_build_pos: Vec<[f64; 3]>,
+    /// Number of timesteps since the last neighbor list rebuild.
     pub steps_since_build: usize,
+    /// Total atom count (local + ghost) at the last neighbor build.
     pub last_build_total: usize,
-    pub pbc_box: [f64; 3],           // box dimensions for minimum-image displacement check
-    pub pbc_flags: [bool; 3],        // which axes are periodic
-    pub bin_stencil: Vec<i32>,    // flat offsets for neighbor cell stencil (full)
-    pub bin_stencil_forward: Vec<i32>, // offsets > 0 (half stencil for local-local dedup)
-    pub bin_stencil_self: bool,        // whether self-cell (offset 0) is in stencil
-    pub bin_origin: [f64; 3], // lower-left corner of bin grid (sub_domain_low - bin_size)
-    pub bin_total_cells: usize,   // nx * ny * nz (including ghost layers)
-    pub every: usize,             // rebuild every N steps (0 = displacement only)
-    pub check: bool,              // also check displacement when every > 0
-    pub ghost_cutoff: f64,        // max distance for ghost atom communication
-    pub cached_min_skin: f64,     // cached minimum skin value, computed at rebuild time
-    pub sort_every: usize,        // sort atoms by bin every N steps (0 = disabled)
-    pub sort_counter: usize,      // steps since last sort
-    // Persistent bin arrays (reused across rebuilds to avoid per-rebuild allocations)
+    /// Full simulation box dimensions `[Lx, Ly, Lz]` for minimum-image displacement checks.
+    pub pbc_box: [f64; 3],
+    /// Which axes have periodic boundary conditions.
+    pub pbc_flags: [bool; 3],
+    /// Full stencil: flat cell offsets `dx*ny*nz + dy*nz + dz` for all neighbor cells
+    /// within cutoff distance (both forward and backward).
+    pub bin_stencil: Vec<i32>,
+    /// Forward-only stencil: cell offsets with `offset > 0`, used for half-neighbor-list
+    /// construction to avoid counting each pair twice.
+    pub bin_stencil_forward: Vec<i32>,
+    /// Whether the self-cell (offset 0) passes the stencil distance test.
+    pub bin_stencil_self: bool,
+    /// Lower-left corner of the bin grid, offset by ghost layers from `sub_domain_low`.
+    pub bin_origin: [f64; 3],
+    /// Total number of bin cells: `nx * ny * nz` (including ghost layers).
+    pub bin_total_cells: usize,
+    /// Rebuild every N steps (0 = displacement-based only).
+    pub every: usize,
+    /// When true and `every > 0`, also check displacement threshold each step.
+    pub check: bool,
+    /// Communication cutoff for ghost atoms: `pair_cutoff + 2 * displacement_buffer`.
+    pub ghost_cutoff: f64,
+    /// Smallest cutoff radius among local atoms, cached at rebuild time for
+    /// displacement threshold computation.
+    pub cached_min_skin: f64,
+    /// Reorder atoms by spatial bin every N steps for cache locality (0 = disabled).
+    pub sort_every: usize,
+    /// Steps elapsed since the last spatial sort.
+    pub sort_counter: usize,
+    /// Per-atom bin cell index (reused across rebuilds to avoid allocation).
     pub bin_atom_cell: Vec<u32>,
+    /// Per-cell atom count, then reused as write cursor during CSR construction.
     pub bin_count_arr: Vec<u32>,
+    /// CSR bin offsets: `bin_start[c]..bin_start[c+1]` gives sorted atom range for cell `c`.
     pub bin_start: Vec<u32>,
+    /// Atoms sorted by bin cell (indices into the atom arrays).
     pub bin_sorted_atoms: Vec<u32>,
-    // Per-atom position in sorted_atoms array (for self-cell skip optimization)
+    /// Inverse of `bin_sorted_atoms`: position of atom `i` within `bin_sorted_atoms`.
+    /// Used for self-cell skip optimization (start scanning after atom `i`).
     pub bin_atom_sorted_idx: Vec<u32>,
-    // Sorted position cache for cache-friendly inner loop access
+    /// Positions reordered by bin for cache-friendly inner loop access.
     pub bin_sorted_pos: Vec<[f64; 3]>,
-    // Cached uniform cutoff squared (Some when all atoms have the same skin)
+    /// When all atoms share the same cutoff radius, cache `(2 * r * skin_fraction)²`
+    /// to skip per-pair cutoff computation. `None` for polydisperse systems.
     pub cached_uniform_cutoff_sq: Option<f64>,
-    // Cached max_cutoff from neighbor_setup, needed for bin recomputation on shrink-wrap
+    /// Max pairwise cutoff from `neighbor_setup`, needed when recomputing bins
+    /// after shrink-wrap domain changes.
     pub cached_max_cutoff: f64,
 }
 
@@ -115,12 +188,19 @@ impl Default for Neighbor {
 }
 
 /// Iterator over `(i, j)` neighbor pairs from the CSR neighbor list.
+///
+/// Created by [`Neighbor::pairs()`]. Yields each pair exactly once, with `i` as a
+/// local atom index and `j` as either local or ghost. Uses `unsafe` index access
+/// for performance in the inner loop (validated by CSR construction invariants).
 pub struct PairIter<'a> {
     offsets: &'a [u32],
     indices: &'a [u32],
     nlocal: usize,
+    /// Current local atom index (row in the CSR).
     i: usize,
+    /// Current position within `indices` for atom `i`'s neighbors.
     k: usize,
+    /// End position within `indices` for atom `i`'s neighbors.
     end: usize,
 }
 
@@ -169,6 +249,10 @@ impl Neighbor {
         }
     }
 
+    /// Creates a new `Neighbor` with default values.
+    ///
+    /// All arrays start empty; the bin grid and stencil are computed during
+    /// [`neighbor_setup`] after the simulation domain and atom data are available.
     pub fn new() -> Self {
         Neighbor {
             skin_fraction: 1.0,
@@ -209,21 +293,36 @@ impl Neighbor {
 
 /// Compute bin grid parameters (count, size, origin, stencil) from domain bounds and cutoff.
 ///
-/// Shared helper used by both `neighbor_setup` (initial setup) and `recompute_bins`
-/// (after shrink-wrap domain changes). Updates bin_count, bin_size, bin_origin,
-/// bin_total_cells, stencil arrays, and PBC box dimensions on `neighbor`.
+/// Shared helper used by both [`neighbor_setup`] (initial setup) and [`recompute_bins`]
+/// (after shrink-wrap domain changes). Updates `bin_count`, `bin_size`, `bin_origin`,
+/// `bin_total_cells`, stencil arrays, and PBC box dimensions on `neighbor`.
+///
+/// # Bin grid layout
+///
+/// The bin grid extends beyond the sub-domain by `sx`/`sy`/`sz` ghost layers on each
+/// side, where `s = ceil(cutoff / bin_size)`. This ensures ghost atoms (which extend
+/// up to `cutoff` beyond the sub-domain) are binned into valid cells.
+///
+/// Cell indexing is row-major: `cell = cx * ny * nz + cy * nz + cz`.
+///
+/// # Stencil construction
+///
+/// The stencil lists cell offsets `(dx, dy, dz)` whose **minimum possible distance**
+/// to the origin cell is less than the cutoff. The minimum distance between two cells
+/// offset by `d` bins is `max(0, |d| - 1) * bin_size` (since atoms can be anywhere
+/// within their cell). Only cells passing this spherical distance test are included.
 fn compute_bin_grid(neighbor: &mut Neighbor, domain: &Domain, comm_size: i32) {
     let max_cutoff = neighbor.cached_max_cutoff;
 
+    // Multi-process: bins must be at most cutoff/2 so each sub-domain has enough bins.
+    // Single-process: bins >= cutoff gives stencil range = 1 (fewer cells to check).
     let required_bin = if comm_size > 1 { max_cutoff * 0.5 } else { max_cutoff };
     let min_bin = neighbor.bin_min_size.max(required_bin);
 
-    let wbx = domain.sub_length[0] / min_bin;
-    let wby = domain.sub_length[1] / min_bin;
-    let wbz = domain.sub_length[2] / min_bin;
-    let xi = wbx.floor().max(1.0) as i32;
-    let yi = wby.floor().max(1.0) as i32;
-    let zi = wbz.floor().max(1.0) as i32;
+    // Compute number of interior bins per axis (at least 1), then actual bin sizes.
+    let xi = (domain.sub_length[0] / min_bin).floor().max(1.0) as i32;
+    let yi = (domain.sub_length[1] / min_bin).floor().max(1.0) as i32;
+    let zi = (domain.sub_length[2] / min_bin).floor().max(1.0) as i32;
 
     let actual_bin_size = [
         domain.sub_length[0] / xi as f64,
@@ -231,10 +330,12 @@ fn compute_bin_grid(neighbor: &mut Neighbor, domain: &Domain, comm_size: i32) {
         domain.sub_length[2] / zi as f64,
     ];
 
+    // Ghost layers per side: enough bins to cover the cutoff distance.
     let sx = (max_cutoff / actual_bin_size[0]).ceil() as i32;
     let sy = (max_cutoff / actual_bin_size[1]).ceil() as i32;
     let sz = (max_cutoff / actual_bin_size[2]).ceil() as i32;
 
+    // Total bins = interior + 2 * ghost layers per axis.
     let nx = xi + 2 * sx;
     let ny = yi + 2 * sy;
     let nz = zi + 2 * sz;
@@ -243,14 +344,18 @@ fn compute_bin_grid(neighbor: &mut Neighbor, domain: &Domain, comm_size: i32) {
 
     let total_cells = (nx * ny * nz) as usize;
     neighbor.bin_total_cells = total_cells;
+
+    // Bin origin = sub-domain corner shifted left by ghost layers.
     neighbor.bin_origin = [
         domain.sub_domain_low[0] - actual_bin_size[0] * sx as f64,
         domain.sub_domain_low[1] - actual_bin_size[1] * sy as f64,
         domain.sub_domain_low[2] - actual_bin_size[2] * sz as f64,
     ];
 
-    // Precompute stencil offsets — only include cells whose minimum distance < cutoff
-    let cutoff2 = max_cutoff * max_cutoff;
+    // Precompute stencil offsets — only include cells whose minimum distance < cutoff.
+    // Minimum distance between cells offset by d bins = max(0, |d|-1) * bin_size,
+    // because atoms within adjacent cells (|d|=1) can be arbitrarily close.
+    let cutoff_sq = max_cutoff * max_cutoff;
     neighbor.bin_stencil.clear();
     neighbor.bin_stencil_forward.clear();
     neighbor.bin_stencil_self = false;
@@ -260,7 +365,8 @@ fn compute_bin_grid(neighbor: &mut Neighbor, domain: &Domain, comm_size: i32) {
                 let min_dx = (dx.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size[0];
                 let min_dy = (dy.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size[1];
                 let min_dz = (dz.unsigned_abs().saturating_sub(1)) as f64 * actual_bin_size[2];
-                if min_dx * min_dx + min_dy * min_dy + min_dz * min_dz < cutoff2 {
+                if min_dx * min_dx + min_dy * min_dy + min_dz * min_dz < cutoff_sq {
+                    // Row-major cell offset for 3D -> 1D indexing.
                     let offset = dx * ny * nz + dy * nz + dz;
                     neighbor.bin_stencil.push(offset);
                     if offset > 0 {
@@ -273,7 +379,7 @@ fn compute_bin_grid(neighbor: &mut Neighbor, domain: &Domain, comm_size: i32) {
         }
     }
 
-    // Update PBC box dimensions
+    // Cache full box dimensions for minimum-image displacement checks.
     neighbor.pbc_box = [
         domain.boundaries_high[0] - domain.boundaries_low[0],
         domain.boundaries_high[1] - domain.boundaries_low[1],
@@ -289,8 +395,21 @@ fn recompute_bins(neighbor: &mut Neighbor, domain: &Domain, comm_size: i32) {
     compute_bin_grid(neighbor, domain, comm_size);
 }
 
-/// Registers neighbor list construction and rebuild systems.
+/// Plugin that registers neighbor list construction and rebuild systems.
+///
+/// Add this plugin to your [`App`] to enable neighbor list building. The chosen
+/// [`NeighborStyle`] determines which build algorithm runs each timestep.
+///
+/// # Systems registered
+///
+/// - **Setup**: [`neighbor_read_input`] (reads `[neighbor]` config) and
+///   [`neighbor_setup`] (computes bin grid, ghost cutoff).
+/// - **Update**: [`decide_rebuild`] (displacement check), plus the selected
+///   neighbor build system ([`brute_force_neighbor_list`],
+///   [`sweep_and_prune_neighbor_list`], or [`bin_neighbor_list`]).
+/// - **Bin only**: [`sort_atoms_by_bin`] for cache-locality reordering.
 pub struct NeighborPlugin {
+    /// Which neighbor-finding algorithm to use.
     pub style: NeighborStyle,
 }
 
@@ -341,6 +460,9 @@ sort_every = 1000"#,
     }
 }
 
+/// Setup system: reads `[neighbor]` config values into the [`Neighbor`] resource.
+///
+/// Runs at [`ScheduleSetupSet::Setup`]. Prints the rebuild strategy on rank 0.
 pub fn neighbor_read_input(
     config: Res<NeighborConfig>,
     mut neighbor: ResMut<Neighbor>,
@@ -366,6 +488,12 @@ pub fn neighbor_read_input(
     }
 }
 
+/// Setup system: computes bin grid, ghost cutoff, and stencil from atom cutoff radii.
+///
+/// Runs at [`ScheduleSetupSet::PostSetup`] after atoms are created. Determines:
+/// - `max_cutoff = 2 * max_skin * skin_fraction` (largest pairwise neighbor distance)
+/// - `ghost_cutoff = max_cutoff + displacement_buffer` (communication distance for ghosts)
+/// - Bin grid dimensions, stencil offsets, and PBC flags
 pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor>, mut domain: ResMut<Domain>, mut atoms: ResMut<Atom>, comm: Res<CommResource>) {
     // Compute max neighbor cutoff = (skin_i + skin_j) * skin_fraction = 2 * max_skin * skin_fraction
     // Use global reduction: at PostSetup, atoms may only be on rank 0 (before exchange).
@@ -398,13 +526,12 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
     }
 
     let min_bin = neighbor.bin_min_size;
-    if domain.sub_length[0] / min_bin < 1.0
+    if (domain.sub_length[0] / min_bin < 1.0
         || domain.sub_length[1] / min_bin < 1.0
-        || domain.sub_length[2] / min_bin < 1.0
+        || domain.sub_length[2] / min_bin < 1.0)
+        && comm.rank() == 0
     {
-        if comm.rank() == 0 {
-            println!("WARNING: subdomain smaller than bin_size in at least one dimension, clamping to 1 bin");
-        }
+        println!("WARNING: subdomain smaller than bin_size in at least one dimension, clamping to 1 bin");
     }
 
     // Compute bin grid, stencil, and PBC box using shared helper
@@ -570,6 +697,13 @@ pub fn decide_rebuild(
     }
 }
 
+/// Sweep-and-prune neighbor list builder. O(N log N) from sorting atoms by x-coordinate.
+///
+/// Sorts all atoms by x-position, then sweeps forward: for each atom `i`, checks
+/// atoms `j > i` in sorted order until the x-gap exceeds the cutoff, pruning
+/// the search space. Full 3D distance is checked for remaining candidates.
+///
+/// Produces both a legacy pair list and a CSR neighbor list.
 pub fn sweep_and_prune_neighbor_list(
     mut atoms: ResMut<Atom>,
     mut neighbor: ResMut<Neighbor>,
@@ -592,7 +726,7 @@ pub fn sweep_and_prune_neighbor_list(
     }
     neighbor
         .sweep_and_prune
-        .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        .sort_by(|a, b| a.1.partial_cmp(&b.1).expect("NaN in atom x-position during sweep-and-prune sort"));
 
     let skin_fraction = neighbor.skin_fraction;
     for i in 0..neighbor.sweep_and_prune.len() {
@@ -625,6 +759,11 @@ pub fn sweep_and_prune_neighbor_list(
     build_csr_from_pairs(&mut neighbor, nlocal);
 }
 
+/// Brute-force neighbor list builder. O(N²) — checks all local-vs-all pairs.
+///
+/// Simple reference implementation: iterates over all `(i, j)` pairs with `i < j`,
+/// skipping self-interactions (same tag). Suitable only for small systems or testing.
+/// Does not use displacement-based rebuild skipping.
 pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor>) {
     neighbor.neighbor_list.clear();
     let nlocal = atoms.len() - atoms.nghost as usize;
@@ -645,6 +784,16 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
     build_csr_from_pairs(&mut neighbor, nlocal);
 }
 
+/// Reorder local atoms by spatial bin for improved cache locality.
+///
+/// Runs at [`ScheduleSet::PreNeighbor`] (before ghost communication). Atoms are
+/// sorted by their bin cell index so that spatially nearby atoms are contiguous
+/// in memory, improving cache hit rates during neighbor list construction and
+/// force computation.
+///
+/// Sorting is triggered either periodically (every `sort_every` steps) or when
+/// a neighbor rebuild is needed. The permutation is applied to all atom arrays
+/// (via [`AtomDataRegistry`]) and ghost `origin_index` values are updated.
 pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>, comm: Res<CommResource>, registry: Res<AtomDataRegistry>, mut domain: ResMut<Domain>) {
     // Recompute bin grid if domain bounds changed (e.g., shrink-wrap).
     // Must happen before sorting since sorting depends on bin parameters.
@@ -755,6 +904,20 @@ pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>
     }
 }
 
+/// Bin-based neighbor list builder. O(N) expected time for uniform particle distributions.
+///
+/// Uses a spatial bin grid with a precomputed stencil of neighbor cells. The algorithm:
+///
+/// 1. **Assign** each atom to a bin cell based on its position (counting sort).
+/// 2. **Build** CSR bin offsets so `bin_start[c]..bin_start[c+1]` gives atoms in cell `c`.
+/// 3. **Scan** each local atom's self-cell (j > i only) and forward stencil cells to find
+///    neighbors within cutoff, producing a half neighbor list in CSR format.
+///
+/// Two code paths are used: a **fast path** when all atoms share the same cutoff radius
+/// (skips per-pair cutoff computation), and a **slow path** for polydisperse systems.
+///
+/// All inner loops use `unsafe` unchecked indexing for performance; safety invariants
+/// are documented inline and validated by the CSR construction logic.
 pub fn bin_neighbor_list(
     mut atoms: ResMut<Atom>,
     mut neighbor: ResMut<Neighbor>,
@@ -792,7 +955,8 @@ pub fn bin_neighbor_list(
     let bin_oy = neighbor.bin_origin[1];
     let bin_oz = neighbor.bin_origin[2];
 
-    // Step 1: Assign each atom to a bin cell (reuse persistent arrays)
+    // Step 1: Assign each atom to a bin cell via floor((pos - origin) / bin_size).
+    // Reuse persistent arrays (taken via mem::take, returned at end) to avoid allocation.
     let mut atom_cell = std::mem::take(&mut neighbor.bin_atom_cell);
     atom_cell.clear();
     atom_cell.resize(total, 0u32);
