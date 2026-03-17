@@ -10,6 +10,7 @@
 *.vtp
 **/data/
 *.csv
+agents/
 
 # Generated artifacts
 log.lammps
@@ -20,3 +21,4 @@ schedule.png
 **/profile*.json
 **/sample_output.txt
 **/*.log
+
