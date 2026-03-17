@@ -1,33 +1,44 @@
 # mddem_verlet
 
-Velocity Verlet translational integration for [MDDEM](https://github.com/SueHeir/MDDEM) simulations.
+Velocity Verlet translational integration for MDDEM simulations.
 
-## Algorithm
+## Overview
 
-Standard two-half-step Velocity Verlet:
+This crate implements the **velocity Verlet algorithm**, a symplectic, time-reversible time-integration scheme for solving Newton's equations of motion in molecular dynamics (MD) and discrete element method (DEM) simulations.
 
-1. **Initial integration** (`ScheduleSet::InitialIntegration`):
-   - `v += 0.5 * dt * F / m`
-   - `x += v * dt`
+## The Velocity Verlet Algorithm
 
-2. *(Forces are computed between these steps)*
+Velocity Verlet uses a "kick-drift-kick" decomposition split across two phases:
 
-3. **Final integration** (`ScheduleSet::FinalIntegration`):
-   - `v += 0.5 * dt * F / m`
+**Initial integration** (before force computation):
+```
+v(t + Δt/2) = v(t) + (Δt / 2m) · F(t)    // half-step velocity kick
+x(t + Δt)   = x(t) + Δt · v(t + Δt/2)     // full-step position drift
+```
 
-This is time-reversible, symplectic, and second-order accurate.
+**Final integration** (after force computation):
+```
+v(t + Δt) = v(t + Δt/2) + (Δt / 2m) · F(t + Δt)  // completing velocity kick
+```
+
+This decomposition is **second-order accurate in Δt**, conserves energy to O(Δt²) per step, and exactly integrates constant-force motion.
+
+## Key Types
+
+- **`VelocityVerletPlugin`**: Registers integration systems. Can run globally (all stages) or restricted to a single `[[run]]` stage.
+- **`initial_integration()`**: Performs half-kick and position drift.
+- **`final_integration()`**: Completes the velocity kick.
 
 ## Usage
 
-`VelocityVerletPlugin` registers two systems — `initial_integration` and `final_integration` — at the appropriate schedule sets. Add it explicitly when your simulation does not use a thermostat that provides fused integration (e.g., `NoseHooverPlugin` fuses velocity rescaling with Verlet integration internally).
-
-`VelocityVerletPlugin` is included in `GranularDefaultPlugins`. For MD simulations without a thermostat, add it manually:
-
 ```rust
-app.add_plugins(CorePlugins)
-    .add_plugins(VelocityVerletPlugin);
+use mddem_verlet::VelocityVerletPlugin;
+
+// All stages (default)
+app.add_plugins(VelocityVerletPlugin::new());
+
+// Single stage
+app.add_plugins(VelocityVerletPlugin::for_stage("relaxation"));
 ```
 
-Rotational integration (quaternion-based angular Velocity Verlet) is provided separately by `dem_granular::RotationalDynamicsPlugin`.
-
-Part of the [MDDEM](https://github.com/SueHeir/MDDEM) workspace.
+The plugin schedules integration at `ScheduleSet::InitialIntegration` (before forces) and `ScheduleSet::FinalIntegration` (after forces).
