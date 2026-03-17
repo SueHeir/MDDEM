@@ -40,11 +40,19 @@ use serde::Deserialize;
 
 // ── TOML config structs ─────────────────────────────────────────────────────
 
+/// Serde default for boolean fields that should be `true` when omitted.
 fn default_true() -> bool {
     true
 }
 
+/// Human-readable axis names indexed by dimension (0=x, 1=y, 2=z).
+const AXIS_NAMES: [&str; 3] = ["x", "y", "z"];
+
 /// Per-axis deformation definition parsed from TOML.
+///
+/// Each axis (`x`, `y`, `z`) can independently specify a deformation style.
+/// Only the fields relevant to the chosen style are required; unused fields
+/// should be omitted.
 ///
 /// ```toml
 /// z = { style = "erate", rate = -0.001 }
@@ -54,31 +62,51 @@ fn default_true() -> bool {
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct AxisDeformDef {
+    /// Deformation style: `"erate"`, `"vel"`, or `"final"`.
     pub style: String,
+    /// Engineering strain rate (required for `"erate"` style). Negative = compression.
     #[serde(default)]
     pub rate: Option<f64>,
+    /// Constant velocity applied to box faces (required for `"vel"` style).
+    /// Positive = expansion, negative = compression.
     #[serde(default)]
     pub velocity: Option<f64>,
+    /// Target lower bound (required for `"final"` style).
     #[serde(default)]
     pub lo: Option<f64>,
+    /// Target upper bound (required for `"final"` style).
     #[serde(default)]
     pub hi: Option<f64>,
 }
 
-/// TOML `[deform]` section.
+/// Top-level `[deform]` TOML configuration section.
+///
+/// Each axis can be independently controlled (or omitted to leave it unchanged).
+/// When `remap` is true (the default), atom positions are affinely scaled to
+/// follow the box deformation, preserving their relative positions within the
+/// domain.
+///
+/// # Example
+///
+/// ```toml
+/// [deform]
+/// z = { style = "erate", rate = -0.001 }  # uniaxial compression on z
+/// remap = true
+/// ```
 #[derive(Deserialize, Clone, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct DeformConfig {
-    /// X-axis deformation definition.
+    /// X-axis deformation definition (omit to leave x unchanged).
     #[serde(default)]
     pub x: Option<AxisDeformDef>,
-    /// Y-axis deformation definition.
+    /// Y-axis deformation definition (omit to leave y unchanged).
     #[serde(default)]
     pub y: Option<AxisDeformDef>,
-    /// Z-axis deformation definition.
+    /// Z-axis deformation definition (omit to leave z unchanged).
     #[serde(default)]
     pub z: Option<AxisDeformDef>,
-    /// Whether to remap atom positions proportionally when box changes (default: true).
+    /// Whether to remap atom positions proportionally when the box changes.
+    /// Default: `true`.
     #[serde(default = "default_true")]
     pub remap: bool,
 }
@@ -106,19 +134,24 @@ pub struct AxisDeform {
     pub hi_0: f64,
 }
 
-/// Runtime resource holding deformation state.
+/// Runtime resource holding the current deformation state for all axes.
+///
+/// Registered as a resource by [`DeformPlugin`]. The setup system reinitializes
+/// this each stage from the (possibly overridden) `[deform]` config, and the
+/// update system mutates `step` and domain bounds every timestep.
 pub struct DeformState {
-    /// Per-axis deform (None = axis not deforming). Indices: 0=x, 1=y, 2=z.
+    /// Per-axis deform (`None` = axis not deforming). Indices: 0=x, 1=y, 2=z.
     pub axes: [Option<AxisDeform>; 3],
-    /// Whether to remap atom positions.
+    /// Whether to remap atom positions affinely when the box changes.
     pub remap: bool,
-    /// Accumulated step count since deformation started.
+    /// Number of timesteps elapsed since the current stage's deformation started.
     pub step: usize,
     /// Whether the deform state has been initialized with domain bounds.
     pub initialized: bool,
 }
 
 impl DeformState {
+    /// Returns `true` if at least one axis has an active deformation definition.
     pub fn has_any(&self) -> bool {
         self.axes.iter().any(|a| a.is_some())
     }
@@ -126,6 +159,19 @@ impl DeformState {
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
+/// Plugin that enables simulation box deformation during a run.
+///
+/// Registers the [`DeformState`] resource and two systems:
+/// - **Setup** ([`ScheduleSetupSet::PostSetup`]): reads the `[deform]` config
+///   (including per-stage overrides) and initializes axis definitions.
+/// - **Update** ([`ScheduleSet::PreInitialIntegration`]): applies the
+///   deformation each timestep before the Verlet position update.
+///
+/// Add this plugin to your app to enable `[deform]` TOML configuration:
+///
+/// ```ignore
+/// app.add_plugin(DeformPlugin);
+/// ```
 pub struct DeformPlugin;
 
 impl Plugin for DeformPlugin {
@@ -161,8 +207,18 @@ impl Plugin for DeformPlugin {
     }
 }
 
-/// Parse an optional axis definition from config into a runtime AxisDeform.
-/// The lo_0/hi_0 fields are set later during setup when we know the domain bounds.
+/// Parse an optional axis definition from config into a runtime [`AxisDeform`].
+///
+/// Returns `None` if `def` is `None` (axis not configured). The `lo_0`/`hi_0`
+/// fields are initialized to zero here and filled in by the setup system once
+/// the current domain bounds are known.
+///
+/// # Panics
+///
+/// - If `style` is `"erate"` but `rate` is missing.
+/// - If `style` is `"vel"` but `velocity` is missing.
+/// - If `style` is `"final"` but `lo` or `hi` is missing.
+/// - If `style` is an unrecognized string.
 fn parse_axis_def(def: &Option<AxisDeformDef>, axis_name: &str) -> Option<AxisDeform> {
     let def = def.as_ref()?;
     let style = match def.style.as_str() {
@@ -238,7 +294,6 @@ fn setup_deform(
     state.step = 0;
 
     if comm.rank() == 0 && state.has_any() {
-        let axis_names = ["x", "y", "z"];
         for (dim, axis) in state.axes.iter().enumerate() {
             if let Some(ref ax) = axis {
                 let range = ax.hi_0 - ax.lo_0;
@@ -246,13 +301,13 @@ fn setup_deform(
                     DeformStyle::Erate { rate } => {
                         println!(
                             "Deform {}: erate rate={:.6e}, L0={:.6e} [{:.6e}, {:.6e}]",
-                            axis_names[dim], rate, range, ax.lo_0, ax.hi_0
+                            AXIS_NAMES[dim], rate, range, ax.lo_0, ax.hi_0
                         );
                     }
                     DeformStyle::Vel { velocity } => {
                         println!(
                             "Deform {}: vel velocity={:.6e}, L0={:.6e} [{:.6e}, {:.6e}]",
-                            axis_names[dim], velocity, range, ax.lo_0, ax.hi_0
+                            AXIS_NAMES[dim], velocity, range, ax.lo_0, ax.hi_0
                         );
                     }
                     DeformStyle::Final {
@@ -261,7 +316,7 @@ fn setup_deform(
                     } => {
                         println!(
                             "Deform {}: final [{:.6e}, {:.6e}] -> [{:.6e}, {:.6e}]",
-                            axis_names[dim], ax.lo_0, ax.hi_0, target_lo, target_hi
+                            AXIS_NAMES[dim], ax.lo_0, ax.hi_0, target_lo, target_hi
                         );
                     }
                 }
@@ -272,12 +327,17 @@ fn setup_deform(
 
 // ── Update system ───────────────────────────────────────────────────────────
 
-/// Apply box deformation each timestep. Runs at PreInitialIntegration.
+/// Apply box deformation each timestep. Runs at [`ScheduleSet::PreInitialIntegration`].
 ///
 /// 1. Compute new domain bounds based on deformation style and current step.
 /// 2. Remap atom positions proportionally (affine transform).
-/// 3. Update domain resource.
-/// 4. Signal neighbor rebuild needed.
+/// 3. Update domain resource (bounds, size, volume, sub-domain).
+/// 4. Signal neighbor rebuild needed by clearing last-build positions.
+///
+/// # Panics
+///
+/// Panics if any axis collapses to zero or negative size (e.g., excessive
+/// compression rate).
 fn apply_deform(
     mut atoms: ResMut<Atom>,
     mut domain: ResMut<Domain>,
@@ -366,7 +426,7 @@ fn apply_deform(
         if new_size <= 0.0 {
             panic!(
                 "[deform] axis {} collapsed at step {}: new_lo={}, new_hi={}",
-                ["x", "y", "z"][dim],
+                AXIS_NAMES[dim],
                 step,
                 new_lo,
                 new_hi
@@ -429,6 +489,10 @@ mod tests {
             size,
             volume: size[0] * size[1] * size[2],
             is_periodic: [false; 3],
+            boundary_type: Default::default(),
+            is_shrink_wrap: [false; 3],
+            shrink_wrap_padding: 0.0,
+            bounds_changed: false,
             ghost_cutoff: 0.0,
             pbc_strict: false,
         }
