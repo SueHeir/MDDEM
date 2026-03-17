@@ -68,7 +68,8 @@ impl RadiusDistribution {
         match self {
             RadiusDistribution::Uniform { min, max } => rng.random_range(*min..*max),
             RadiusDistribution::Gaussian { mean, std } => {
-                let normal = Normal::new(*mean, *std).unwrap();
+                let normal = Normal::new(*mean, *std)
+                    .expect("invalid Gaussian parameters: std must be >= 0");
                 normal.sample(rng).max(1e-15) // clamp to positive
             }
             RadiusDistribution::Lognormal { mean, std } => {
@@ -76,7 +77,8 @@ impl RadiusDistribution {
                 let sigma_sq = (1.0 + (std / mean).powi(2)).ln();
                 let mu = mean.ln() - sigma_sq / 2.0;
                 let sigma = sigma_sq.sqrt();
-                let ln = LogNormal::new(mu, sigma).unwrap();
+                let ln = LogNormal::new(mu, sigma)
+                    .expect("invalid lognormal parameters: mean and std must be > 0");
                 ln.sample(rng)
             }
             RadiusDistribution::Discrete { values, weights } => {
@@ -89,7 +91,7 @@ impl RadiusDistribution {
                         return values[i];
                     }
                 }
-                *values.last().unwrap()
+                *values.last().expect("discrete distribution must have at least one value")
             }
         }
     }

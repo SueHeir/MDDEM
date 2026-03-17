@@ -148,6 +148,11 @@ impl Default for RateInsertState {
 
 // ── SpatialHash for O(1) overlap checking ───────────────────────────────────
 
+/// Grid-based spatial hash for fast overlap detection during particle insertion.
+///
+/// Divides space into cubic cells of size `cell_size` (typically ~2× max particle diameter).
+/// Overlap queries check the 3×3×3 neighborhood of the candidate cell, ensuring all
+/// potential overlaps are found without a full O(N²) scan.
 struct SpatialHash {
     cell_size: f64,
     cells: HashMap<(i64, i64, i64), Vec<usize>>,
@@ -258,6 +263,11 @@ density = 2500.0
 
 // ── Helper: insert a single particle ────────────────────────────────────────
 
+/// Appends a single DEM particle to both the shared `Atom` arrays and the `DemAtom` extension.
+///
+/// Computes mass from density and radius (solid sphere: m = ρ·4/3·π·r³), and inverse
+/// moment of inertia (I = 2/5·m·r² for a solid sphere). Initializes quaternion to identity
+/// and angular velocity/momentum/torque to zero.
 fn insert_single_particle(
     atom: &mut Atom,
     dem_data: &mut DemAtom,
@@ -345,6 +355,11 @@ fn lookup_material_for_type(
 
 // ── Setup system: dem_insert_atoms ──────────────────────────────────────────
 
+/// Setup system that processes all `[[particles.insert]]` blocks at simulation start.
+///
+/// For each block: immediate random insertion places particles with overlap checking,
+/// file-based insertion loads from CSV/LAMMPS files, and rate-based insertion registers
+/// entries in [`RateInsertState`] for periodic insertion during the run.
 pub fn dem_insert_atoms(
     comm: Res<CommResource>,
     domain: Res<Domain>,
@@ -509,7 +524,8 @@ pub fn dem_insert_atoms(
                             );
                             std::process::exit(1);
                         }
-                        let normal = Normal::new(0.0, rand_vel).unwrap();
+                        let normal = Normal::new(0.0, rand_vel)
+                            .expect("velocity must be non-negative for Normal distribution");
                         for i in start..total_len {
                             atom.vel[i][0] = normal.sample(&mut rng);
                             atom.vel[i][1] = normal.sample(&mut rng);
@@ -1083,6 +1099,11 @@ fn read_lammps_data_particles(
 
 // ── Update system: rate-based insertion ─────────────────────────────────────
 
+/// Update system for rate-based particle insertion during the simulation run.
+///
+/// Checks each registered [`RateInsertEntry`] against the current timestep, interval,
+/// start/end bounds, and total limit. Uses a [`SpatialHash`] for O(1) overlap detection
+/// when placing new particles. Runs in `ScheduleSet::PreInitialIntegration`.
 #[allow(clippy::too_many_arguments)]
 pub fn dem_rate_insert(
     comm: Res<CommResource>,
@@ -1144,7 +1165,10 @@ pub fn dem_rate_insert(
             .config
             .rate_start
             .unwrap_or(0);
-        let rate = rate_state.entries[entry_idx].config.rate.unwrap();
+        let rate = rate_state.entries[entry_idx]
+            .config
+            .rate
+            .expect("rate-based insertion entry must have 'rate' field");
 
         if step < start {
             continue;
@@ -1175,8 +1199,11 @@ pub fn dem_rate_insert(
             .config
             .radius
             .as_ref()
-            .unwrap();
-        let density = rate_state.entries[entry_idx].config.density.unwrap();
+            .expect("rate-based insertion entry must have 'radius' field");
+        let density = rate_state.entries[entry_idx]
+            .config
+            .density
+            .expect("rate-based insertion entry must have 'density' field");
         let mat_idx = rate_state.entries[entry_idx].mat_idx;
 
         let max_r = radius_spec.max_radius();
@@ -1244,7 +1271,8 @@ pub fn dem_rate_insert(
         let config = &rate_state.entries[entry_idx].config;
         if let Some(rand_vel) = config.velocity {
             if rand_vel > 0.0 {
-                let normal = Normal::new(0.0, rand_vel).unwrap();
+                let normal = Normal::new(0.0, rand_vel)
+                    .expect("velocity must be non-negative for Normal distribution");
                 for i in start_len..total_len {
                     atom.vel[i][0] = normal.sample(&mut rng);
                     atom.vel[i][1] = normal.sample(&mut rng);
@@ -1274,6 +1302,11 @@ pub fn dem_rate_insert(
 
 // ── Delta time calculation ──────────────────────────────────────────────────
 
+/// Computes a stable timestep from the Rayleigh wave speed criterion.
+///
+/// For each particle, estimates the Rayleigh wave transit time across the particle
+/// diameter using `dt_R = π·r / α · √(ρ/G)`, where α ≈ 0.1631·ν + 0.8766 and
+/// G = E / (2·(1+ν)). The final timestep is 15% of the minimum across all particles.
 fn calculate_delta_time(
     comm: Res<CommResource>,
     mut atoms: ResMut<Atom>,

@@ -1,5 +1,46 @@
-//! DEM atom properties: named material types, per-pair mixing tables, per-atom radius/density,
-//! and particle insertion (random, rate-based, file-based) from `[[particles.insert]]` config.
+//! # dem_atom — Per-atom DEM data and material property tables
+//!
+//! This crate provides the core per-atom data structures and material property
+//! system for Discrete Element Method (DEM) simulations in MDDEM:
+//!
+//! - **[`DemAtom`]** — Per-atom extension data (radius, density, angular velocity, torque, etc.)
+//!   registered via the `AtomData` derive macro with `#[forward]`, `#[reverse]`, and `#[zero]`
+//!   attributes that control MPI pack/unpack and per-timestep zeroing behavior.
+//! - **[`MaterialTable`]** — Named materials with mechanical properties (Young's modulus,
+//!   Poisson's ratio, restitution, friction) and precomputed per-pair mixing tables
+//!   (geometric-mean or harmonic-mean) for efficient contact force evaluation.
+//! - **[`DemAtomInsertPlugin`]** — Particle insertion from `[[particles.insert]]` TOML config:
+//!   random placement, rate-based trickle insertion, or file-based loading (CSV, LAMMPS dump/data).
+//! - **[`RadiusSpec`]** — Particle radius specification: fixed value or statistical distribution
+//!   (uniform, gaussian, lognormal, discrete).
+//!
+//! ## TOML Configuration
+//!
+//! Materials are defined under `[[dem.materials]]`:
+//!
+//! ```toml
+//! [dem]
+//! contact_model = "hertz"  # "hertz" (default) or "hooke"
+//!
+//! [[dem.materials]]
+//! name = "glass"
+//! youngs_mod = 8.7e9       # Young's modulus (Pa)
+//! poisson_ratio = 0.3      # Poisson's ratio (dimensionless, 0–0.5)
+//! restitution = 0.95       # Coefficient of restitution (0–1)
+//! friction = 0.4           # Coulomb friction coefficient (default 0.4)
+//! ```
+//!
+//! ## AtomData Derive Attributes
+//!
+//! The `#[forward]`, `#[reverse]`, and `#[zero]` attributes on [`DemAtom`] fields
+//! control how data is handled during MPI communication and timestep integration:
+//!
+//! - **`#[forward]`** — Field is packed and sent forward from owning processor to ghost
+//!   atoms on neighboring processors (e.g., angular velocity `omega`).
+//! - **`#[reverse]`** — Field is accumulated in reverse: ghost contributions are sent back
+//!   and summed into the owning atom's value (e.g., `torque`).
+//! - **`#[zero]`** — Field is zeroed at the start of each force computation step (e.g., `torque`),
+//!   before new contact forces accumulate.
 
 pub mod insert;
 pub mod radius;
@@ -95,6 +136,7 @@ fn default_twisting_model() -> String {
 #[derive(Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct DemConfig {
+    /// List of material definitions, each corresponding to a `[[dem.materials]]` block.
     pub materials: Option<Vec<MaterialConfig>>,
     /// Contact model: "hertz" (default) or "hooke".
     #[serde(default = "default_contact_model")]
@@ -117,7 +159,15 @@ pub struct DemConfig {
 
 // ── MaterialTable — per-material and per-pair precomputed properties ────────
 
-/// Per-material properties and per-pair precomputed mixing tables (geometric-mean).
+/// Per-material properties and precomputed per-pair mixing tables for contact force evaluation.
+///
+/// Pair properties are computed in [`build_pair_tables`](Self::build_pair_tables) using:
+/// - **Geometric mean** for friction, restitution, cohesion/surface energy, rolling/twisting friction
+/// - **Harmonic mean** (2·ki·kj/(ki+kj)) for Hooke stiffnesses and SDS spring stiffnesses
+/// - **Effective modulus** formulas for Hertz (`E*`) and Mindlin (`G*`) contact models
+///
+/// Indexed by material index (returned by [`add_material`](Self::add_material) and
+/// [`find_material`](Self::find_material)). Pair tables are indexed as `table_ij[i][j]`.
 pub struct MaterialTable {
     pub names: Vec<String>,
     pub youngs_mod: Vec<f64>,
@@ -181,6 +231,7 @@ impl Default for MaterialTable {
 }
 
 impl MaterialTable {
+    /// Creates an empty `MaterialTable` with default contact/adhesion/rolling/twisting models.
     pub fn new() -> Self {
         MaterialTable {
             names: Vec::new(),
@@ -219,6 +270,10 @@ impl MaterialTable {
         }
     }
 
+    /// Adds a material with basic properties. Returns the material index.
+    ///
+    /// This is a convenience wrapper around [`add_material_full`](Self::add_material_full)
+    /// with `surface_energy = 0.0` (no adhesion).
     pub fn add_material(
         &mut self,
         name: &str,
@@ -232,6 +287,9 @@ impl MaterialTable {
         self.add_material_full(name, youngs_mod, poisson_ratio, restitution, friction, rolling_friction, cohesion_energy, 0.0)
     }
 
+    /// Adds a material with basic properties plus surface energy. Returns the material index.
+    ///
+    /// Wraps [`add_material_extended`](Self::add_material_extended) with twisting/Hooke stiffness = 0.
     pub fn add_material_full(
         &mut self,
         name: &str,
@@ -249,6 +307,9 @@ impl MaterialTable {
         )
     }
 
+    /// Adds a material with twisting friction and Hooke stiffnesses. Returns the material index.
+    ///
+    /// Wraps [`add_material_with_sds`](Self::add_material_with_sds) with SDS parameters = 0.
     pub fn add_material_extended(
         &mut self,
         name: &str,
@@ -316,10 +377,15 @@ impl MaterialTable {
         idx
     }
 
+    /// Looks up a material by name, returning its index if found.
     pub fn find_material(&self, name: &str) -> Option<u32> {
         self.names.iter().position(|n| n == name).map(|i| i as u32)
     }
 
+    /// Computes all per-pair mixing tables from the registered per-material properties.
+    ///
+    /// Must be called after all materials have been added. Populates `*_ij` fields using
+    /// geometric-mean or harmonic-mean mixing rules as appropriate for each property.
     pub fn build_pair_tables(&mut self) {
         let n = self.names.len();
         self.beta_ij = vec![vec![0.0; n]; n];
@@ -452,15 +518,35 @@ impl MaterialTable {
 // ── DemAtom per-atom data ────────────────────────────────────────────────────
 
 /// Per-atom DEM extension data: particle radius, density, inverse inertia, and rotational fields.
+///
+/// Registered via [`register_atom_data!`] in [`DemAtomPlugin::build`]. The `AtomData` derive
+/// macro generates pack/unpack methods for MPI communication based on field attributes:
+///
+/// - **`#[forward]`** — Sent from owner to ghost atoms each timestep (e.g., `omega`).
+/// - **`#[reverse]`** — Accumulated from ghosts back to owner (e.g., `torque`).
+/// - **`#[zero]`** — Zeroed before each force computation (e.g., `torque`).
+///
+/// Fields without attributes are only communicated during atom migration (ownership transfer).
 #[derive(AtomData)]
 pub struct DemAtom {
+    /// Particle radius (m). Set at insertion time; used for contact detection and force calculation.
     pub radius: Vec<f64>,
+    /// Particle material density (kg/m³). Used with radius to compute mass and moment of inertia.
     pub density: Vec<f64>,
+    /// Inverse moment of inertia (1/(I) where I = 2/5 * m * r²) (1/(kg·m²)).
+    /// Precomputed at insertion for efficient torque-to-angular-acceleration conversion.
     pub inv_inertia: Vec<f64>,
+    /// Orientation quaternion [w, x, y, z] (unit quaternion). Initialized to [1, 0, 0, 0].
     pub quaternion: Vec<[f64; 4]>,
+    /// Angular velocity (rad/s) in [x, y, z] components.
+    /// Marked `#[forward]`: communicated from owner to ghost atoms each timestep.
     #[forward]
     pub omega: Vec<[f64; 3]>,
+    /// Angular momentum (kg·m²/s) in [x, y, z] components.
     pub ang_mom: Vec<[f64; 3]>,
+    /// Torque (N·m) in [x, y, z] components.
+    /// Marked `#[reverse]`: ghost contributions are summed back to the owning atom.
+    /// Marked `#[zero]`: zeroed before each force computation step.
     #[reverse]
     #[zero]
     pub torque: Vec<[f64; 3]>,
@@ -473,6 +559,7 @@ impl Default for DemAtom {
 }
 
 impl DemAtom {
+    /// Creates an empty `DemAtom` with no particles. Particle data is appended during insertion.
     pub fn new() -> Self {
         DemAtom {
             radius: Vec::new(),
@@ -559,6 +646,7 @@ friction = 0.4
     }
 }
 
+/// Setup system that sets `Atom::ntypes` from the number of registered materials.
 fn set_dem_ntypes(mut atoms: ResMut<Atom>, material_table: Res<MaterialTable>) {
     if !material_table.names.is_empty() {
         atoms.ntypes = material_table.names.len();
