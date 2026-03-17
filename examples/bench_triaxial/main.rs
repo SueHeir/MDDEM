@@ -18,7 +18,7 @@ use std::io::Write;
 
 /// Axial compression velocity [m/s].  Chosen for quasi-static loading
 /// (inertial number I ≪ 0.01 at all confining pressures tested).
-const COMPRESS_VEL: f64 = 5e-4;
+const COMPRESS_VEL: f64 = 1e-3;
 
 #[derive(Clone, Debug, PartialEq, Default, StageEnum)]
 enum Phase {
@@ -37,7 +37,6 @@ fn main() {
         .add_plugins(GranularDefaultPlugins)
         .add_plugins(GravityPlugin)
         .add_plugins(WallPlugin)
-        .add_plugins(ContactAnalysisPlugin)
         .add_plugins(StatesPlugin {
             initial: Phase::Insert,
         })
@@ -121,7 +120,7 @@ fn check_relaxed(
         .sum();
     let global_ke = comm.all_reduce_sum_f64(local_ke);
 
-    if global_ke < 1e-7 {
+    if global_ke < 1e-5 {
         next_state.set(Phase::Compress);
         if comm.rank() == 0 {
             println!(

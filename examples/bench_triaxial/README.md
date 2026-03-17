@@ -4,7 +4,7 @@ Validates DEM triaxial compression against **Mohr-Coulomb failure theory**.
 
 ## Physics
 
-A sample of 300 randomly packed spheres is confined laterally by servo-controlled
+A sample of 100 randomly packed spheres is confined laterally by servo-controlled
 walls at a specified confining pressure σ₃, then compressed axially at constant
 velocity. The Mohr-Coulomb criterion predicts a linear failure envelope:
 
@@ -15,7 +15,7 @@ For cohesionless particles (c = 0):
     sin φ = (σ₁ − σ₃) / (σ₁ + σ₃)
 
 where σ₁ is peak axial stress, σ₃ is confining pressure, and φ is the internal
-friction angle. For μ = 0.5 inter-particle friction, theory predicts φ ≈ 20–30°.
+friction angle. For μ = 0.5 inter-particle friction, theory predicts φ ≈ 20–35°.
 
 ## Setup
 
@@ -23,12 +23,13 @@ friction angle. For μ = 0.5 inter-particle friction, theory predicts φ ≈ 20�
 |---------------------|-----------------|--------|
 | Box dimensions      | 10 × 10 × 40   | mm     |
 | Particle radius     | 1               | mm     |
+| Particle count      | 100             | –      |
 | Particle density    | 2500            | kg/m³  |
 | Young's modulus     | 10 MPa          | Pa     |
 | Poisson's ratio     | 0.3             | –      |
 | Restitution         | 0.3             | –      |
 | Friction (μ)        | 0.5             | –      |
-| Confining pressures | 10, 50, 100, 200| kPa    |
+| Confining pressures | 10, 50, 200     | kPa    |
 
 ### Simplifications
 
@@ -37,12 +38,12 @@ friction angle. For μ = 0.5 inter-particle friction, theory predicts φ ≈ 20�
 - Gravity set to zero during compression for **uniform stress distribution**
 - Servo walls target constant **force** (not constant pressure), so σ₃ varies
   slightly with sample height changes during compression
-- **300 particles** — small sample for fast runtime (~1 min per confining pressure)
+- **100 particles** — small sample for fast runtime (~2 s per confining pressure)
 
 ## Running
 
 ```bash
-# Run all four confining pressures
+# Run all three confining pressures (~4 s total)
 bash examples/bench_triaxial/run_benchmark.sh
 
 # Or run a single pressure

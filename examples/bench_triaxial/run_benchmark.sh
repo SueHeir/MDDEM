@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the triaxial compression benchmark at all four confining pressures.
+# Run the triaxial compression benchmark at three confining pressures.
 #
 # Usage:
 #   cd <repo_root>
@@ -13,7 +13,7 @@ set -euo pipefail
 
 EXAMPLE_DIR="examples/bench_triaxial"
 
-for pressure in 10kPa 50kPa 100kPa 200kPa; do
+for pressure in 10kPa 50kPa 200kPa; do
     echo ""
     echo "══════════════════════════════════════════════════════════════"
     echo "  Running triaxial compression at σ₃ = ${pressure}"

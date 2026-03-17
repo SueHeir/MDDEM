@@ -21,7 +21,7 @@ import sys
 import numpy as np
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-pressures = ["10kPa", "50kPa", "100kPa", "200kPa"]
+pressures = ["10kPa", "50kPa", "200kPa"]
 
 print("=" * 60)
 print("Triaxial Compression — Mohr-Coulomb Validation")

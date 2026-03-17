@@ -16,8 +16,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-pressures = ["10kPa", "50kPa", "100kPa", "200kPa"]
-colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+pressures = ["10kPa", "50kPa", "200kPa"]
+colors = ["#1f77b4", "#ff7f0e", "#d62728"]
 
 # ── Load data ──────────────────────────────────────────────────────────────
 
