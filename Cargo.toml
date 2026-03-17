@@ -126,6 +126,10 @@ path = "examples/example_template/main.rs"
 name = "cone_hopper"
 path = "examples/cone_hopper/main.rs"
 
+[[example]]
+name = "bench_rotating_drum"
+path = "examples/bench_rotating_drum/main.rs"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
