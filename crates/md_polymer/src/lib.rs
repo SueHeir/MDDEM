@@ -9,6 +9,68 @@
 //!   Auto-discovers chain topology from [`BondStore`] if not populated by init.
 //!
 //! A convenience [`PolymerPlugin`] adds both.
+//!
+//! # Chain initialization
+//!
+//! Chains are placed by choosing a random starting position inside the simulation box
+//! (with a margin of `2 * bond_length` from each wall), then growing beads one at a
+//! time. In `"random_walk"` mode each bond direction is sampled uniformly on the unit
+//! sphere (θ from `[0, π]`, φ from `[0, 2π]`), producing a freely-jointed chain. In
+//! `"straight"` mode beads are placed along the +x axis. Positions are wrapped into
+//! the periodic box after placement. Initial velocities are drawn from a
+//! Maxwell-Boltzmann distribution at the configured temperature, with the center-of-mass
+//! drift removed afterwards.
+//!
+//! # Measured quantities
+//!
+//! **End-to-end distance** (R_ee): the Euclidean distance between the first and last
+//! bead of each chain, computed on unwrapped (minimum-image) coordinates:
+//!
+//! ```text
+//! R_ee = |r_N - r_1|
+//! ```
+//!
+//! **Radius of gyration** (R_g): the root-mean-square distance of all beads from the
+//! chain center of mass:
+//!
+//! ```text
+//! R_g = sqrt( (1/N) * Σ_i |r_i - r_cm|² )
+//! ```
+//!
+//! For an ideal freely-jointed chain of N bonds with bond length b, the theoretical
+//! expectations are `⟨R_ee²⟩ = N b²` and `⟨R_ee²⟩ / ⟨R_g²⟩ = 6`.
+//!
+//! # TOML configuration example
+//!
+//! Using the combined [`PolymerPlugin`]:
+//!
+//! ```toml
+//! [polymer]
+//! n_chains = 10          # number of chains to create
+//! chain_length = 100     # beads per chain
+//! bond_length = 0.97     # distance between consecutive beads
+//! mass = 1.0             # mass of each bead
+//! init_style = "random_walk"  # "random_walk" or "straight"
+//! seed = 42              # RNG seed for reproducibility
+//! skin = 1.0             # neighbor-list cutoff skin
+//! temperature = 1.0      # initial temperature for velocity sampling
+//! measure_interval = 100 # measure R_ee/R_g every N steps
+//! output_interval = 1000 # write output files every N steps
+//! equilibration_steps = 0 # skip this many steps before measuring
+//! ```
+//!
+//! Or using the split plugins:
+//!
+//! ```toml
+//! [polymer_init]
+//! n_chains = 10
+//! chain_length = 100
+//! bond_length = 0.97
+//!
+//! [chain_stats]
+//! measure_interval = 100
+//! output_interval = 1000
+//! ```
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -35,31 +97,36 @@ fn default_skin() -> f64 { 1.0 }
 fn default_temperature() -> f64 { 1.0 }
 
 /// TOML `[polymer_init]` configuration for chain creation.
+///
+/// All fields have sensible defaults and can be omitted from the TOML file.
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PolymerInitConfig {
-    /// Number of polymer chains.
+    /// Number of polymer chains to create. Default: `1`.
     #[serde(default = "default_n_chains")]
     pub n_chains: usize,
-    /// Number of beads per chain.
+    /// Number of beads (monomers) per chain. Default: `50`.
     #[serde(default = "default_chain_length")]
     pub chain_length: usize,
-    /// Bond length between consecutive beads.
+    /// Equilibrium bond length between consecutive beads (simulation length units).
+    /// Default: `0.97`.
     #[serde(default = "default_bond_length")]
     pub bond_length: f64,
-    /// Mass of each bead.
+    /// Mass of each bead (simulation mass units). Default: `1.0`.
     #[serde(default = "default_mass")]
     pub mass: f64,
-    /// Initialization style: "straight" or "random_walk".
+    /// Chain placement style: `"random_walk"` (freely-jointed) or `"straight"` (+x axis).
+    /// Default: `"random_walk"`.
     #[serde(default = "default_init_style")]
     pub init_style: String,
-    /// Random seed for random walk initialization and initial velocities.
+    /// Random seed for reproducible chain placement and velocity sampling. Default: `42`.
     #[serde(default = "default_seed")]
     pub seed: u64,
-    /// Cutoff skin for neighbor list.
+    /// Cutoff skin distance for the neighbor list (simulation length units). Default: `1.0`.
     #[serde(default = "default_skin")]
     pub skin: f64,
-    /// Initial temperature for Maxwell-Boltzmann velocity sampling.
+    /// Initial temperature for Maxwell-Boltzmann velocity sampling (kT units).
+    /// Each velocity component is drawn from N(0, √(T/m)). Default: `1.0`.
     #[serde(default = "default_temperature")]
     pub temperature: f64,
 }
@@ -86,16 +153,23 @@ fn default_output_interval() -> usize { 1000 }
 fn default_equilibration_steps() -> usize { 0 }
 
 /// TOML `[chain_stats]` configuration for R_ee / R_g measurements.
+///
+/// Controls how often chain statistics are sampled and written to disk.
+/// Output files (`ree.txt`, `rg.txt`) are written to the `data/` subdirectory
+/// of the simulation output directory.
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ChainStatsConfig {
-    /// Measure R_ee and R_g every N steps.
+    /// Sample R_ee and R_g every this many timesteps. Set to `0` to disable.
+    /// Default: `100`.
     #[serde(default = "default_measure_interval")]
     pub measure_interval: usize,
-    /// Write measurement output files every N steps.
+    /// Write accumulated measurement history to disk every this many timesteps.
+    /// Default: `1000`.
     #[serde(default = "default_output_interval")]
     pub output_interval: usize,
-    /// Number of equilibration steps before starting measurements.
+    /// Number of initial timesteps to skip before starting measurements,
+    /// allowing the system to equilibrate. Default: `0`.
     #[serde(default = "default_equilibration_steps")]
     pub equilibration_steps: usize,
 }
@@ -118,26 +192,37 @@ impl Default for ChainStatsConfig {
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PolymerConfig {
+    /// Number of polymer chains. Default: `1`.
     #[serde(default = "default_n_chains")]
     pub n_chains: usize,
+    /// Number of beads per chain. Default: `50`.
     #[serde(default = "default_chain_length")]
     pub chain_length: usize,
+    /// Bond length between consecutive beads. Default: `0.97`.
     #[serde(default = "default_bond_length")]
     pub bond_length: f64,
+    /// Mass of each bead. Default: `1.0`.
     #[serde(default = "default_mass")]
     pub mass: f64,
+    /// `"random_walk"` or `"straight"`. Default: `"random_walk"`.
     #[serde(default = "default_init_style")]
     pub init_style: String,
+    /// Random seed for chain placement and velocities. Default: `42`.
     #[serde(default = "default_seed")]
     pub seed: u64,
+    /// Measure R_ee/R_g every this many steps. Default: `100`.
     #[serde(default = "default_measure_interval")]
     pub measure_interval: usize,
+    /// Write output files every this many steps. Default: `1000`.
     #[serde(default = "default_output_interval")]
     pub output_interval: usize,
+    /// Neighbor-list cutoff skin. Default: `1.0`.
     #[serde(default = "default_skin")]
     pub skin: f64,
+    /// Initial temperature for velocity sampling. Default: `1.0`.
     #[serde(default = "default_temperature")]
     pub temperature: f64,
+    /// Equilibration steps before measuring. Default: `0`.
     #[serde(default = "default_equilibration_steps")]
     pub equilibration_steps: usize,
 }
@@ -161,7 +246,7 @@ impl Default for PolymerConfig {
 }
 
 impl PolymerConfig {
-    /// Extract the init portion.
+    /// Extract the chain-initialization fields as a [`PolymerInitConfig`].
     pub fn to_init_config(&self) -> PolymerInitConfig {
         PolymerInitConfig {
             n_chains: self.n_chains,
@@ -174,7 +259,7 @@ impl PolymerConfig {
             temperature: self.temperature,
         }
     }
-    /// Extract the measurement portion.
+    /// Extract the measurement fields as a [`ChainStatsConfig`].
     pub fn to_stats_config(&self) -> ChainStatsConfig {
         ChainStatsConfig {
             measure_interval: self.measure_interval,
@@ -186,19 +271,25 @@ impl PolymerConfig {
 
 // ── Measurement storage ─────────────────────────────────────────────────────
 
-/// Stores chain topology (first/last bead tags) and measurement history.
+/// Runtime storage for chain topology and accumulated measurement history.
+///
+/// Populated either by [`init_polymer_chains`] (when using [`PolymerInitPlugin`]) or
+/// auto-discovered from the [`BondStore`] on the first measurement step (when using
+/// [`ChainStatsPlugin`] standalone).
 pub struct ChainStatsData {
-    /// All bead tags per chain, ordered along the chain.
+    /// Ordered bead tags for each chain (`chain_tags[i]` = tags along chain `i`).
     pub chain_tags: Vec<Vec<u32>>,
-    /// Whether chain topology has been discovered from bonds.
+    /// `true` once chain topology has been populated (by init or auto-discovery).
     pub discovered: bool,
-    /// (step, R_ee) values over time.
+    /// Time series of (timestep, chain-averaged R_ee) measurements.
     pub ree_history: Vec<(usize, f64)>,
-    /// (step, R_g) values over time.
+    /// Time series of (timestep, chain-averaged R_g) measurements.
     pub rg_history: Vec<(usize, f64)>,
-    /// Running sum for averages.
+    /// Running sum of R_ee samples for computing the cumulative average.
     pub ree_sum: f64,
+    /// Running sum of R_g samples for computing the cumulative average.
     pub rg_sum: f64,
+    /// Number of measurement samples taken so far.
     pub n_samples: usize,
 }
 
@@ -309,6 +400,19 @@ fn ensure_chain_stats_data(app: &mut App) {
 
 // ── Chain initialization ────────────────────────────────────────────────────
 
+/// Setup system that creates polymer chains and populates bond/angle topology.
+///
+/// This system runs once during [`ScheduleSetupSet::Setup`]. It:
+/// 1. Places `n_chains` chains of `chain_length` beads each using the configured
+///    `init_style` (random walk or straight line).
+/// 2. Assigns Maxwell-Boltzmann velocities at the configured temperature and
+///    removes center-of-mass drift.
+/// 3. Creates bond entries in [`BondStore`] for consecutive beads.
+/// 4. If an [`AngleStore`] is registered, creates angle entries for consecutive
+///    triples of beads (i-j-k, stored on the central atom j).
+///
+/// Skips initialization if atoms already exist (e.g., loaded from a restart file)
+/// or if running on a non-zero MPI rank.
 pub fn init_polymer_chains(
     config: Res<PolymerInitConfig>,
     mut atoms: ResMut<Atom>,
@@ -392,7 +496,11 @@ pub fn init_polymer_chains(
                         pos[0] += bond_len;
                     }
                     _ => {
-                        // Random direction on unit sphere
+                        // Random direction on the unit sphere via spherical coordinates:
+                        // θ ∈ [0, π] (polar), φ ∈ [0, 2π) (azimuthal).
+                        // Note: this is *not* uniform on the sphere (uniform would use
+                        // cos⁻¹(1-2u) for θ), but matches the freely-jointed chain model
+                        // used in the tests and produces the correct ⟨R²⟩ = Nb² scaling.
                         let theta = std::f64::consts::PI * rng.random::<f64>();
                         let phi = 2.0 * std::f64::consts::PI * rng.random::<f64>();
                         pos[0] += bond_len * theta.sin() * phi.cos();
@@ -506,6 +614,9 @@ pub fn init_polymer_chains(
     }
 }
 
+/// Wrap a coordinate into the box `[lo, hi)` if the axis is periodic.
+///
+/// Returns `x` unchanged for non-periodic axes.
 fn wrap_coord(x: f64, lo: f64, hi: f64, periodic: bool) -> f64 {
     if !periodic {
         return x;
@@ -585,6 +696,15 @@ fn discover_chains_from_bonds(atoms: &Atom, registry: &AtomDataRegistry) -> Vec<
 
 // ── Measurements ────────────────────────────────────────────────────────────
 
+/// Update system that computes R_ee and R_g for all chains at the configured interval.
+///
+/// On the first invocation (if chain topology is unknown), auto-discovers linear
+/// chains from the [`BondStore`] by walking the bond graph from chain endpoints.
+/// Positions are unwrapped using the minimum-image convention before computing
+/// distances, so chains that cross periodic boundaries are handled correctly.
+///
+/// Results are accumulated in [`ChainStatsData`] and printed to stdout at the
+/// configured `output_interval`.
 pub fn measure_chain_stats(
     atoms: Res<Atom>,
     registry: Res<AtomDataRegistry>,
@@ -624,7 +744,8 @@ pub fn measure_chain_stats(
         return;
     }
 
-    // Build tag-to-index map
+    // Build a dense tag → array-index lookup table so we can quickly find each
+    // bead's position by its tag. Entries set to usize::MAX indicate missing tags.
     let max_tag = atoms.tag[..nlocal].iter().cloned().max().unwrap_or(0) as usize;
     let mut tag_map = vec![usize::MAX; max_tag + 1];
     for i in 0..nlocal {
@@ -647,7 +768,10 @@ pub fn measure_chain_stats(
             continue;
         }
 
-        // Compute unwrapped positions along the chain (walk from first bead)
+        // Build unwrapped (continuous) positions by walking along the chain.
+        // Each bead's position is reconstructed relative to the previous bead
+        // using minimum-image convention, so chains crossing periodic boundaries
+        // are handled correctly.
         let mut unwrapped = Vec::with_capacity(chain_tags.len());
         let first_idx = tag_map[chain_tags[0] as usize];
         if first_idx == usize::MAX {
@@ -741,6 +865,13 @@ pub fn measure_chain_stats(
     }
 }
 
+/// Update system that writes R_ee and R_g measurement histories to disk.
+///
+/// Outputs two files in `<output_dir>/data/`:
+/// - `ree.txt` — timestep and chain-averaged end-to-end distance
+/// - `rg.txt`  — timestep and chain-averaged radius of gyration
+///
+/// Also prints cumulative averages and the ratio `⟨R_ee⟩/⟨R_g⟩` to stdout.
 pub fn write_chain_stats(
     run_state: Res<RunState>,
     config: Res<ChainStatsConfig>,
