@@ -119,6 +119,10 @@ name = "lj_binary"
 path = "examples/lj_binary/main.rs"
 
 [[example]]
+name = "bench_brazilian_disk"
+path = "examples/bench_brazilian_disk/main.rs"
+
+[[example]]
 name = "example_template"
 path = "examples/example_template/main.rs"
 

@@ -1,0 +1,76 @@
+# Brazilian Disk Tensile Test Benchmark
+# A circular disk of bonded particles compressed between two platens.
+# The disk fails by a vertical tensile crack through the center.
+#
+# Disk: radius = 0.01 m, particle radius = 0.0005 m, hex lattice
+# Topmost/bottommost particle surface at z ~ +/-0.00916 m
+
+[domain]
+x_low = -0.020
+x_high = 0.020
+y_low = -0.002
+y_high = 0.002
+z_low = -0.020
+z_high = 0.020
+periodic_x = false
+periodic_y = false
+periodic_z = false
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.002
+
+[output]
+dir = "examples/bench_brazilian_disk"
+
+[[dem.materials]]
+name = "rock"
+youngs_mod = 5.0e7       # Young's modulus [Pa] — kept moderate to match bond stiffness
+poisson_ratio = 0.25
+restitution = 0.5
+friction = 0.5
+
+# Bottom platen just below disk surface, moving up slowly
+[[wall]]
+wall_type = "plane"
+point_x = 0.0
+point_y = 0.0
+point_z = -0.0092
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "rock"
+velocity = [0.0, 0.0, 0.005]  # 5 mm/s upward
+
+# Top platen just above disk surface, moving down slowly
+[[wall]]
+wall_type = "plane"
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0092
+normal_x = 0.0
+normal_y = 0.0
+normal_z = -1.0
+material = "rock"
+velocity = [0.0, 0.0, -0.005] # 5 mm/s downward
+
+[bonds]
+auto_bond = true
+bond_tolerance = 1.01
+normal_stiffness = 1.0e8       # Bond normal stiffness [N/m]
+normal_damping = 50.0          # Bond normal damping [N*s/m]
+tangential_stiffness = 5.0e7   # Bond tangential stiffness [N/m]
+tangential_damping = 25.0
+break_normal_stretch = 0.005   # Break at 0.5% normal strain
+break_shear = 0.000005         # Break at 5 um shear displacement [m]
+
+[thermo]
+columns = ["step", "ke", "bond_strain", "bonds_broken", "walltime"]
+
+[run]
+dt = 1.0e-8                    # Small timestep for stiff bonds [s]
+steps = 500000                 # 0.005 s of physical time
+thermo = 5000
+
+[dump]
+interval = 25000
