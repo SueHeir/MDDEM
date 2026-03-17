@@ -55,11 +55,9 @@ def castellanos_trend(bo, theta0=27.0):
     """
     Empirical cohesive angle of repose trend (inspired by Castellanos 2005).
 
-    For granular materials, the angle of repose increases with the granular
-    Bond number. A simple model: theta = theta0 + k * Bo / (1 + Bo)
+    theta = theta0 + k * Bo / (1 + Bo)
     where theta0 is the non-cohesive angle and k sets the max increase.
-
-    This captures: Bo<<1 -> theta0, Bo~1 -> intermediate, Bo>>1 -> plateau.
+    Captures: Bo<<1 -> theta0, Bo~1 -> intermediate, Bo>>1 -> plateau.
     """
     k = 50.0  # Maximum additional angle [deg]
     return theta0 + k * bo / (1.0 + bo)
@@ -73,7 +71,7 @@ def main():
         results_path = DATA_RESULTS
     else:
         print(f"ERROR: No results file found at {RESULTS_FILE}")
-        print(f"Run: python run_benchmark.py first.")
+        print("Run: python run_benchmark.py first.")
         sys.exit(1)
 
     labels, gravities, gammas, bond_numbers, angles = load_results(results_path)
@@ -85,21 +83,21 @@ def main():
     # --- Plot 1: Angle vs Surface Energy ---
     fig, ax = plt.subplots(figsize=(8, 5.5))
 
-    earth_mask = gravities < -5.0  # gz ~ -9.81
-    lunar_mask = gravities > -5.0  # gz ~ -1.62
+    earth_mask = gravities < -5.0
+    lunar_mask = gravities > -5.0
 
     if np.any(earth_mask):
         idx = np.argsort(gammas[earth_mask])
         ax.plot(gammas[earth_mask][idx] * 1000, angles[earth_mask][idx],
                 "s-", color="#2196F3", markersize=8, linewidth=2,
-                label=f"Earth (g = 9.81 m/s$^2$)", markerfacecolor="white",
+                label="Earth (g = 9.81 m/s$^2$)", markerfacecolor="white",
                 markeredgewidth=2)
 
     if np.any(lunar_mask):
         idx = np.argsort(gammas[lunar_mask])
         ax.plot(gammas[lunar_mask][idx] * 1000, angles[lunar_mask][idx],
                 "o-", color="#FF5722", markersize=8, linewidth=2,
-                label=f"Moon (g = 1.62 m/s$^2$)", markerfacecolor="white",
+                label="Moon (g = 1.62 m/s$^2$)", markerfacecolor="white",
                 markeredgewidth=2)
 
     ax.set_xlabel("Surface Energy, $\\gamma$ [mJ/m$^2$]", fontsize=13)
@@ -111,7 +109,7 @@ def main():
     ax.grid(True, alpha=0.3)
     ax.tick_params(labelsize=11)
 
-    # Annotate Bond numbers on the plot
+    # Annotate Bond numbers
     for i in range(len(labels)):
         if bond_numbers[i] > 0.01:
             offset_y = 3 if gravities[i] < -5 else -5
@@ -129,7 +127,6 @@ def main():
     # --- Plot 2: Angle vs Bond Number (universal scaling) ---
     fig, ax = plt.subplots(figsize=(8, 5.5))
 
-    # Simulation data
     if np.any(earth_mask):
         ax.scatter(bond_numbers[earth_mask], angles[earth_mask],
                    s=100, marker="s", facecolors="white", edgecolors="#2196F3",
@@ -155,10 +152,10 @@ def main():
     ax.grid(True, alpha=0.3)
     ax.tick_params(labelsize=11)
 
-    # Add regime annotations
-    ax.axvspan(-0.5, 1.0, alpha=0.05, color="blue", label=None)
-    ax.axvspan(1.0, 5.0, alpha=0.05, color="orange", label=None)
-    ax.axvspan(5.0, 20.0, alpha=0.05, color="red", label=None)
+    # Regime annotations
+    ax.axvspan(-0.5, 1.0, alpha=0.05, color="blue")
+    ax.axvspan(1.0, 5.0, alpha=0.05, color="orange")
+    ax.axvspan(5.0, 20.0, alpha=0.05, color="red")
     ax.text(0.3, 85, "Gravity\ndominated", fontsize=9, ha="center", color="blue", alpha=0.6)
     ax.text(2.5, 85, "Transitional", fontsize=9, ha="center", color="orange", alpha=0.6)
     ax.text(10.0, 85, "Cohesion\ndominated", fontsize=9, ha="center", color="red", alpha=0.6)

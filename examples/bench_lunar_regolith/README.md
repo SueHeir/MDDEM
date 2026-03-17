@@ -1,6 +1,6 @@
 # Lunar Regolith Cohesive Angle of Repose Benchmark
 
-Validates JKR adhesion in reduced gravity by simulating cohesive particle pile formation and measuring the resulting angle of repose.
+Validates JKR adhesion in reduced gravity by simulating a funnel-pour of cohesive particles and measuring the resulting angle of repose.
 
 ## Physics
 
@@ -20,12 +20,21 @@ Lunar gravity (1.62 m/s²) gives ~6× higher Bo than Earth gravity (9.81 m/s²) 
 
 ## Setup
 
-- **Geometry**: Quasi-2D (periodic in y, 2 particle diameters thick)
-- **Particles**: 300 spheres, R = 1 mm, ρ = 1500 kg/m³ (scaled up from real regolith for tractability)
+- **Geometry**: Quasi-2D (periodic in y, 3 particle diameters thick)
+- **Particles**: 350 spheres, R = 1 mm, ρ = 1500 kg/m³ (scaled up from real regolith for tractability)
 - **Contact model**: Hertz-Mindlin with JKR adhesion
 - **Material**: E = 5 MPa (soft for fast simulation), μ = 0.5, μ_r = 0.1
-- **Insertion**: Rate-based pouring from narrow slot above center
+- **Insertion**: Rate-based pouring from narrow slot above center (10 particles every 500 steps)
 - **Floor**: Flat wall at z = 0
+- **Boundaries**: shrink-wrap in z, periodic in y, fixed in x (wide enough pile doesn't reach walls)
+
+## Angle Measurement
+
+The pile angle is measured by:
+1. Binning particles by |x| (exploiting symmetry about x=0)
+2. Finding the surface height in each bin (max z + radius)
+3. Fitting a line to the surface profile
+4. Angle = atan(|slope|)
 
 ## Running
 

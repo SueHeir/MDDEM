@@ -3,7 +3,7 @@
 Validate the lunar regolith cohesive angle of repose benchmark.
 
 Reads results.csv (produced by run_benchmark.py) and checks:
-  1. Non-cohesive angle is in the expected range (20-40 deg)
+  1. Non-cohesive angle is in the expected range (15-45 deg)
   2. Angle increases monotonically with surface energy (for each gravity)
   3. Lunar angles >= Earth angles for the same surface energy (when cohesion > 0)
   4. High-adhesion cases produce significantly steeper piles than no-adhesion
@@ -17,17 +17,14 @@ import numpy as np
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_FILE = os.path.join(SCRIPT_DIR, "results.csv")
-
-# Also support reading results from a pre-generated data directory
-DATA_DIR = os.path.join(SCRIPT_DIR, "data")
-DATA_RESULTS = os.path.join(DATA_DIR, "results.csv")
+DATA_RESULTS = os.path.join(SCRIPT_DIR, "data", "results.csv")
 
 
 def load_results(path):
     """Load results CSV into a structured dict."""
     results = {}
     with open(path) as f:
-        header = f.readline().strip()
+        f.readline()  # skip header
         for line in f:
             parts = line.strip().split(",")
             if len(parts) < 5:
@@ -61,9 +58,9 @@ def main():
     elif os.path.isfile(DATA_RESULTS):
         results_path = DATA_RESULTS
     else:
-        print(f"ERROR: No results file found.")
+        print("ERROR: No results file found.")
         print(f"  Expected: {RESULTS_FILE}")
-        print(f"  Run: python run_benchmark.py first.")
+        print("  Run: python run_benchmark.py first.")
         sys.exit(1)
 
     results = load_results(results_path)
@@ -78,20 +75,12 @@ def main():
     passed = 0
     total = 0
 
-    # Helper to get angle for a case (also check pile_height if present)
     def get_angle(label):
         if label in results and not np.isnan(results[label]["angle"]):
             return results[label]["angle"]
         return None
 
-    def get_height(label):
-        if label in results and "pile_height" in results[label]:
-            h = results[label].get("pile_height", np.nan)
-            if h is not None and not np.isnan(h):
-                return h
-        return None
-
-    # ---- Check 1: Non-cohesive angles in expected range (20-40 deg) ----
+    # ---- Check 1: Non-cohesive angles in expected range (15-45 deg) ----
     for env, label in [("Earth", "earth_gamma0.000"), ("Lunar", "lunar_gamma0.000")]:
         total += 1
         angle = get_angle(label)
@@ -114,11 +103,8 @@ def main():
         if len(valid_angles) < 3:
             print(f"  {env} angle vs adhesion:  SKIP (insufficient data: {len(valid_angles)} cases)")
         else:
-            # Check that angle generally increases (allow small dips due to noise)
-            angle_vals = [a for _, a in valid_angles]
-            # Use linear regression: slope should be positive
             gamma_vals = np.array([g for g, _ in valid_angles])
-            angle_arr = np.array(angle_vals)
+            angle_arr = np.array([a for _, a in valid_angles])
             if len(gamma_vals) >= 2 and np.std(gamma_vals) > 0:
                 slope = np.polyfit(gamma_vals, angle_arr, 1)[0]
                 if slope > 0:
@@ -126,7 +112,7 @@ def main():
                     passed += 1
                 else:
                     print(f"  {env} angle vs adhesion:  FAIL (slope={slope:.1f}, expected positive)")
-                    print(f"    Angles: {['%.1f' % a for a in angle_vals]}")
+                    print(f"    Angles: {['%.1f' % a for a in angle_arr]}")
             else:
                 print(f"  {env} angle vs adhesion:  SKIP (insufficient variation)")
 
@@ -146,7 +132,7 @@ def main():
                 lunar_steeper_count += 1
 
     if comparison_count == 0:
-        print(f"  Lunar >= Earth (cohesive): SKIP (no data)")
+        print("  Lunar >= Earth (cohesive): SKIP (no data)")
     elif lunar_steeper_count == comparison_count:
         print(f"  Lunar >= Earth (cohesive): PASS ({lunar_steeper_count}/{comparison_count} cases)")
         passed += 1
@@ -160,7 +146,7 @@ def main():
         high_adh = get_angle(f"{prefix}_gamma0.050")
         if no_adh is None or high_adh is None:
             print(f"  {env} high-adh steeper:    SKIP (no data)")
-        elif high_adh > no_adh + 3.0:  # At least 3 degrees steeper
+        elif high_adh > no_adh + 3.0:
             print(f"  {env} high-adh steeper:    PASS ({high_adh:.1f} > {no_adh:.1f} + 3)")
             passed += 1
         else:

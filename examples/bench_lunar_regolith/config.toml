@@ -1,8 +1,8 @@
 # Lunar Regolith Cohesive Angle of Repose — Default Config
 #
-# Column collapse test: particles settle in a narrow column, then the
-# column walls are removed and the pile collapses under gravity.
-# The final pile angle depends on friction, JKR adhesion, and gravity.
+# Funnel-pour test: particles are dropped from a narrow slot above the center
+# of a flat floor. They accumulate into a pile whose angle depends on
+# friction, JKR adhesion, and gravity.
 #
 # This is the "demo" config. Use run_benchmark.py for the full parametric study.
 
@@ -12,15 +12,16 @@ processors_y = 1
 processors_z = 1
 
 [domain]
-x_low = -0.06           # [m] Wide enough for pile to spread
+x_low = -0.06           # [m] Wide enough that pile doesn't reach walls
 x_high = 0.06
 y_low = 0.0             # [m] Quasi-2D: periodic in y
 y_high = 0.006          # 3 particle diameters thick
 z_low = 0.0             # [m] Floor level
-z_high = 0.10
+z_high = 0.10           # [m] Tall enough for insertion region
 periodic_x = false
-periodic_y = true       # Quasi-2D slice (2 particle diameters thick)
+periodic_y = true       # Quasi-2D slice
 periodic_z = false
+boundary_z = "shrink-wrap"  # Track highest particle
 
 [neighbor]
 skin_fraction = 1.2     # Extra skin for JKR extended range
@@ -45,15 +46,18 @@ friction = 0.5           # Typical for angular lunar regolith
 rolling_friction = 0.1   # Resists rolling for realistic pile formation
 surface_energy = 0.02    # [J/m^2] JKR adhesion — moderate cohesion
 
-# Insert particles in a narrow column
-# Column: x [-0.012, 0.012], z [0.002, 0.085]
-# 500 particles gives enough mass for a multi-layered pile after collapse
+# Rate-based insertion: drop particles from narrow slot above center
+# Slot: x [-0.005, 0.005], z [0.04, 0.06]
+# Insert 10 particles every 500 steps, up to 350 total
 [[particles.insert]]
 material = "regolith"
-count = 350              # Number of particles
-radius = 0.001           # [m] 1 mm (scaled up from real regolith ~100 um)
-density = 1500.0         # [kg/m^3] Typical lunar regolith bulk density
-region = { type = "block", min = [-0.012, 0.0, 0.002], max = [0.012, 0.006, 0.09] }
+radius = 0.001           # [m] 1 mm
+density = 1500.0         # [kg/m^3]
+rate = 10                # Particles per insertion event
+rate_interval = 500      # Insert every 500 timesteps
+rate_limit = 350         # Total particles to insert
+velocity_z = -0.5        # [m/s] Initial downward velocity
+region = { type = "block", min = [-0.005, 0.0, 0.04], max = [0.005, 0.006, 0.06] }
 
 # Floor wall
 [[wall]]
@@ -61,51 +65,13 @@ point_z = 0.0
 normal_z = 1.0
 material = "regolith"
 
-# Side walls to contain particles at domain edges
-[[wall]]
-point_x = -0.06
-normal_x = 1.0
-material = "regolith"
-
-[[wall]]
-point_x = 0.06
-normal_x = -1.0
-material = "regolith"
-
-# Ceiling wall to prevent particles escaping upward
-[[wall]]
-point_z = 0.095
-normal_z = -1.0
-material = "regolith"
-
-# Column containment walls (removed during collapse phase)
-[[wall]]
-point_x = -0.012
-normal_x = 1.0            # Normal points +x (inward), contains particles
-material = "regolith"
-name = "column_left"
-
-[[wall]]
-point_x = 0.012
-normal_x = -1.0            # Normal points -x (inward), contains particles
-material = "regolith"
-name = "column_right"
-
 [output]
 dir = "examples/bench_lunar_regolith/output"
 
-# Stage 1: Let particles settle inside the column
+# Single stage: pour and settle
 [[run]]
-name = "settling"
-steps = 50000            # Enough to settle under gravity
-thermo = 5000
-dt = 1e-5                # [s] ~15% of Rayleigh time for E=5e6
-dump_interval = 50000
-
-# Stage 2: Column collapse — pile spreads and forms angle of repose
-[[run]]
-name = "collapse"
-steps = 100000           # 1s of collapse and settling
-thermo = 5000
-dt = 1e-5
-dump_interval = 10000    # Frequent dumps to track collapse
+name = "pour"
+steps = 200000           # 1.0s at dt=5e-6 — enough to pour and settle
+thermo = 10000
+dt = 5e-6                # [s] Stable timestep for E=5e6
+dump_interval = 200000   # Only dump at end
