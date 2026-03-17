@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Atom manipulation fixes (addforce, setforce, freeze, move_linear) for MDDEM"
+description = "Atom manipulation fixes (addforce, setforce, freeze, move_linear, viscous, gravity) for MDDEM"
 keywords = ["fix", "force", "freeze", "molecular-dynamics", "dem"]
 categories = ["simulation", "science"]
 
