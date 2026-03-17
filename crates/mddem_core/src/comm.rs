@@ -1,3 +1,19 @@
+//! MPI and single-process communication: ghost atoms, exchange, and force reduction.
+//!
+//! This module provides:
+//! - [`CommBackend`] trait abstracting MPI or single-process communication
+//! - [`SingleProcessComm`]: no-op backend for serial runs
+//! - [`MpiCommBackend`]: real MPI backend (behind the `mpi_backend` feature)
+//! - [`CommunicationPlugin`]: sets up the processor grid, ghost border
+//!   communication, and reverse force reduction
+//!
+//! # Communication phases (per timestep)
+//!
+//! 1. **Exchange** (MPI only): migrate atoms that left the sub-domain
+//! 2. **Borders**: create ghost copies of near-boundary atoms on neighboring ranks
+//! 3. **Forward comm**: lightweight position/velocity update for existing ghosts
+//! 4. **Reverse comm**: accumulate forces from ghosts back to their owners
+
 use std::process::exit;
 
 use mddem_app::prelude::*;
@@ -298,6 +314,8 @@ impl CommBackend for MpiCommBackend {
 
 // ── Unified CommunicationPlugin ──────────────────────────────────────────────
 
+/// Plugin that sets up communication infrastructure: processor grid, ghost
+/// borders, exchange (MPI), and reverse force accumulation.
 pub struct CommunicationPlugin;
 
 impl Plugin for CommunicationPlugin {
@@ -355,6 +373,7 @@ processors_z = 1"#,
 
 // ── Shared systems ───────────────────────────────────────────────────────────
 
+/// Read `[comm]` config and set up the processor grid decomposition.
 pub fn comm_read_input(config: Res<CommConfig>, mut comm: ResMut<CommResource>) {
     if comm.rank() == 0 {
         println!(
@@ -395,20 +414,20 @@ pub fn comm_read_input(config: Res<CommConfig>, mut comm: ResMut<CommResource>) 
     comm.set_processor_grid(decomp, position);
 }
 
+/// Convert a 3D processor grid position to a linear MPI rank.
 fn pos_to_rank(pos: [i32; 3], decomp: [i32; 3]) -> i32 {
     pos[0] * decomp[1] * decomp[2] + pos[1] * decomp[2] + pos[2]
 }
 
+/// Compute neighbor ranks and periodic swap offsets for each dimension.
 pub fn comm_setup(comm: Res<CommResource>, mut topo: ResMut<CommTopology>, domain: Res<Domain>) {
     let decomp = comm.processor_decomposition();
     let pos = comm.processor_position();
     let periodic = domain.is_periodic;
-    let decomp_arr = decomp;
-    let pos_arr = pos;
 
     for dim in 0..3 {
         // Forward neighbor (+1 in this dimension)
-        if pos_arr[dim] + 1 < decomp_arr[dim] {
+        if pos[dim] + 1 < decomp[dim] {
             let mut neighbor_pos = pos;
             neighbor_pos[dim] += 1;
             topo.swap_directions[1][dim] = pos_to_rank(neighbor_pos, decomp);
@@ -420,13 +439,13 @@ pub fn comm_setup(comm: Res<CommResource>, mut topo: ResMut<CommTopology>, domai
         }
 
         // Backward neighbor (-1 in this dimension)
-        if pos_arr[dim] - 1 >= 0 {
+        if pos[dim] >= 1 {
             let mut neighbor_pos = pos;
             neighbor_pos[dim] -= 1;
             topo.swap_directions[0][dim] = pos_to_rank(neighbor_pos, decomp);
         } else if periodic[dim] {
             let mut neighbor_pos = pos;
-            neighbor_pos[dim] = decomp_arr[dim] - 1;
+            neighbor_pos[dim] = decomp[dim] - 1;
             topo.swap_directions[0][dim] = pos_to_rank(neighbor_pos, decomp);
             topo.periodic_swap[0][dim] = 1.0;
         }
@@ -585,6 +604,10 @@ fn forward_comm(
 
 // ── Unified borders ──────────────────────────────────────────────────────────
 
+/// Build ghost atoms by scanning near-boundary locals and sending them to neighbors.
+///
+/// On subsequent steps when `communicate_only` is set, performs a lightweight
+/// `forward_comm` instead (updating ghost positions without full rebuild).
 pub fn borders(
     comm: Res<CommResource>,
     mut topo: ResMut<CommTopology>,
@@ -620,12 +643,11 @@ pub fn borders(
     // Compute maxneed on first full rebuild (ghost_cutoff is set by neighbor_setup)
     if topo.maxneed == [0, 0, 0] {
         let decomp = comm.processor_decomposition();
-        let decomp_arr = decomp;
-        for dim in 0..3 {
-            if decomp_arr[dim] == 1 {
+        for (dim, (&dec, &sub_len)) in decomp.iter().zip(domain.sub_length.iter()).enumerate() {
+            if dec == 1 {
                 topo.maxneed[dim] = 1;
             } else {
-                topo.maxneed[dim] = (domain.ghost_cutoff / domain.sub_length[dim]).ceil().max(1.0) as i32;
+                topo.maxneed[dim] = (domain.ghost_cutoff / sub_len).ceil().max(1.0) as i32;
             }
         }
         if comm.rank() == 0 {
@@ -720,6 +742,11 @@ pub fn borders(
 
 // ── Unified reverse send force ────────────────────────────────────────────────
 
+/// Accumulate ghost forces back onto their owner atoms.
+///
+/// Iterates swap data in reverse order (mirroring `borders`), packing
+/// force + registry reverse fields from each ghost and sending them to the
+/// rank that owns the original atom.
 pub fn reverse_send_force(
     comm: Res<CommResource>,
     topo: Res<CommTopology>,
@@ -813,8 +840,7 @@ pub fn exchange(
     if atoms.communicate_only {
         return;
     }
-    let proc_decomp = comm.processor_decomposition();
-    let decomp_arr = proc_decomp;
+    let decomp = comm.processor_decomposition();
 
     // Reuse persistent exchange buffers (only need 2: lo and hi per dimension)
     let mut atoms_buff = std::mem::take(&mut buffers.exchange_buffs);
@@ -823,7 +849,7 @@ pub fn exchange(
     // Per-dimension exchange: atoms migrating in dim 0 are sent first,
     // received atoms may continue migrating in dims 1, 2.
     for dim in 0..3usize {
-        if decomp_arr[dim] == 1 {
+        if decomp[dim] == 1 {
             continue; // No exchange needed in this dimension (PBC handled elsewhere)
         }
 

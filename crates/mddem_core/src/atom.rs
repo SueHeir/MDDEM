@@ -1,3 +1,15 @@
+//! Per-atom data storage and the [`AtomData`] extension trait.
+//!
+//! This module provides:
+//! - [`Atom`]: struct-of-arrays storage for core per-atom fields (position,
+//!   velocity, force, mass, etc.)
+//! - [`AtomData`]: trait for plugin-specific per-atom extensions (e.g. radius,
+//!   angular velocity) with pack/unpack support for MPI communication
+//! - [`AtomDataRegistry`]: dynamic registry that manages all [`AtomData`]
+//!   extensions, keyed by `TypeId`
+//! - [`AtomPlugin`]: registers the [`Atom`] and [`AtomDataRegistry`] resources
+//!   and the per-step force zeroing system
+
 use std::{
     any::{Any, TypeId},
     cell::{Ref, RefCell, RefMut},
@@ -6,7 +18,8 @@ use std::{
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 
-/// Number of f64s packed/unpacked for one atom's base fields.
+/// Number of `f64`s packed/unpacked for one atom's base fields
+/// (tag, origin_index, cutoff_radius, atom_type, pos×3, vel×3, force×3, mass).
 pub const ATOM_PACK_SIZE: usize = 14;
 
 // ── AtomData trait ───────────────────────────────────────────────────────────
@@ -33,14 +46,28 @@ macro_rules! register_atom_data {
     };
 }
 
-/// Per-atom extension data (e.g. radius, density). Supports pack/unpack for MPI communication.
+/// Per-atom extension data (e.g. radius, density for DEM).
+///
+/// Implement this trait to attach custom per-atom fields to the simulation.
+/// The registry handles pack/unpack for MPI ghost and exchange communication
+/// automatically. Use the `#[derive(AtomData)]` macro from `mddem_derive` for
+/// simple struct-of-Vec extensions; implement manually only for complex layouts
+/// (like [`BondStore`](crate::BondStore)).
 pub trait AtomData: Any {
+    /// Upcast to `&dyn Any` for downcasting in the registry.
     fn as_any(&self) -> &dyn Any;
+    /// Upcast to `&mut dyn Any` for mutable downcasting in the registry.
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// Shrink all per-atom Vecs to length `n`, discarding trailing entries.
     fn truncate(&mut self, n: usize);
+    /// Remove atom at index `i` by swapping with the last element.
     fn swap_remove(&mut self, i: usize);
+    /// Serialize all fields for atom `i` into `buf` (exchange/border comm).
     fn pack(&self, i: usize, buf: &mut Vec<f64>);
+    /// Deserialize one atom's fields from `buf`, appending to internal Vecs.
+    /// Returns the number of `f64`s consumed.
     fn unpack(&mut self, buf: &[f64]) -> usize;
+    /// Reorder atoms according to `perm[0..n]` (used by spatial sorting).
     fn apply_permutation(&mut self, perm: &[usize], n: usize);
 
     /// Pack forward-comm fields (e.g. omega for DEM) into buf.
@@ -79,6 +106,7 @@ impl AtomDataRegistry {
         }
     }
 
+    /// Register a new [`AtomData`] extension. Panics if the same type is registered twice.
     pub fn register<T: AtomData + 'static>(&mut self, data: T) {
         let id = TypeId::of::<T>();
         for (existing_id, _) in &self.stores {
@@ -89,14 +117,19 @@ impl AtomDataRegistry {
         self.stores.push((id, RefCell::new(Box::new(data))));
     }
 
+    /// Borrow a registered [`AtomData`] extension immutably, or `None` if not registered.
     pub fn get<T: AtomData + 'static>(&self) -> Option<Ref<'_, T>> {
         let id = TypeId::of::<T>();
         self.stores
             .iter()
             .find(|(tid, _)| *tid == id)
-            .map(|(_, cell)| Ref::map(cell.borrow(), |b| b.as_any().downcast_ref::<T>().unwrap()))
+            .map(|(_, cell)| Ref::map(cell.borrow(), |b| {
+                b.as_any().downcast_ref::<T>()
+                    .expect("AtomData downcast failed — type mismatch (this is a bug in MDDEM)")
+            }))
     }
 
+    /// Borrow a registered [`AtomData`] extension mutably, or `None` if not registered.
     pub fn get_mut<T: AtomData + 'static>(&self) -> Option<RefMut<'_, T>> {
         let id = TypeId::of::<T>();
         self.stores
@@ -104,7 +137,8 @@ impl AtomDataRegistry {
             .find(|(tid, _)| *tid == id)
             .map(|(_, cell)| {
                 RefMut::map(cell.borrow_mut(), |b| {
-                    b.as_any_mut().downcast_mut::<T>().unwrap()
+                    b.as_any_mut().downcast_mut::<T>()
+                        .expect("AtomData downcast failed — type mismatch (this is a bug in MDDEM)")
                 })
             })
     }
@@ -129,24 +163,28 @@ impl AtomDataRegistry {
         })
     }
 
+    /// Truncate all registered extensions to `n` atoms (used when removing ghosts).
     pub fn truncate_all(&self, n: usize) {
         for (_, cell) in &self.stores {
             cell.borrow_mut().truncate(n);
         }
     }
 
+    /// Remove atom at index `i` from all registered extensions via swap-remove.
     pub fn swap_remove_all(&self, i: usize) {
         for (_, cell) in &self.stores {
             cell.borrow_mut().swap_remove(i);
         }
     }
 
+    /// Pack all extension fields for atom `i` into `buf` (exchange/border comm).
     pub fn pack_all(&self, i: usize, buf: &mut Vec<f64>) {
         for (_, cell) in &self.stores {
             cell.borrow().pack(i, buf);
         }
     }
 
+    /// Unpack one atom's extension fields from `buf`. Returns total `f64`s consumed.
     pub fn unpack_all(&self, buf: &[f64]) -> usize {
         let mut pos = 0;
         for (_, cell) in &self.stores {
@@ -155,18 +193,22 @@ impl AtomDataRegistry {
         pos
     }
 
+    /// Reorder all extensions according to `perm[0..n]`.
     pub fn apply_permutation_all(&self, perm: &[usize], n: usize) {
         for (_, cell) in &self.stores {
             cell.borrow_mut().apply_permutation(perm, n);
         }
     }
 
+    /// Pack forward-comm fields for atom `i` across all extensions.
     pub fn pack_forward_all(&self, i: usize, buf: &mut Vec<f64>) {
         for (_, cell) in &self.stores {
             cell.borrow().pack_forward(i, buf);
         }
     }
 
+    /// Unpack forward-comm fields for atom `i` across all extensions.
+    /// Returns total `f64`s consumed.
     pub fn unpack_forward_all(&self, i: usize, buf: &[f64]) -> usize {
         let mut pos = 0;
         for (_, cell) in &self.stores {
@@ -175,12 +217,15 @@ impl AtomDataRegistry {
         pos
     }
 
+    /// Pack reverse-comm fields (e.g. torque) for atom `i` across all extensions.
     pub fn pack_reverse_all(&self, i: usize, buf: &mut Vec<f64>) {
         for (_, cell) in &self.stores {
             cell.borrow().pack_reverse(i, buf);
         }
     }
 
+    /// Unpack reverse-comm fields for atom `i` across all extensions.
+    /// Returns total `f64`s consumed.
     pub fn unpack_reverse_all(&self, i: usize, buf: &[f64]) -> usize {
         let mut pos = 0;
         for (_, cell) in &self.stores {
@@ -189,20 +234,25 @@ impl AtomDataRegistry {
         pos
     }
 
+    /// Zero per-step accumulators (e.g. torque) in all extensions for atoms `0..n`.
     pub fn zero_all(&self, n: usize) {
         for (_, cell) in &self.stores {
             cell.borrow_mut().zero(n);
         }
     }
 
+    /// Total number of `f64`s per atom in forward comm across all extensions.
     pub fn forward_comm_size(&self) -> usize {
         self.stores.iter().map(|(_, cell)| cell.borrow().forward_comm_size()).sum()
     }
 
+    /// Total number of `f64`s per atom in reverse comm across all extensions.
     pub fn reverse_comm_size(&self) -> usize {
         self.stores.iter().map(|(_, cell)| cell.borrow().reverse_comm_size()).sum()
     }
 
+    /// Pack all local atoms for restart file serialization.
+    /// Returns one `Vec<f64>` per registered extension.
     pub fn pack_all_for_restart(&self, nlocal: usize) -> Vec<Vec<f64>> {
         self.stores
             .iter()
@@ -217,6 +267,7 @@ impl AtomDataRegistry {
             .collect()
     }
 
+    /// Restore all extensions from restart file buffers (one buffer per extension).
     pub fn unpack_all_from_restart(&self, buffers: &[Vec<f64>]) {
         for ((_, cell), buf) in self.stores.iter().zip(buffers.iter()) {
             let mut store = cell.borrow_mut();
@@ -371,10 +422,13 @@ impl Atom {
         self.pos[i][dim]
     }
 
+    /// Returns the highest global tag among all stored atoms, or 0 if empty.
     pub fn get_max_tag(&self) -> u32 {
         self.tag.iter().cloned().max().unwrap_or(0)
     }
 
+    /// Shared packing logic: writes [`ATOM_PACK_SIZE`] `f64`s for atom `i` into `buf`,
+    /// with caller-supplied origin_index and position offset.
     fn pack_atom_inner(&self, i: usize, origin_index_val: f64, pos_offset: [f64; 3], buf: &mut Vec<f64>) {
         buf.push(self.tag[i] as f64);
         buf.push(origin_index_val);
@@ -392,14 +446,18 @@ impl Atom {
         buf.push(self.mass[i]);
     }
 
+    /// Pack atom `i` for MPI exchange (migration to another rank). Sets origin_index to 0.
     pub fn pack_exchange(&self, i: usize, buf: &mut Vec<f64>) {
         self.pack_atom_inner(i, 0.0, [0.0; 3], buf);
     }
 
+    /// Pack atom `i` as a ghost for border communication, applying a periodic position shift.
+    /// Stores the local index as `origin_index` so reverse comm can accumulate forces back.
     pub fn pack_border(&mut self, i: usize, change_pos: [f64; 3], buf: &mut Vec<f64>) {
         self.pack_atom_inner(i, i as f64, change_pos, buf);
     }
 
+    /// Unpack one atom from `buf` (ghost or exchanged). Returns [`ATOM_PACK_SIZE`].
     pub fn unpack_atom(&mut self, buf: &[f64], is_ghost: bool) -> usize {
         self.tag.push(buf[0] as u32);
         self.origin_index.push(buf[1] as i32);
@@ -414,6 +472,7 @@ impl Atom {
         ATOM_PACK_SIZE
     }
 
+    /// Convenience method for tests: push a local atom with default velocity/force.
     pub fn push_test_atom(&mut self, tag: u32, pos: [f64; 3], radius: f64, mass: f64) {
         self.tag.push(tag);
         self.atom_type.push(0);
@@ -458,6 +517,8 @@ impl Plugin for AtomPlugin {
     }
 }
 
+/// Truncate ghost atoms before the next communication phase.
+/// Skipped when `communicate_only` is set (ghosts are updated in-place).
 pub fn remove_ghost_atoms(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) {
     if atoms.communicate_only {
         return;

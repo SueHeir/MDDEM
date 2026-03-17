@@ -1,3 +1,8 @@
+//! TOML configuration parsing utilities.
+//!
+//! [`Config`] wraps a parsed `toml::Table` and provides typed section extraction
+//! with user-friendly error messages pointing to the offending field.
+
 use std::any::TypeId;
 
 use mddem_app::prelude::App;
@@ -9,6 +14,9 @@ pub struct Config {
 }
 
 impl Config {
+    /// Deserialize a `[key]` section from the TOML table, returning `T::default()` if absent.
+    ///
+    /// Prints an actionable error and exits if deserialization fails.
     pub fn section<T: for<'de> Deserialize<'de> + Default>(&self, key: &str) -> T {
         match self.table.get(key) {
             None => T::default(),
@@ -27,6 +35,10 @@ impl Config {
         }
     }
 
+    /// Extract a config section and register it as an ECS resource on `app`.
+    ///
+    /// Looks up `[key]` in the TOML table, deserializes it into `T`, clones it
+    /// into the app as a resource, and returns the value.
     pub fn load<T: for<'de> Deserialize<'de> + Default + Clone + 'static>(
         app: &mut App,
         key: &str,

@@ -237,12 +237,8 @@ impl Region {
                     panic!("Cannot generate random point inside empty Union");
                 }
                 // Pick a random child region and sample from it
-                loop {
-                    let idx = rng.random_range(0..regions.len());
-                    let pt = regions[idx].random_point_inside(rng);
-                    // Point from any child is valid for union
-                    return pt;
-                }
+                let idx = rng.random_range(0..regions.len());
+                regions[idx].random_point_inside(rng)
             }
             Region::Intersect { regions } => {
                 if regions.is_empty() {
@@ -361,9 +357,9 @@ fn closest_point_block(pos: &[f64; 3], min: &[f64; 3], max: &[f64; 3]) -> Surfac
         ];
         let mut best_idx = 0;
         let mut best_dist = distances[0];
-        for i in 1..6 {
-            if distances[i] < best_dist {
-                best_dist = distances[i];
+        for (i, &dist) in distances.iter().enumerate().skip(1) {
+            if dist < best_dist {
+                best_dist = dist;
                 best_idx = i;
             }
         }

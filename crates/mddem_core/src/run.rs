@@ -1,3 +1,9 @@
+//! Run stages, cycle counting, and multi-stage simulation control.
+//!
+//! Supports single-stage `[run]` or multi-stage `[[run]]` TOML syntax.
+//! Each stage has its own step count, thermo interval, and optional config
+//! overrides (e.g. change thermostat temperature between stages).
+
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -68,10 +74,12 @@ pub struct RunConfig {
 }
 
 impl RunConfig {
+    /// Get the config for stage `index`, clamping to the last stage if out of range.
     pub fn current_stage(&self, index: usize) -> &StageConfig {
         &self.stages[index.min(self.stages.len() - 1)]
     }
 
+    /// Total number of configured run stages.
     pub fn num_stages(&self) -> usize {
         self.stages.len()
     }
@@ -163,6 +171,7 @@ thermo = 100
     }
 }
 
+/// Setup system: initialize cycle counters for the current stage and print run info.
 pub fn run_read_input(
     config: Res<RunConfig>,
     scheduler_manager: Res<SchedulerManager>,
@@ -200,6 +209,7 @@ pub fn run_read_input(
     run_state.cycle_remaining.push(stage.steps);
 }
 
+/// Increment cycle counters and advance to the next stage when steps are exhausted.
 pub fn update_cycle(
     mut run_state: ResMut<RunState>,
     mut scheduler_manager: ResMut<SchedulerManager>,
