@@ -1,10 +1,27 @@
+//! Quaternion-based rotational dynamics for DEM spheres.
+//!
+//! Implements velocity Verlet integration for angular degrees of freedom
+//! assuming solid spheres with moment of inertia `I = 2/5 m r²`.
+//!
+//! # Integration scheme
+//!
+//! **Initial integration** (before force computation):
+//! 1. Half-step angular velocity: `ω += ½ dt τ / I`
+//! 2. Update quaternion: `q = Δq · q` where `Δq = (cos(θ/2), sin(θ/2) ω̂)` and `θ = |ω| dt`
+//!
+//! **Final integration** (after force computation):
+//! 1. Half-step angular velocity: `ω += ½ dt τ / I`
+//!
+//! This mirrors the standard velocity Verlet for translational motion,
+//! applied to the rotational degrees of freedom with quaternion orientation tracking.
+
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 
 use dem_atom::DemAtom;
 use mddem_core::{Atom, AtomDataRegistry};
 
-/// Construct a unit quaternion [w, x, y, z] from an axis (must be unit length) and angle.
+/// Construct a unit quaternion `[w, x, y, z]` from a unit rotation axis and angle (radians).
 #[inline]
 fn quat_from_axis_angle(axis: [f64; 3], angle: f64) -> [f64; 4] {
     let half = angle * 0.5;
@@ -12,7 +29,7 @@ fn quat_from_axis_angle(axis: [f64; 3], angle: f64) -> [f64; 4] {
     [half.cos(), axis[0] * s, axis[1] * s, axis[2] * s]
 }
 
-/// Multiply two quaternions [w, x, y, z].
+/// Multiply two quaternions `[w, x, y, z]` using the Hamilton product.
 #[inline]
 fn quat_mul(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
     [
@@ -23,7 +40,12 @@ fn quat_mul(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
     ]
 }
 
-/// Quaternion-based Velocity Verlet for angular degrees of freedom (I = 2/5 mr²).
+/// Quaternion-based velocity Verlet integrator for angular degrees of freedom.
+///
+/// Assumes solid spheres with moment of inertia `I = 2/5 m r²`. Registers
+/// two systems:
+/// - [`initial_rotation`] at [`ScheduleSet::InitialIntegration`] — half-step ω, update quaternion
+/// - [`final_rotation`] at [`ScheduleSet::FinalIntegration`] — half-step ω after new torques
 pub struct RotationalDynamicsPlugin;
 
 impl Plugin for RotationalDynamicsPlugin {
@@ -33,6 +55,7 @@ impl Plugin for RotationalDynamicsPlugin {
     }
 }
 
+/// Initial half-step: advance angular velocity and update quaternion orientation.
 pub fn initial_rotation(atoms: Res<Atom>, registry: Res<AtomDataRegistry>) {
     let mut dem = registry.expect_mut::<DemAtom>("initial_rotation");
     let dt = atoms.dt;
@@ -59,6 +82,7 @@ pub fn initial_rotation(atoms: Res<Atom>, registry: Res<AtomDataRegistry>) {
     }
 }
 
+/// Final half-step: advance angular velocity using updated torques.
 pub fn final_rotation(atoms: Res<Atom>, registry: Res<AtomDataRegistry>) {
     let mut dem = registry.expect_mut::<DemAtom>("final_rotation");
     let dt = atoms.dt;
