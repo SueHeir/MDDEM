@@ -109,6 +109,8 @@ pub struct CollapseDetector {
 }
 
 impl CollapseDetector {
+    /// Create a new detector that retains the last `max_samples` temperature readings
+    /// (minimum 2) for cooling-rate estimation.
     fn new(max_samples: usize) -> Self {
         CollapseDetector {
             history: Vec::with_capacity(max_samples + 1),
@@ -151,7 +153,10 @@ impl CollapseDetector {
             return None;
         }
         let (t0, tg0) = self.history[0];
-        let (t1, tg1) = *self.history.last().unwrap();
+        let (t1, tg1) = *self
+            .history
+            .last()
+            .expect("history should have at least 2 entries (checked above)");
         let dt = t1 - t0;
         if dt <= 0.0 || tg0 <= 0.0 || tg1 <= 0.0 {
             return None;
@@ -238,12 +243,15 @@ pub struct VelocityDistributionResult {
     pub l2_deviation: f64,
     /// Kurtosis excess: κ - 3 (0 for Gaussian, >0 for heavy tails).
     pub kurtosis_excess: f64,
-    /// Per-component velocity histograms (vx, vy, vz) — probability density.
+    /// Bin centers for per-component velocity histograms, symmetric around 0 (length = num_bins).
     pub component_bin_centers: Vec<f64>,
+    /// Probability density of the vx fluctuation component (length = num_bins).
     pub component_pdf_x: Vec<f64>,
+    /// Probability density of the vy fluctuation component (length = num_bins).
     pub component_pdf_y: Vec<f64>,
+    /// Probability density of the vz fluctuation component (length = num_bins).
     pub component_pdf_z: Vec<f64>,
-    /// Gaussian reference for component distributions.
+    /// Gaussian reference PDF for component distributions at the measured T_g (length = num_bins).
     pub component_gaussian: Vec<f64>,
 }
 
@@ -268,10 +276,14 @@ pub struct SpeciesTemperatureResult {
 // ── Maxwell-Boltzmann PDF ──────────────────────────────────────────────────
 
 /// Maxwell-Boltzmann speed distribution for 3D:
+///
 /// f(v) = 4π (m / (2πkT))^(3/2) v² exp(-mv²/(2kT))
 ///
-/// Using granular temperature T_g = <v'^2>/3 (mass cancels if all equal mass):
+/// Using granular temperature T_g = ⟨v'²⟩/3 (mass cancels for equal-mass systems):
+///
 /// f(v) = 4π (1/(2πT_g))^(3/2) v² exp(-v²/(2T_g))
+///
+/// Returns 0.0 for negative speeds or non-positive temperature.
 fn maxwell_boltzmann_pdf(v: f64, t_granular: f64) -> f64 {
     if t_granular <= 0.0 || v < 0.0 {
         return 0.0;
@@ -280,7 +292,12 @@ fn maxwell_boltzmann_pdf(v: f64, t_granular: f64) -> f64 {
     4.0 * PI * (a / PI).powf(1.5) * v * v * (-a * v * v).exp()
 }
 
-/// 1D Gaussian PDF for a single velocity component with zero mean and variance T_g.
+/// 1D Gaussian PDF for a single velocity component with zero mean and variance T_g:
+///
+/// g(v) = (2π T_g)^(-1/2) exp(-v² / (2 T_g))
+///
+/// This is the expected distribution for each Cartesian velocity component (vx, vy, vz)
+/// in thermal equilibrium. Returns 0.0 for non-positive temperature.
 fn gaussian_component_pdf(v: f64, t_granular: f64) -> f64 {
     if t_granular <= 0.0 {
         return 0.0;
@@ -292,8 +309,23 @@ fn gaussian_component_pdf(v: f64, t_granular: f64) -> f64 {
 // ── Core analysis function (unit-testable) ─────────────────────────────────
 
 /// Compute velocity distribution statistics from raw velocity data.
+///
 /// This is the pure-computation core, separated from I/O for testability.
 /// Works for any particle simulation (DEM, MD, etc.).
+///
+/// The analysis pipeline:
+/// 1. Subtract center-of-mass velocity to obtain fluctuation velocities
+/// 2. Compute granular temperature T_g = ⟨m v'²⟩ / (3M) where v' = v - v_mean
+/// 3. Bin particle speeds into a histogram and normalize to a probability density
+/// 4. Evaluate the Maxwell-Boltzmann speed PDF f(v) = 4π (1/(2πT_g))^(3/2) v² exp(-v²/(2T_g))
+/// 5. Compute L2 deviation between measured and MB distributions
+/// 6. Compute kurtosis excess (0 for Gaussian, positive for heavy tails)
+/// 7. Build per-component (vx, vy, vz) histograms with Gaussian reference
+///
+/// # Panics
+///
+/// - If `velocities` is empty
+/// - If `velocities.len() != masses.len()`
 pub fn analyze_velocity_distribution(
     velocities: &[[f64; 3]],
     masses: &[f64],
@@ -474,6 +506,11 @@ pub fn analyze_velocity_distribution(
 /// The global center-of-mass velocity is subtracted before computing
 /// fluctuation velocities, so each species' T_s measures thermal motion
 /// relative to the bulk flow.
+///
+/// # Panics
+///
+/// - If `velocities.len() != masses.len()`
+/// - If `velocities.len() != atom_types.len()`
 pub fn analyze_per_species(
     velocities: &[[f64; 3]],
     masses: &[f64],
