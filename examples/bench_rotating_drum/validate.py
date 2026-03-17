@@ -55,7 +55,7 @@ periodic_z = false
 [neighbor]
 skin_fraction = 1.5
 bin_size = 0.005
-every = 20
+every = 10
 check = true
 
 [dem]
@@ -69,12 +69,21 @@ restitution = 0.5
 friction = {friction}
 rolling_friction = 0.1
 
+[[dem.materials]]
+name = "wall"
+youngs_mod = 5.0e6
+poisson_ratio = 0.3
+restitution = 0.5
+friction = {friction}
+rolling_friction = 0.1
+
 [[particles.insert]]
 material = "particles"
 count = 200
 radius = 0.002
 density = 2500.0
 velocity = 0.0
+region = {{ type = "cylinder", center = [0.05, 0.05], radius = 0.042, axis = "y", lo = 0.0, hi = 0.005 }}
 
 [gravity]
 gx = 0.0
@@ -83,7 +92,7 @@ gz = -9.81
 
 [run]
 steps = 300000
-thermo = 10000
+thermo = 5000
 dt = 5.0e-5
 dump_interval = 10000
 

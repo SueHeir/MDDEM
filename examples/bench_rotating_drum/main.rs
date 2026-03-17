@@ -123,7 +123,7 @@ fn rotate_drum_wall(mut atoms: ResMut<Atom>, run_state: Res<RunState>) {
         return;
     }
 
-    let t_rot = (step - SETTLING_STEPS) as f64 * dt;
+    let _t_rot = (step - SETTLING_STEPS) as f64 * dt;
     let nlocal = atoms.nlocal as usize;
 
     for i in 0..nlocal {
