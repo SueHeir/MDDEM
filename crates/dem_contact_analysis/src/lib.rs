@@ -2,20 +2,51 @@
 //!
 //! Provides [`ContactAnalysisPlugin`] which reads a `[contact_analysis]` TOML config section
 //! and registers post-force systems for:
-//! - Per-atom coordination number (count of active contacts per particle)
-//! - Rattler detection (particles with < 4 contacts, unstable in 3D)
-//! - Per-contact geometry records dumped to CSV files at configurable intervals
-//! - Fabric tensor computation from contact normals (output to thermo)
+//! - **Per-atom coordination number** — count of active contacts per particle, exposed as
+//!   thermo values (`coord_avg`, `coord_max`, `coord_min`) and as a per-atom dump scalar
+//!   (`coordination`).
+//! - **Rattler detection** — particles with fewer than 4 contacts are mechanically unstable
+//!   in 3D (they lack the *d* + 1 = 4 constraints needed for static equilibrium). When
+//!   enabled, the thermo output includes `n_rattlers` and `rattler_fraction`.
+//! - **Per-contact CSV dump** — geometric data for every contact pair written to CSV files
+//!   at configurable intervals. Each row contains atom tags, overlap, contact point, and
+//!   contact normal. See [`ContactRecord`] for field details.
+//! - **Fabric tensor** — the second-order fabric tensor *F_ij = (1/Nc) Σ n_i n_j* measures
+//!   the directional distribution of contact normals. For a perfectly isotropic packing,
+//!   *F ≈ (1/3) I*. Anisotropy (e.g. from shear) causes the diagonal components to deviate.
+//!   The six independent components are output to thermo as `fabric_xx`, `fabric_yy`,
+//!   `fabric_zz`, `fabric_xy`, `fabric_xz`, `fabric_yz`, along with the total `contacts`
+//!   count.
 //!
 //! # Configuration
+//!
+//! All fields are optional and have sensible defaults:
+//!
 //! ```toml
 //! [contact_analysis]
-//! interval = 1000        # dump contact data every N steps (0 = disabled)
-//! coordination = true    # compute per-atom coordination number
-//! rattlers = true        # detect rattler particles (< 4 contacts)
-//! fabric_tensor = true   # compute fabric tensor to thermo output
-//! file_prefix = "contact" # prefix for contact CSV files
+//! interval = 1000        # dump per-contact CSV every N steps (0 = disabled, default: 0)
+//! coordination = true    # compute per-atom coordination number (default: false)
+//! rattlers = true        # detect rattler particles with < 4 contacts (default: false)
+//! fabric_tensor = true   # compute fabric tensor to thermo output (default: false)
+//! file_prefix = "contact" # prefix for contact CSV filenames (default: "contact")
 //! ```
+//!
+//! # CSV Output Format
+//!
+//! When `interval > 0`, a CSV file is written every `interval` steps to
+//! `<output_dir>/contact/<prefix>_<step>_rank<rank>.csv` with columns:
+//!
+//! | Column   | Type  | Description                                    |
+//! |----------|-------|------------------------------------------------|
+//! | `i_tag`  | u32   | Global tag of atom *i*                         |
+//! | `j_tag`  | u32   | Global tag of atom *j*                         |
+//! | `overlap`| f64   | Overlap / penetration depth (positive = contact)|
+//! | `cx`     | f64   | Contact point x-coordinate                     |
+//! | `cy`     | f64   | Contact point y-coordinate                     |
+//! | `cz`     | f64   | Contact point z-coordinate                     |
+//! | `nx`     | f64   | Contact normal x-component (unit, i → j)       |
+//! | `ny`     | f64   | Contact normal y-component                     |
+//! | `nz`     | f64   | Contact normal z-component                     |
 
 use std::{
     fs::{self, File},
@@ -38,32 +69,55 @@ fn default_file_prefix() -> String {
     "contact".to_string()
 }
 
+/// Configuration for the `[contact_analysis]` TOML section.
+///
+/// All fields are optional; the defaults produce no output (everything disabled).
+/// Enable individual analyses by setting the corresponding flag to `true`.
 #[derive(Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ContactAnalysisConfig {
-    /// Dump per-contact data every N steps (0 = disabled).
+    /// Dump per-contact CSV data every N steps.
+    ///
+    /// Set to 0 (the default) to disable CSV output entirely. When enabled,
+    /// files are written to `<output_dir>/contact/<file_prefix>_<step>_rank<rank>.csv`.
     #[serde(default)]
     pub interval: usize,
-    /// Compute per-atom coordination number.
+    /// Compute per-atom coordination number (count of active contacts).
+    ///
+    /// Adds thermo values `coord_avg`, `coord_max`, `coord_min` and a per-atom
+    /// dump scalar `coordination`.
     #[serde(default)]
     pub coordination: bool,
-    /// Enable rattler detection (particles with < 4 contacts in 3D).
+    /// Enable rattler detection (particles with fewer than 4 contacts in 3D).
+    ///
+    /// Requires `coordination = true` to be meaningful. Adds thermo values
+    /// `n_rattlers` and `rattler_fraction`.
     #[serde(default)]
     pub rattlers: bool,
-    /// Compute fabric tensor and output to thermo.
+    /// Compute the fabric tensor and output its components to thermo.
+    ///
+    /// Adds thermo values `fabric_xx` .. `fabric_yz` (6 independent components)
+    /// and `contacts` (total contact count).
     #[serde(default)]
     pub fabric_tensor: bool,
-    /// File prefix for contact CSV output files.
+    /// File prefix for contact CSV output files (default: `"contact"`).
     #[serde(default = "default_file_prefix")]
     pub file_prefix: String,
 }
 
 // ── Per-atom coordination data ──────────────────────────────────────────────
 
-/// Per-atom contact analysis data (coordination number).
+/// Per-atom contact analysis data stored via the `AtomData` system.
+///
+/// Currently holds the coordination number for each atom.  The `#[zero]`
+/// attribute ensures values are reset to 0 at the start of each force
+/// computation, and `#[forward]` marks the field for ghost-atom communication.
 #[derive(AtomData)]
 pub struct ContactAnalysis {
-    /// Number of contacts per atom (as f64 for thermo/dump compatibility).
+    /// Number of active contacts per atom.
+    ///
+    /// Stored as `f64` for compatibility with thermo averaging and the dump
+    /// scalar interface (both expect `Vec<f64>`).
     #[forward]
     #[zero]
     pub coordination: Vec<f64>,
@@ -108,8 +162,14 @@ pub struct ContactRecord {
     pub nz: f64,
 }
 
-/// Resource holding per-contact data, cleared each step.
+/// Resource holding per-contact geometry data for the current timestep.
+///
+/// Records are cleared at the start of each contact-analysis pass and populated
+/// only on dump steps (when `interval > 0` and `step % interval == 0`).
+/// The [`dump_contact_records`] system writes them to CSV during
+/// `PostFinalIntegration`.
 pub struct ContactOutput {
+    /// Contact records collected during the current step's neighbor traversal.
     pub records: Vec<ContactRecord>,
 }
 
@@ -127,22 +187,42 @@ impl Default for ContactOutput {
     }
 }
 
-/// Fabric tensor accumulator, stored as a resource and filled during the main
-/// contact analysis loop to avoid redundant neighbor traversal.
+/// Accumulator for the symmetric 3×3 fabric tensor *F_ij = (1/Nc) Σ n_i n_j*.
+///
+/// Filled during [`compute_contact_analysis`] (single neighbor traversal) and
+/// read by [`push_fabric_tensor_to_thermo`].  The six independent components
+/// of the symmetric tensor are stored as separate fields; `nc` is the running
+/// contact count used to normalize the tensor after accumulation.
 #[derive(Default)]
 struct FabricTensorAccum {
+    /// Σ nx·nx over all contacts.
     fxx: f64,
+    /// Σ ny·ny over all contacts.
     fyy: f64,
+    /// Σ nz·nz over all contacts.
     fzz: f64,
+    /// Σ nx·ny over all contacts.
     fxy: f64,
+    /// Σ nx·nz over all contacts.
     fxz: f64,
+    /// Σ ny·nz over all contacts.
     fyz: f64,
+    /// Total number of contacts (used as normalization denominator).
     nc: f64,
 }
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
-/// Contact analysis plugin: coordination number, per-contact force output, fabric tensor.
+/// Contact analysis plugin providing coordination number, rattler detection,
+/// per-contact CSV output, and fabric tensor computation.
+///
+/// Add this plugin to your `App` to enable any combination of contact analyses.
+/// All features are controlled by the `[contact_analysis]` TOML config section
+/// (see [`ContactAnalysisConfig`] for field details).
+///
+/// Systems are scheduled in `PostForce` (after `"hertz_mindlin_contact"`) so
+/// that neighbor lists and particle positions are up to date.  CSV dumps run
+/// in `PostFinalIntegration` alongside other output.
 pub struct ContactAnalysisPlugin;
 
 impl Plugin for ContactAnalysisPlugin {
@@ -179,7 +259,7 @@ file_prefix = "contact""#,
             dump_reg
                 .borrow_mut()
                 .downcast_mut::<DumpRegistry>()
-                .unwrap()
+                .expect("DumpRegistry should downcast — internal type mismatch")
                 .register_scalar("coordination", |atoms, registry| {
                     let ca = registry.expect::<ContactAnalysis>("coordination dump");
                     let nlocal = atoms.nlocal as usize;
@@ -305,7 +385,9 @@ fn compute_contact_analysis(
         let ny = dy * inv_dist;
         let nz = dz * inv_dist;
 
-        // Accumulate fabric tensor
+        // Accumulate the symmetric fabric tensor: F_ij = (1/Nc) Σ n_i·n_j.
+        // We sum the outer product n⊗n for each contact here and normalize
+        // later in push_fabric_tensor_to_thermo by dividing by nc.
         if has_fabric {
             fabric.fxx += nx * nx;
             fabric.fyy += ny * ny;
@@ -318,7 +400,10 @@ fn compute_contact_analysis(
 
         // Collect per-contact record if this is a dump step
         if collect_records {
-            // Contact point: on surface of atom i, offset by (r1 - delta/2)
+            // Contact point lies on the line segment between the two particle
+            // centers, at the midpoint of the overlap region.  Starting from
+            // the center of atom i, advance along the contact normal by
+            // (r1 − δ/2), which places the point halfway into the overlap.
             let alpha = r1 - 0.5 * delta;
             let cx = atoms.pos[i][0] + alpha * nx;
             let cy = atoms.pos[i][1] + alpha * ny;
@@ -380,7 +465,8 @@ fn push_coordination_to_thermo(
         }
 
         let global_sum = comm.all_reduce_sum_f64(sum);
-        // Use min of negated values to get max across ranks
+        // MPI has all_reduce_min but not all_reduce_max, so compute global max
+        // as max(x) = −min(−x).
         let global_max = -comm.all_reduce_min_f64(-max_val);
         let global_min = comm.all_reduce_min_f64(min_val);
         let global_atoms = atoms.natoms as f64;
@@ -409,10 +495,15 @@ fn push_coordination_to_thermo(
     }
 }
 
-/// Push fabric tensor components from the accumulator to thermo output.
+/// Normalize and push fabric tensor components from the accumulator to thermo.
 ///
-/// Fabric tensor: `F_ij = (1/Nc) * sum(n_i * n_j)` over all contacts.
-/// For an isotropic packing, F ≈ (1/3) * I.
+/// The fabric tensor *F_ij = (1/Nc) Σ n_i n_j* is a symmetric 3×3 tensor that
+/// characterizes the directional distribution of contact normals.  Its trace
+/// is always 1 (since each *n* is a unit vector).  For an isotropic packing
+/// the diagonal entries are ≈ 1/3 and off-diagonal entries are ≈ 0.
+///
+/// The accumulator is filled by [`compute_contact_analysis`]; this system only
+/// performs the MPI reduction and normalization by the global contact count.
 fn push_fabric_tensor_to_thermo(
     fabric: Res<FabricTensorAccum>,
     comm: Res<CommResource>,
@@ -479,6 +570,10 @@ fn dump_contact_records(
     }
 }
 
+/// Write contact records to a CSV file at `<base_dir>/<prefix>_<step>_rank<rank>.csv`.
+///
+/// Creates `base_dir` if it does not exist.  Returns an `io::Result` so the
+/// caller can handle errors (e.g. log a warning) without panicking.
 fn dump_contact_csv(
     records: &[ContactRecord],
     base_dir: &str,
