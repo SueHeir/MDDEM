@@ -1,3 +1,24 @@
+//! The [`Plugin`] trait, [`PluginGroup`] builder, and state/stage management plugins.
+//!
+//! Every feature in MDDEM is implemented as a [`Plugin`]. Plugins register
+//! resources, systems, and sub-plugins with the [`App`](crate::App) during
+//! the build phase.
+//!
+//! # Implementing a plugin
+//!
+//! ```rust,ignore
+//! use mddem_app::prelude::*;
+//! use mddem_scheduler::ScheduleSet;
+//!
+//! pub struct GravityPlugin;
+//!
+//! impl Plugin for GravityPlugin {
+//!     fn build(&self, app: &mut App) {
+//!         app.add_update_system(apply_gravity, ScheduleSet::PreForce);
+//!     }
+//! }
+//! ```
+
 use downcast_rs::{impl_downcast, Downcast};
 use mddem_scheduler::{
     apply_state_transitions, check_stage_advance, CurrentState, NextState, ScheduleSet, StageName,
@@ -10,31 +31,66 @@ use std::any::TypeId;
 use std::collections::HashSet;
 
 /// A self-contained module that registers resources and systems with an [`App`].
+///
+/// Every simulation feature — physics models, I/O, analysis — is implemented
+/// as a `Plugin`. The [`build`](Plugin::build) method is called once during
+/// [`App::add_plugins`] to wire everything up.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// pub struct MyPlugin;
+///
+/// impl Plugin for MyPlugin {
+///     fn build(&self, app: &mut App) {
+///         app.add_resource(MyResource::default())
+///            .add_update_system(my_system, ScheduleSet::Update);
+///     }
+/// }
+/// ```
+///
+/// Closures `Fn(&mut App)` also implement `Plugin`, which is handy for tests:
+///
+/// ```rust,ignore
+/// app.add_plugins(|app: &mut App| {
+///     app.add_resource(TestResource);
+/// });
+/// ```
 pub trait Plugin: Downcast + Any + Send + Sync {
     /// Configures the [`App`] to which this plugin is added.
+    ///
+    /// This is the main entry point for plugin setup. Register resources,
+    /// systems, and sub-plugins here.
     fn build(&self, app: &mut App);
 
+    /// Returns the plugin's name, used for duplicate detection and diagnostics.
+    ///
+    /// Defaults to the Rust type name (e.g. `"my_crate::MyPlugin"`).
     fn name(&self) -> &str {
         core::any::type_name::<Self>()
     }
 
-    /// If the plugin can be meaningfully instantiated several times in an [`App`],
-    /// override this method to return `false`.
+    /// Whether this plugin may only be added once.
+    ///
+    /// Returns `true` by default. Override to return `false` if the plugin can
+    /// be meaningfully instantiated multiple times (e.g. with different configs).
     fn is_unique(&self) -> bool {
         true
     }
 
-    /// Return a TOML snippet showing this plugin's config section with defaults.
+    /// Returns a TOML snippet showing this plugin's config section with defaults.
+    ///
     /// Used by `--generate-config` to print a complete example config file.
+    /// Return `None` (the default) if the plugin has no configuration.
     fn default_config(&self) -> Option<&str> {
         None
     }
 
-    /// Return the names of plugins that must be registered before this one.
+    /// Returns the names of plugins that must be registered before this one.
     ///
-    /// Override this to declare dependencies. The app will validate that all
-    /// listed plugins have been registered before this plugin's `build()` runs,
-    /// and produce a clear error message if any are missing.
+    /// The app validates that all listed plugins have been registered before
+    /// this plugin's [`build`](Plugin::build) runs, and produces a clear error
+    /// message if any are missing.
     ///
     /// ```rust,ignore
     /// fn dependencies(&self) -> Vec<&str> {
@@ -48,6 +104,8 @@ pub trait Plugin: Downcast + Any + Send + Sync {
 
 impl_downcast!(Plugin);
 
+/// Blanket impl: any `Fn(&mut App) + Send + Sync + 'static` can be used as a
+/// [`Plugin`]. This is convenient for quick inline registrations and tests.
 impl<T: Fn(&mut App) + Send + Sync + 'static> Plugin for T {
     fn build(&self, app: &mut App) {
         self(app);
@@ -74,16 +132,19 @@ impl<T: Fn(&mut App) + Send + Sync + 'static> Plugin for T {
 /// App::new().add_plugins(MyDefaultPlugins).start();
 /// ```
 pub trait PluginGroup: Sized {
+    /// Constructs a [`PluginGroupBuilder`] containing the group's plugins.
     fn build(self) -> PluginGroupBuilder;
 }
 
-/// Builder for a [`PluginGroup`]. Add plugins in order; they will be registered in that order.
+/// Builder for a [`PluginGroup`]. Add plugins in order; they will be registered
+/// in that order when the group is applied to an [`App`].
 pub struct PluginGroupBuilder {
     plugins: Vec<Box<dyn Plugin>>,
     disabled: HashSet<TypeId>,
 }
 
 impl PluginGroupBuilder {
+    /// Creates a new, empty builder for plugin group `G`.
     pub fn start<G: PluginGroup>() -> Self {
         Self {
             plugins: Vec::new(),
@@ -91,6 +152,8 @@ impl PluginGroupBuilder {
         }
     }
 
+    /// Adds a plugin to the group. Plugins that have been [`disable`](Self::disable)d
+    /// are silently skipped.
     #[allow(clippy::should_implement_trait)]
     pub fn add<P: Plugin>(mut self, plugin: P) -> Self {
         if self.disabled.contains(&TypeId::of::<P>()) {
@@ -100,22 +163,31 @@ impl PluginGroupBuilder {
         self
     }
 
+    /// Marks a plugin type as disabled so that subsequent [`add`](Self::add) calls
+    /// for that type are ignored.
     pub fn disable<P: Plugin>(mut self) -> Self {
         self.disabled.insert(TypeId::of::<P>());
         self
     }
 
+    /// Registers all collected plugins with the given [`App`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if any plugin fails registration (duplicate or missing dependencies).
     pub(crate) fn finish(self, app: &mut App) {
         for plugin in self.plugins {
-            app.add_boxed_plugin(plugin).unwrap();
+            app.add_boxed_plugin(plugin)
+                .expect("failed to add plugin from PluginGroup — check for duplicates or missing dependencies");
         }
     }
 }
 
 // ─── StatesPlugin ─────────────────────────────────────────────────────────────
 
-/// Registers `CurrentState<S>` and `NextState<S>` resources and wires up the
-/// end-of-step transition system. Transitions are applied at `PostFinalIntegration`.
+/// Registers [`CurrentState<S>`] and [`NextState<S>`] resources and wires up the
+/// end-of-step transition system. Transitions are applied at
+/// [`ScheduleSet::PostFinalIntegration`].
 ///
 /// ```rust,ignore
 /// #[derive(Clone, PartialEq, Default)]
@@ -126,6 +198,7 @@ impl PluginGroupBuilder {
 ///     ...
 /// ```
 pub struct StatesPlugin<S: Clone + PartialEq + Default + Send + Sync + 'static> {
+    /// The initial state value to use at simulation start.
     pub initial: S,
 }
 
@@ -142,9 +215,10 @@ impl<S: Clone + PartialEq + Default + Send + Sync + 'static> Plugin for StatesPl
 
 // ─── StageAdvancePlugin ──────────────────────────────────────────────────────
 
-/// Watches for `CurrentState<S>` changes and sets `SchedulerManager::advance_requested`.
+/// Watches for [`CurrentState<S>`] changes and sets `SchedulerManager::advance_requested`.
 ///
-/// Add alongside `StatesPlugin` when using `#[derive(StageEnum)]`:
+/// Add alongside [`StatesPlugin`] when using `#[derive(StageEnum)]`:
+///
 /// ```rust,ignore
 /// app.add_plugins(StatesPlugin { initial: Phase::Settle });
 /// app.add_plugins(StageAdvancePlugin::<Phase>::new());
@@ -154,10 +228,19 @@ pub struct StageAdvancePlugin<S: StageName + Clone + PartialEq + Default + Send 
 }
 
 impl<S: StageName + Clone + PartialEq + Default + Send + Sync + 'static> StageAdvancePlugin<S> {
+    /// Creates a new [`StageAdvancePlugin`] for state type `S`.
     pub fn new() -> Self {
         Self {
             _marker: PhantomData,
         }
+    }
+}
+
+impl<S: StageName + Clone + PartialEq + Default + Send + Sync + 'static> Default
+    for StageAdvancePlugin<S>
+{
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -175,15 +258,19 @@ impl<S: StageName + Clone + PartialEq + Default + Send + Sync + 'static> Plugin
     }
 }
 
-/// Resource storing stage name strings for validation.
+/// Resource storing stage name strings, used for validation and DOT export.
 pub struct StageNames(pub &'static [&'static str]);
 
 // ─── Plugins sealed trait ─────────────────────────────────────────────────────
 
 /// Types that represent a set of [`Plugin`]s.
 ///
-/// Implemented for all types which implement [`Plugin`], [`PluginGroup`], and
-/// tuples over [`Plugins`].
+/// This trait is implemented for:
+/// - Individual types implementing [`Plugin`]
+/// - Types implementing [`PluginGroup`]
+/// - Tuples of [`Plugins`]
+///
+/// You do not need to implement this trait yourself.
 pub trait Plugins<Marker>: sealed::Plugins<Marker> {}
 impl<Marker, T> Plugins<Marker> for T where T: sealed::Plugins<Marker> {}
 

@@ -11,9 +11,10 @@ pub use app::*;
 pub use plugin::*;
 pub use sub_app::*;
 
-/// The app prelude.
+/// The `mddem_app` prelude.
 ///
-/// This includes the most common types in this crate, re-exported for your convenience.
+/// Re-exports the most commonly used types so plugins can import them with a
+/// single `use mddem_app::prelude::*;`.
 pub mod prelude {
     pub use crate::{
         app::App, app::ConfigSnippets, app::GenerateConfigFlag, sub_app::SubApp, Plugin,
