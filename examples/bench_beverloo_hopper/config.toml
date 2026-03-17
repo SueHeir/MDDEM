@@ -1,0 +1,166 @@
+# Beverloo hopper discharge benchmark
+# Validates mass flow rate against W = C * rho_bulk * sqrt(g) * (D - k*d)^(3/2) * depth (2D)
+#
+# Flat-bottom rectangular hopper, periodic in y (quasi-2D slice).
+# Central orifice at bottom. Particles fill, settle, then discharge.
+#
+# Key parameters (change wall bounds to test different D values):
+#   Particle diameter d = 0.002 m
+#   Default orifice width D = 0.020 m (= 10d)
+#   Container width = 0.08 m (= 40d)
+#   Container height = 0.08 m (= 40d)
+#   Y depth = 0.004 m (= 2d, periodic -- quasi-2D)
+#
+# To sweep orifice widths, use run_sweep.sh
+
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[domain]
+# Simulation box extents [m]
+x_low = -0.04
+x_high = 0.04
+y_low = 0.0
+y_high = 0.004               # Thin slab (2d) for quasi-2D
+z_low = -0.03
+z_high = 0.08
+periodic_x = false
+periodic_y = true             # Periodic in y for quasi-2D
+periodic_z = false
+
+[neighbor]
+skin_fraction = 1.1           # Neighbor search radius multiplier [dimensionless]
+bin_size = 0.005              # Neighbor-list bin width [m], >= largest diameter
+
+[gravity]
+gz = -9.81                    # Gravitational acceleration [m/s^2]
+
+[[dem.materials]]
+name = "glass"
+youngs_mod = 5.0e6            # Young's modulus [Pa] -- reduced for faster contacts
+poisson_ratio = 0.3           # Poisson's ratio [dimensionless]
+restitution = 0.3             # Coefficient of restitution [0-1] -- low for faster settling
+friction = 0.3                # Sliding friction coefficient [dimensionless]
+
+[[particles.insert]]
+material = "glass"
+count = 800                   # Number of particles
+radius = 0.001                # Particle radius [m] -> diameter d = 0.002 m
+density = 2500.0              # Particle density [kg/m^3]
+velocity_z = -0.5             # Initial downward velocity [m/s]
+# Insertion region: full width, thin y, upper part of box
+region = { type = "block", min = [-0.035, 0.0, 0.01], max = [0.035, 0.004, 0.075] }
+
+# -- Walls --
+
+# Left side wall (x = -0.04, normal +x)
+[[wall]]
+point_x = -0.04
+point_y = 0.0
+point_z = 0.0
+normal_x = 1.0
+normal_y = 0.0
+normal_z = 0.0
+material = "glass"
+
+# Right side wall (x = 0.04, normal -x)
+[[wall]]
+point_x = 0.04
+point_y = 0.0
+point_z = 0.0
+normal_x = -1.0
+normal_y = 0.0
+normal_z = 0.0
+material = "glass"
+
+# Ceiling (z = 0.08, normal -z)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.08
+normal_x = 0.0
+normal_y = 0.0
+normal_z = -1.0
+material = "glass"
+
+# Floor LEFT (z = 0, normal +z) -- from x = -0.04 to x = -0.010 (orifice at center)
+# For D = 10d = 0.020 m, half-orifice = 0.010 m
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "glass"
+bound_x_high = -0.010
+
+# Floor RIGHT (z = 0, normal +z) -- from x = +0.010 to x = +0.04
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "glass"
+bound_x_low = 0.010
+
+# Blocker wall -- covers the orifice during filling (removed when settled)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "glass"
+name = "blocker"
+bound_x_low = -0.010
+bound_x_high = 0.010
+
+# Bottom catch wall (z = -0.03, normal +z) -- prevents particles from falling forever
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = -0.03
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "glass"
+
+# -- Measure plane at orifice --
+
+[[measure_plane]]
+name = "orifice"
+point = [0.0, 0.0, -0.002]   # Just below the orifice floor
+normal = [0.0, 0.0, -1.0]    # Downward (positive = exiting hopper)
+report_interval = 1000        # Average over 1000 steps
+
+# -- Output --
+
+[output]
+dir = "examples/bench_beverloo_hopper"
+
+[vtp]
+interval = 10000              # VTP visualization every N steps
+
+# -- Run stages --
+
+# Stage 1: fill and settle
+[[run]]
+name = "filling"
+dt = 5.0e-6                   # Timestep [s]
+steps = 200000                # Allow up to 200k steps for settling
+thermo = 2000
+thermo_keys = ["step", "atoms", "ke", "time"]
+
+# Stage 2: discharge through orifice
+[[run]]
+name = "discharge"
+dt = 5.0e-6                   # Timestep [s]
+steps = 400000                # Discharge period (2.0 s simulation time)
+thermo = 2000
+thermo_keys = ["step", "atoms", "ke", "time", "flow_rate_orifice", "crossings_orifice"]
