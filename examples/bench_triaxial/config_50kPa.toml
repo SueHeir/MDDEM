@@ -1,0 +1,130 @@
+# Triaxial compression benchmark — σ₃ = 50 kPa confining pressure
+#
+# Box: 0.01 × 0.01 × 0.04 m (walled, non-periodic)
+# Particles: 100 spheres, r = 1 mm, ρ = 2500 kg/m³
+# Material: E = 1e7 Pa (soft for fast timestep), ν = 0.3, e = 0.3, μ = 0.5
+# Servo walls maintain lateral confining pressure; top wall compressed axially.
+
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[domain]
+x_low  = 0.0
+x_high = 0.01
+y_low  = 0.0
+y_high = 0.01
+z_low  = 0.0
+z_high = 0.04
+periodic_x = false
+periodic_y = false
+periodic_z = false
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.003
+
+[gravity]
+gz = -9.81
+
+[dem]
+contact_model = "hertz"
+
+[[dem.materials]]
+name = "granular"
+youngs_mod = 1e7
+poisson_ratio = 0.3
+restitution = 0.3
+friction = 0.5
+
+[[particles.insert]]
+material = "granular"
+count = 100
+radius = 0.001
+density = 2500.0
+
+[output]
+dir = "examples/bench_triaxial/data_50kPa"
+
+# Wall 0: x = 0, normal +x (left, servo)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 1.0
+normal_y = 0.0
+normal_z = 0.0
+material = "granular"
+servo = { target_force = 7.5, max_velocity = 0.005, gain = 0.005 }
+
+# Wall 1: x = 0.01, normal −x (right, servo)
+[[wall]]
+point_x = 0.01
+point_y = 0.0
+point_z = 0.0
+normal_x = -1.0
+normal_y = 0.0
+normal_z = 0.0
+material = "granular"
+servo = { target_force = 7.5, max_velocity = 0.005, gain = 0.005 }
+
+# Wall 2: y = 0, normal +y (front, servo)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 0.0
+normal_y = 1.0
+normal_z = 0.0
+material = "granular"
+servo = { target_force = 7.5, max_velocity = 0.005, gain = 0.005 }
+
+# Wall 3: y = 0.01, normal −y (back, servo)
+[[wall]]
+point_x = 0.0
+point_y = 0.01
+point_z = 0.0
+normal_x = 0.0
+normal_y = -1.0
+normal_z = 0.0
+material = "granular"
+servo = { target_force = 7.5, max_velocity = 0.005, gain = 0.005 }
+
+# Wall 4: z = 0, normal +z (floor, static)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "granular"
+
+# Wall 5: z = 0.04, normal −z (top, static — moved by custom system)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.04
+normal_x = 0.0
+normal_y = 0.0
+normal_z = -1.0
+material = "granular"
+
+# ── Stages ───────────────────────────────────────────────────────────────────
+
+[[run]]
+name = "insert"
+steps = 50000
+thermo = 5000
+
+[[run]]
+name = "relax"
+steps = 30000
+thermo = 2000
+
+[[run]]
+name = "compress"
+steps = 100000
+thermo = 500
+gravity.gz = 0.0

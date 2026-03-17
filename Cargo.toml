@@ -103,6 +103,10 @@ name = "dem_triaxial"
 path = "examples/dem_triaxial/main.rs"
 
 [[example]]
+name = "bench_triaxial"
+path = "examples/bench_triaxial/main.rs"
+
+[[example]]
 name = "shrink_wrap_demo"
 path = "examples/shrink_wrap_demo/main.rs"
 
