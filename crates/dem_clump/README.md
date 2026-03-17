@@ -23,10 +23,10 @@ A **clump** is a rigid body composed of multiple overlapping spheres. Each spher
 
 ## TOML Configuration
 
-Define clump types in `[[dem.clumps]]`:
+Define clump types in `[[clump.definitions]]`:
 
 ```toml
-[[dem.clumps]]
+[[clump.definitions]]
 name = "dimer"
 spheres = [
     { offset = [-0.0003, 0.0, 0.0], radius = 0.001 },
@@ -58,7 +58,7 @@ app.run();
 ```
 
 The plugin automatically:
-- Loads clump definitions from `dem.clumps` config
+- Loads clump definitions from `clump.definitions` config
 - Registers per-atom clump data
 - Aggregates forces from sub-spheres to parents
 - Updates sub-sphere positions/velocities after parent integration
