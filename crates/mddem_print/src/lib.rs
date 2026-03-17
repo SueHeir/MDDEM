@@ -1,4 +1,60 @@
-//! Output systems: LAMMPS-style thermo, CSV/binary dump, restart files, and VTP (ParaView) output.
+//! Output systems for MDDEM simulations: thermo printing, CSV/binary dump files,
+//! restart file serialization, and VTP (ParaView) visualization output.
+//!
+//! # Overview
+//!
+//! This crate provides four output subsystems, each controlled by its own TOML
+//! configuration section:
+//!
+//! | System  | TOML section  | Description                                    |
+//! |---------|---------------|------------------------------------------------|
+//! | Thermo  | `[thermo]`    | Periodic console output of simulation metrics  |
+//! | Dump    | `[dump]`      | Per-atom CSV or binary snapshots                |
+//! | Restart | `[restart]`   | Checkpoint files for resuming simulations       |
+//! | VTP     | `[vtp]`       | ParaView-compatible `.vtp` visualization files  |
+//!
+//! All systems are registered automatically when [`PrintPlugin`] is added to the app.
+//!
+//! # TOML Configuration
+//!
+//! ```toml
+//! [thermo]
+//! # Columns to display (optional — defaults to step, atoms, ke, neighbors, walltime, stepps).
+//! # Use "compute/group" syntax for group-filtered values, e.g. "ke/mobile".
+//! # Built-in columns: step, atoms, ke, temp, neighbors, walltime, stepps.
+//! # Any name pushed via Thermo::set() is also available.
+//! columns = ["step", "atoms", "ke", "temp", "walltime", "stepps"]
+//!
+//! [dump]
+//! # Write dump every N steps (0 = disabled, default: 0)
+//! interval = 1000
+//! # Output format: "text" (CSV) or "binary" (little-endian f64/u32)
+//! format = "text"
+//!
+//! [restart]
+//! # Write restart every N steps (0 = disabled, default: 0)
+//! interval = 5000
+//! # File format: "bincode" (compact binary, default) or "json" (human-readable)
+//! format = "bincode"
+//! # Read the latest restart file at startup (default: false)
+//! read = false
+//!
+//! [vtp]
+//! # Write VTP (ParaView) output every N steps (0 = disabled, default: 0)
+//! interval = 500
+//! ```
+//!
+//! # Extending Dump / VTP Output
+//!
+//! Plugins can register additional per-atom columns via [`DumpRegistry`]:
+//!
+//! ```rust,ignore
+//! let dump_reg = app.get_resource_mut::<DumpRegistry>().unwrap();
+//! dump_reg.register_scalar("pressure", |atoms, registry| {
+//!     // Return Vec<f64> of length atoms.nlocal
+//!     vec![0.0; atoms.nlocal as usize]
+//! });
+//! ```
 
 use std::{
     collections::HashMap,
@@ -16,25 +72,43 @@ use mddem_neighbor::Neighbor;
 
 // ── Thermo config ───────────────────────────────────────────────────────────
 
+/// TOML `[thermo]` — configures which columns appear in thermo console output.
+///
+/// # TOML Fields
+///
+/// | Field     | Type             | Default                                             | Description                        |
+/// |-----------|------------------|------------------------------------------------------|------------------------------------|
+/// | `columns` | `[String]` (opt) | `["step","atoms","ke","neighbors","walltime","stepps"]` | Column names to display         |
+///
+/// Column names can use `"compute/group"` syntax (e.g. `"ke/mobile"`) to filter
+/// by a named atom group. Built-in compute names: `step`, `atoms`, `ke`, `temp`,
+/// `neighbors`, `walltime`, `stepps`. Any value pushed via [`Thermo::set`] is also
+/// available as a column.
 #[derive(Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
-/// TOML `[thermo]` — thermo output column configuration.
 pub struct ThermoConfig {
+    /// Column names to display. If `None`, uses the default set.
     #[serde(default)]
     pub columns: Option<Vec<String>>,
 }
 
 // ── Thermo column ───────────────────────────────────────────────────────────
 
-/// Parsed column specification for thermo output.
+/// A parsed thermo column specification, produced from a raw string like `"ke/mobile"`.
 pub struct ThermoColumn {
+    /// The original column string from config (e.g. `"ke/mobile"`).
     pub raw: String,
+    /// The compute name portion (e.g. `"ke"`).
     pub compute_name: String,
+    /// Optional group name filter (e.g. `Some("mobile")`).
     pub group_name: Option<String>,
+    /// Formatted header string for console display (e.g. `"Ke/mobile"`).
     pub header: String,
+    /// Column display width in characters (minimum 12).
     pub width: usize,
 }
 
+/// Parse a raw column spec string (e.g. `"ke/mobile"`) into a [`ThermoColumn`].
 fn parse_thermo_column(raw: &str) -> ThermoColumn {
     let parts: Vec<&str> = raw.splitn(2, '/').collect();
     let compute_name = parts[0].to_string();
@@ -57,6 +131,7 @@ fn parse_thermo_column(raw: &str) -> ThermoColumn {
     }
 }
 
+/// Capitalize the first character of a string.
 fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
@@ -65,6 +140,7 @@ fn capitalize(s: &str) -> String {
     }
 }
 
+/// Returns the default thermo column names when no `[thermo] columns` is specified.
 fn default_columns() -> Vec<String> {
     vec![
         "step".into(),
@@ -78,12 +154,23 @@ fn default_columns() -> Vec<String> {
 
 // ── Thermo ──────────────────────────────────────────────────────────────────
 
-/// Thermo output state: print interval, wall-clock timing, column specs, and user values.
+/// Runtime state for thermo console output.
+///
+/// Tracks the print interval, wall-clock timing for steps-per-second calculation,
+/// parsed column specifications, and user-pushed values from other plugins.
+///
+/// Other plugins can push custom values via [`Thermo::set`], which become available
+/// as thermo columns if listed in the `[thermo] columns` config.
 pub struct Thermo {
+    /// Print thermo output every N steps.
     pub interval: usize,
+    /// Wall-clock timestamp of the last thermo print (for steps/sec calculation).
     pub start_time: Instant,
+    /// The step number at which thermo was last printed.
     pub last_printed_step: usize,
+    /// Parsed column specifications for output formatting.
     pub columns: Vec<ThermoColumn>,
+    /// User-pushed named values (e.g. `"pe"` → `42.0`), available as thermo columns.
     pub values: HashMap<String, f64>,
 }
 
@@ -94,6 +181,7 @@ impl Default for Thermo {
 }
 
 impl Thermo {
+    /// Create a new `Thermo` with default interval of 100 steps.
     pub fn new() -> Self {
         Thermo {
             interval: 100,
@@ -105,7 +193,10 @@ impl Thermo {
     }
 
     /// Push a named value into the thermo value map.
-    /// Available as a column if listed in `[thermo] columns`.
+    ///
+    /// The value becomes available as a thermo column if its name is listed in
+    /// `[thermo] columns`. Values are overwritten on each call, so plugins should
+    /// call this every thermo interval to keep values current.
     pub fn set(&mut self, name: &str, value: f64) {
         self.values.insert(name.to_string(), value);
     }
@@ -113,18 +204,32 @@ impl Thermo {
 
 // ── Dump config ─────────────────────────────────────────────────────────────
 
+/// Default dump format: CSV text.
 fn default_dump_format() -> String {
     "text".to_string()
 }
 
+/// TOML `[dump]` — per-atom dump file output settings.
+///
+/// # TOML Fields
+///
+/// | Field      | Type   | Default  | Description                              |
+/// |------------|--------|----------|------------------------------------------|
+/// | `interval` | `usize`| `0`      | Write dump every N steps (0 = disabled)  |
+/// | `format`   | `String`| `"text"`| `"text"` (CSV) or `"binary"` (little-endian) |
+///
+/// # Output Files
+///
+/// - **Text**: `dump/dump_{step}_rank{rank}.csv` — CSV with header row
+/// - **Binary**: `dump/dump_{step}_rank{rank}.bin` — `u32` count, then per-atom
+///   fields as little-endian `u32`/`f64`
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-/// TOML `[dump]` — atom dump file output settings.
 pub struct DumpConfig {
     /// Write dump every N steps (0 = disabled).
     #[serde(default)]
     pub interval: usize,
-    /// Output format: `"text"` (CSV) or `"binary"`.
+    /// Output format: `"text"` (CSV) or `"binary"` (little-endian).
     #[serde(default = "default_dump_format")]
     pub format: String,
 }
@@ -140,21 +245,33 @@ impl Default for DumpConfig {
 
 // ── Restart config ──────────────────────────────────────────────────────────
 
+/// Default restart format: bincode.
 fn default_restart_format() -> String {
     "bincode".to_string()
 }
 
+/// TOML `[restart]` — restart (checkpoint) file write/read settings.
+///
+/// # TOML Fields
+///
+/// | Field      | Type    | Default      | Description                                  |
+/// |------------|---------|--------------|----------------------------------------------|
+/// | `interval` | `usize` | `0`         | Write restart every N steps (0 = disabled)   |
+/// | `format`   | `String`| `"bincode"` | `"bincode"` (compact) or `"json"` (readable) |
+/// | `read`     | `bool`  | `false`     | Read latest restart file at startup          |
+///
+/// When `read = true`, the system scans the restart directory for the highest-numbered
+/// restart file matching this rank and format, then restores atom state from it.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-/// TOML `[restart]` — restart file write/read settings.
 pub struct RestartConfig {
     /// Write restart every N steps (0 = disabled).
     #[serde(default)]
     pub interval: usize,
-    /// File format: `"bincode"` or `"json"`.
+    /// File format: `"bincode"` (compact binary) or `"json"` (human-readable).
     #[serde(default = "default_restart_format")]
     pub format: String,
-    /// Whether to read restart files at startup.
+    /// Whether to read the latest restart file at startup.
     #[serde(default)]
     pub read: bool,
 }
@@ -171,6 +288,12 @@ impl Default for RestartConfig {
 
 // ── RestartData ─────────────────────────────────────────────────────────────
 
+/// Serializable snapshot of all atom state for restart files.
+///
+/// Positions, velocities, and forces are stored as separate x/y/z vectors for
+/// serialization compatibility. Legacy rotational fields (`omega_*`, `torque_*`,
+/// etc.) are kept for backwards compatibility with old restart files but are no
+/// longer written — rotational data now lives in `atom_data_buffers` via `AtomData`.
 #[derive(Serialize, Deserialize)]
 struct RestartData {
     natoms: u64,
@@ -213,13 +336,55 @@ struct RestartData {
     quaternion: Vec<[f64; 4]>,
 }
 
+impl RestartData {
+    /// Build a `RestartData` snapshot from the current atom state.
+    ///
+    /// Only local atoms (indices `0..nlocal`) are included; ghost atoms are excluded.
+    fn from_atoms(atoms: &Atom, registry: &AtomDataRegistry, step: usize) -> Self {
+        let nlocal = atoms.nlocal as usize;
+        RestartData {
+            natoms: atoms.natoms,
+            total_cycle: step,
+            dt: atoms.dt,
+            tag: atoms.tag[..nlocal].to_vec(),
+            atom_type: atoms.atom_type[..nlocal].to_vec(),
+            pos_x: atoms.pos[..nlocal].iter().map(|p| p[0]).collect(),
+            pos_y: atoms.pos[..nlocal].iter().map(|p| p[1]).collect(),
+            pos_z: atoms.pos[..nlocal].iter().map(|p| p[2]).collect(),
+            vel_x: atoms.vel[..nlocal].iter().map(|v| v[0]).collect(),
+            vel_y: atoms.vel[..nlocal].iter().map(|v| v[1]).collect(),
+            vel_z: atoms.vel[..nlocal].iter().map(|v| v[2]).collect(),
+            force_x: atoms.force[..nlocal].iter().map(|v| v[0]).collect(),
+            force_y: atoms.force[..nlocal].iter().map(|v| v[1]).collect(),
+            force_z: atoms.force[..nlocal].iter().map(|v| v[2]).collect(),
+            mass: atoms.mass[..nlocal].to_vec(),
+            cutoff_radius: atoms.cutoff_radius[..nlocal].to_vec(),
+            atom_data_buffers: registry.pack_all_for_restart(nlocal),
+            // Legacy fields left empty — rotational data now in atom_data_buffers via DemAtom
+            omega_x: Vec::new(),
+            omega_y: Vec::new(),
+            omega_z: Vec::new(),
+            torque_x: Vec::new(),
+            torque_y: Vec::new(),
+            torque_z: Vec::new(),
+            ang_mom_x: Vec::new(),
+            ang_mom_y: Vec::new(),
+            ang_mom_z: Vec::new(),
+            quaternion: Vec::new(),
+        }
+    }
+}
+
 // ── DumpRegistry ────────────────────────────────────────────────────────
 
 /// Registry of user-defined per-atom data callbacks for dump and VTP output.
 ///
-/// Registered callbacks are only invoked on dump/VTP steps — zero overhead otherwise.
+/// Plugins register callbacks during their `build()` phase. These callbacks are
+/// only invoked on steps when dump/VTP output is actually written — zero overhead
+/// on non-output steps.
 ///
 /// # Example
+///
 /// ```rust,ignore
 /// // In a plugin's build():
 /// let dump_reg = app.get_resource_mut::<DumpRegistry>().unwrap();
@@ -246,6 +411,7 @@ impl Default for DumpRegistry {
 }
 
 impl DumpRegistry {
+    /// Create an empty `DumpRegistry` with no registered callbacks.
     pub fn new() -> Self {
         DumpRegistry {
             scalar_fns: Vec::new(),
@@ -254,7 +420,10 @@ impl DumpRegistry {
     }
 
     /// Register a per-atom scalar column for dump/VTP output.
-    /// The callback should return a Vec of length `atoms.nlocal`.
+    ///
+    /// The callback receives the current [`Atom`] and [`AtomDataRegistry`] and should
+    /// return a `Vec<f64>` of length `atoms.nlocal`. The column appears in CSV dumps
+    /// and as a VTP `Float32` data array.
     pub fn register_scalar(
         &mut self,
         name: impl Into<String>,
@@ -263,8 +432,11 @@ impl DumpRegistry {
         self.scalar_fns.push((name.into(), Box::new(f)));
     }
 
-    /// Register a per-atom vector (3-component) column for dump/VTP output.
-    /// The callback should return a Vec of length `atoms.nlocal`.
+    /// Register a per-atom 3-component vector column for dump/VTP output.
+    ///
+    /// The callback should return a `Vec<[f64; 3]>` of length `atoms.nlocal`.
+    /// In CSV dumps, the vector is split into `{name}_x`, `{name}_y`, `{name}_z`
+    /// columns. In VTP output, it appears as a 3-component `Float32` data array.
     pub fn register_vector(
         &mut self,
         name: impl Into<String>,
@@ -273,7 +445,7 @@ impl DumpRegistry {
         self.vector_fns.push((name.into(), Box::new(f)));
     }
 
-    /// Returns true if any callbacks are registered.
+    /// Returns `true` if any scalar or vector callbacks are registered.
     pub fn has_callbacks(&self) -> bool {
         !self.scalar_fns.is_empty() || !self.vector_fns.is_empty()
     }
@@ -281,9 +453,19 @@ impl DumpRegistry {
 
 // ── VTP config ──────────────────────────────────────────────────────────────
 
+/// TOML `[vtp]` — ParaView `.vtp` visualization output settings.
+///
+/// # TOML Fields
+///
+/// | Field      | Type    | Default | Description                              |
+/// |------------|---------|---------|------------------------------------------|
+/// | `interval` | `usize` | `0`    | Write VTP every N steps (0 = disabled)   |
+///
+/// VTP files are written to `{output_dir}/vtp/{step}CYCLE_{rank}RANK.vtp` and
+/// include particle positions, radii, velocity magnitudes, ghost flags, and any
+/// fields registered via [`DumpRegistry`].
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
-/// TOML `[vtp]` — ParaView VTP output settings.
 pub struct VtpConfig {
     /// Write VTP every N steps (0 = disabled).
     #[serde(default)]
@@ -292,7 +474,11 @@ pub struct VtpConfig {
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
-/// Registers thermo, dump, restart, and VTP output systems.
+/// Main output plugin — registers thermo, dump, restart, and VTP systems.
+///
+/// Add this plugin to the app to enable all output subsystems. Each subsystem
+/// is independently configured via its TOML section and only produces output
+/// when its interval is non-zero.
 pub struct PrintPlugin;
 
 impl Plugin for PrintPlugin {
@@ -337,8 +523,22 @@ interval = 0"#,
     }
 }
 
+// ── Helper: restart directory ───────────────────────────────────────────────
+
+/// Compute the restart base directory from the output directory setting.
+fn restart_base_dir(input: &Input) -> String {
+    match input.output_dir.as_deref() {
+        Some(dir) => format!("{}/restart", dir),
+        None => "restart".to_string(),
+    }
+}
+
 // ── Thermo systems ──────────────────────────────────────────────────────────
 
+/// Setup system for thermo output: parses column specs and prints the header.
+///
+/// Runs at the start of each stage to update the print interval and reset the
+/// wall-clock timer. Column specifications are parsed only once (on the first stage).
 pub fn setup_thermo(
     config: Res<RunConfig>,
     thermo_config: Res<ThermoConfig>,
@@ -383,6 +583,10 @@ pub fn setup_thermo(
     }
 }
 
+/// Print thermo output to console at the configured interval.
+///
+/// All MPI ranks participate in allreduce operations (for KE, atom counts, etc.),
+/// but only rank 0 prints the formatted output line.
 #[allow(clippy::too_many_arguments)]
 pub fn print_thermo(
     atoms: Res<Atom>,
@@ -475,7 +679,7 @@ pub fn print_thermo(
                     format!("{:<width$.1}", steps_per_sec, width = col.width)
                 }
                 other => {
-                    // User-pushed value
+                    // User-pushed value from Thermo::set()
                     if let Some(&v) = thermo.values.get(other) {
                         format!("{:<width$.6e}", v, width = col.width)
                     } else {
@@ -493,7 +697,10 @@ pub fn print_thermo(
 
 // ── Virial stress output ────────────────────────────────────────────────────
 
-/// MPI-reduce each virial component and push to thermo values.
+/// MPI-reduce each virial stress component and push to thermo values.
+///
+/// Publishes `virial_xx`, `virial_yy`, `virial_zz`, `virial_xy`, `virial_xz`,
+/// `virial_yz` as thermo columns. Only runs on thermo output steps.
 pub fn output_virial_to_thermo(
     virial: Option<Res<VirialStress>>,
     run_state: Res<RunState>,
@@ -523,6 +730,7 @@ pub fn output_virial_to_thermo(
 
 // ── VTP output ──────────────────────────────────────────────────────────────
 
+/// Write a single VTP `<DataArray>` element with per-point scalar data.
 fn write_vtp_data_array(
     file: &mut File,
     vtp_type: &str,
@@ -542,6 +750,11 @@ fn write_vtp_data_array(
     Ok(())
 }
 
+/// Write ParaView VTP output at the configured interval.
+///
+/// Each MPI rank writes its own `.vtp` file containing local + ghost atoms.
+/// Output includes positions, radii, velocity magnitude, ghost flags, and any
+/// fields registered via [`DumpRegistry`].
 #[allow(clippy::too_many_arguments)]
 pub fn print_vtp(
     atoms: Res<Atom>,
@@ -566,6 +779,7 @@ pub fn print_vtp(
     }
 }
 
+/// Inner VTP write logic, separated for error handling via `?`.
 fn print_vtp_inner(
     atoms: &Atom,
     registry: &AtomDataRegistry,
@@ -585,10 +799,11 @@ fn print_vtp_inner(
     let n = atoms.len();
     let nlocal = atoms.nlocal as usize;
 
+    // XML header and PolyData opening
     write!(&mut file, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\">\n<PolyData>\n")?;
     writeln!(&mut file, "<Piece NumberOfPoints=\"{}\">", n)?;
 
-    // Points
+    // Points (positions)
     write!(&mut file, "<Points><DataArray type=\"Float32\" NumberOfComponents=\"3\" format=\"ascii\">")?;
     for i in 0..n {
         writeln!(&mut file, "{} {} {}", atoms.pos[i][0], atoms.pos[i][1], atoms.pos[i][2])?;
@@ -600,11 +815,12 @@ fn print_vtp_inner(
     write_vtp_data_array(&mut file, "Float32", "Radius", n, |i| format!("{}", atoms.cutoff_radius[i]))?;
     write_vtp_data_array(&mut file, "Float32", "Vel_Mag", n, |i| {
         let vmag = (atoms.vel[i][0].powi(2) + atoms.vel[i][1].powi(2) + atoms.vel[i][2].powi(2)).sqrt();
-        format!("{}", vmag)
+        format!("{vmag}")
     })?;
     write_vtp_data_array(&mut file, "Int32", "IsGhost", n, |i| {
-        format!("{}", if i >= nlocal { 1 } else { 0 })
+        if i >= nlocal { "1".to_string() } else { "0".to_string() }
     })?;
+
     // Registered scalar callbacks
     for (name, f) in &dump_reg.scalar_fns {
         let data = f(atoms, registry);
@@ -641,6 +857,11 @@ fn print_vtp_inner(
 
 // ── Dump output ─────────────────────────────────────────────────────────────
 
+/// Write per-atom dump files (CSV or binary) at the configured interval.
+///
+/// Each MPI rank writes its own file containing only local atoms. The dump
+/// includes core fields (tag, type, position, velocity, force, radius) plus
+/// any columns registered via [`DumpRegistry`].
 #[allow(clippy::too_many_arguments)]
 pub fn dump_atoms(
     atoms: Res<Atom>,
@@ -668,6 +889,7 @@ pub fn dump_atoms(
     }
 }
 
+/// Inner dump write logic, shared between periodic dumps and stage-end saves.
 pub(crate) fn dump_atoms_inner(
     atoms: &Atom,
     registry: &AtomDataRegistry,
@@ -715,11 +937,9 @@ pub(crate) fn dump_atoms_inner(
                 w.write_all(&atoms.force[i][1].to_le_bytes())?;
                 w.write_all(&atoms.force[i][2].to_le_bytes())?;
                 w.write_all(&atoms.cutoff_radius[i].to_le_bytes())?;
-                // Append registered scalar fields
                 for (_, data) in &scalar_data {
                     w.write_all(&data[i].to_le_bytes())?;
                 }
-                // Append registered vector fields
                 for (_, data) in &vector_data {
                     w.write_all(&data[i][0].to_le_bytes())?;
                     w.write_all(&data[i][1].to_le_bytes())?;
@@ -732,6 +952,7 @@ pub(crate) fn dump_atoms_inner(
             let filename = format!("{}/dump_{}_rank{}.csv", base_dir, step, rank);
             let file = File::create(&filename)?;
             let mut w = BufWriter::new(file);
+
             // Build header
             let mut header = "tag,type,x,y,z,vx,vy,vz,fx,fy,fz,radius".to_string();
             for (name, _) in &scalar_data {
@@ -740,9 +961,11 @@ pub(crate) fn dump_atoms_inner(
             }
             for (name, _) in &vector_data {
                 header.push(',');
-                header.push_str(&format!("{}_x,{}_y,{}_z", name, name, name));
+                header.push_str(&format!("{name}_x,{name}_y,{name}_z"));
             }
             writeln!(w, "{}", header)?;
+
+            // Write per-atom rows
             for i in 0..nlocal {
                 write!(
                     w,
@@ -775,6 +998,10 @@ pub(crate) fn dump_atoms_inner(
 
 // ── Restart write ───────────────────────────────────────────────────────────
 
+/// Write restart (checkpoint) files at the configured interval.
+///
+/// Each MPI rank writes its own restart file containing only its local atoms.
+/// The file format is determined by `[restart] format` (bincode or JSON).
 #[allow(clippy::too_many_arguments)]
 pub fn write_restart(
     atoms: Res<Atom>,
@@ -797,49 +1024,17 @@ pub fn write_restart(
     }
 
     let rank = comm.rank();
-    let nlocal = atoms.nlocal as usize;
-    let base_dir = match input.output_dir.as_deref() {
-        Some(dir) => format!("{}/restart", dir),
-        None => "restart".to_string(),
-    };
+    let base_dir = restart_base_dir(&input);
     fs::create_dir_all(&base_dir).ok();
 
-    let data = RestartData {
-        natoms: atoms.natoms,
-        total_cycle: step,
-        dt: atoms.dt,
-        tag: atoms.tag[..nlocal].to_vec(),
-        atom_type: atoms.atom_type[..nlocal].to_vec(),
-        pos_x: atoms.pos[..nlocal].iter().map(|p| p[0]).collect(),
-        pos_y: atoms.pos[..nlocal].iter().map(|p| p[1]).collect(),
-        pos_z: atoms.pos[..nlocal].iter().map(|p| p[2]).collect(),
-        vel_x: atoms.vel[..nlocal].iter().map(|v| v[0]).collect(),
-        vel_y: atoms.vel[..nlocal].iter().map(|v| v[1]).collect(),
-        vel_z: atoms.vel[..nlocal].iter().map(|v| v[2]).collect(),
-        force_x: atoms.force[..nlocal].iter().map(|v| v[0]).collect(),
-        force_y: atoms.force[..nlocal].iter().map(|v| v[1]).collect(),
-        force_z: atoms.force[..nlocal].iter().map(|v| v[2]).collect(),
-        mass: atoms.mass[..nlocal].to_vec(),
-        cutoff_radius: atoms.cutoff_radius[..nlocal].to_vec(),
-        atom_data_buffers: registry.pack_all_for_restart(nlocal),
-        // Legacy fields left empty — rotational data now in atom_data_buffers via DemAtom
-        omega_x: Vec::new(),
-        omega_y: Vec::new(),
-        omega_z: Vec::new(),
-        torque_x: Vec::new(),
-        torque_y: Vec::new(),
-        torque_z: Vec::new(),
-        ang_mom_x: Vec::new(),
-        ang_mom_y: Vec::new(),
-        ang_mom_z: Vec::new(),
-        quaternion: Vec::new(),
-    };
+    let data = RestartData::from_atoms(&atoms, &registry, step);
 
     if let Err(e) = write_restart_inner(&data, &base_dir, step, rank, &restart_config) {
         eprintln!("WARNING: Restart write failed at step {}: {}", step, e);
     }
 }
 
+/// Serialize restart data to disk in the configured format (bincode or JSON).
 pub(crate) fn write_restart_inner(
     data: &RestartData,
     base_dir: &str,
@@ -864,8 +1059,11 @@ pub(crate) fn write_restart_inner(
 
 // ── Stage-end save ──────────────────────────────────────────────────────────
 
-/// Writes dump + restart files when a stage with `save_at_end = true` finishes.
-/// Runs before `update_cycle` so the stage index is still valid.
+/// Write dump + restart files when a stage with `save_at_end = true` finishes.
+///
+/// Runs before `update_cycle` so the stage index is still valid. This ensures
+/// that the final state of each stage is captured even if the regular dump/restart
+/// intervals don't align with the stage boundary.
 #[allow(clippy::too_many_arguments)]
 pub fn check_stage_end_save(
     atoms: Res<Atom>,
@@ -916,42 +1114,10 @@ pub fn check_stage_end_save(
     }
 
     // Write restart
-    let nlocal = atoms.nlocal as usize;
-    let base_dir = match input.output_dir.as_deref() {
-        Some(dir) => format!("{}/restart", dir),
-        None => "restart".to_string(),
-    };
+    let base_dir = restart_base_dir(&input);
     fs::create_dir_all(&base_dir).ok();
 
-    let data = RestartData {
-        natoms: atoms.natoms,
-        total_cycle: step,
-        dt: atoms.dt,
-        tag: atoms.tag[..nlocal].to_vec(),
-        atom_type: atoms.atom_type[..nlocal].to_vec(),
-        pos_x: atoms.pos[..nlocal].iter().map(|p| p[0]).collect(),
-        pos_y: atoms.pos[..nlocal].iter().map(|p| p[1]).collect(),
-        pos_z: atoms.pos[..nlocal].iter().map(|p| p[2]).collect(),
-        vel_x: atoms.vel[..nlocal].iter().map(|v| v[0]).collect(),
-        vel_y: atoms.vel[..nlocal].iter().map(|v| v[1]).collect(),
-        vel_z: atoms.vel[..nlocal].iter().map(|v| v[2]).collect(),
-        force_x: atoms.force[..nlocal].iter().map(|v| v[0]).collect(),
-        force_y: atoms.force[..nlocal].iter().map(|v| v[1]).collect(),
-        force_z: atoms.force[..nlocal].iter().map(|v| v[2]).collect(),
-        mass: atoms.mass[..nlocal].to_vec(),
-        cutoff_radius: atoms.cutoff_radius[..nlocal].to_vec(),
-        atom_data_buffers: registry.pack_all_for_restart(nlocal),
-        omega_x: Vec::new(),
-        omega_y: Vec::new(),
-        omega_z: Vec::new(),
-        torque_x: Vec::new(),
-        torque_y: Vec::new(),
-        torque_z: Vec::new(),
-        ang_mom_x: Vec::new(),
-        ang_mom_y: Vec::new(),
-        ang_mom_z: Vec::new(),
-        quaternion: Vec::new(),
-    };
+    let data = RestartData::from_atoms(&atoms, &registry, step);
 
     if let Err(e) = write_restart_inner(&data, &base_dir, step, rank, &restart_config) {
         eprintln!("WARNING: Stage-end restart write failed at step {}: {}", step, e);
@@ -960,6 +1126,14 @@ pub fn check_stage_end_save(
 
 // ── Restart read ────────────────────────────────────────────────────────────
 
+/// Read the latest restart file at startup and restore atom state.
+///
+/// Scans the restart directory for files matching the current rank and format,
+/// selects the one with the highest step number, and deserializes it to restore
+/// all atom data (positions, velocities, forces, mass, radius, and any `AtomData`
+/// extensions stored in `atom_data_buffers`).
+///
+/// Only runs when `[restart] read = true` and only on the first stage.
 pub fn read_restart(
     restart_config: Res<RestartConfig>,
     comm: Res<CommResource>,
@@ -973,10 +1147,7 @@ pub fn read_restart(
     }
 
     let rank = comm.rank();
-    let base_dir = match input.output_dir.as_deref() {
-        Some(dir) => format!("{}/restart", dir),
-        None => "restart".to_string(),
-    };
+    let base_dir = restart_base_dir(&input);
 
     // Find the latest restart file for this rank
     let ext = match restart_config.format.as_str() {
@@ -984,16 +1155,17 @@ pub fn read_restart(
         _ => "bin",
     };
 
+    let prefix = "restart_";
+    let suffix = format!("_rank{}.{}", rank, ext);
+
     let mut latest_step: Option<usize> = None;
     if let Ok(entries) = fs::read_dir(&base_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            let prefix = "restart_".to_string();
-            let suffix = format!("_rank{}.{}", rank, ext);
-            if name.starts_with(&prefix) && name.ends_with(&suffix) {
+            if name.starts_with(prefix) && name.ends_with(&suffix) {
                 let mid = &name[prefix.len()..name.len() - suffix.len()];
                 if let Ok(step) = mid.parse::<usize>() {
-                    if latest_step.is_none() || step > latest_step.unwrap() {
+                    if latest_step.map_or(true, |prev| step > prev) {
                         latest_step = Some(step);
                     }
                 }
@@ -1004,7 +1176,7 @@ pub fn read_restart(
     let step = match latest_step {
         Some(s) => s,
         None => {
-            if comm.rank() == 0 {
+            if rank == 0 {
                 println!("Restart: no restart files found in {}", base_dir);
             }
             return;
@@ -1012,7 +1184,7 @@ pub fn read_restart(
     };
 
     let filename = format!("{}/restart_{}_rank{}.{}", base_dir, step, rank, ext);
-    if comm.rank() == 0 {
+    if rank == 0 {
         println!("Restart: reading from {}", filename);
     }
 
@@ -1022,18 +1194,18 @@ pub fn read_restart(
     });
     let data: RestartData = match ext {
         "json" => serde_json::from_reader(std::io::BufReader::new(file)).unwrap_or_else(|e| {
-            eprintln!("ERROR: Failed to read restart '{}': {}", filename, e);
+            eprintln!("ERROR: Failed to parse restart JSON '{}': {}", filename, e);
             std::process::exit(1);
         }),
         _ => bincode::deserialize_from(std::io::BufReader::new(file)).unwrap_or_else(|e| {
-            eprintln!("ERROR: Failed to read restart '{}': {}", filename, e);
+            eprintln!("ERROR: Failed to deserialize restart bincode '{}': {}", filename, e);
             std::process::exit(1);
         }),
     };
 
     let n = data.tag.len();
 
-    // Clear existing atoms and repopulate
+    // Clear existing atoms and repopulate from restart data
     atoms.natoms = data.natoms;
     atoms.nlocal = n as u32;
     atoms.nghost = 0;
@@ -1059,7 +1231,7 @@ pub fn read_restart(
     }
 
     run_state.total_cycle = data.total_cycle;
-    if comm.rank() == 0 {
+    if rank == 0 {
         println!("Restart: loaded {} atoms from step {}", n, data.total_cycle);
     }
 }
@@ -1099,5 +1271,36 @@ mod tests {
         assert_eq!(*thermo.values.get("pe").unwrap(), 42.0);
         thermo.set("pe", 99.0);
         assert_eq!(*thermo.values.get("pe").unwrap(), 99.0);
+    }
+
+    #[test]
+    fn test_capitalize() {
+        assert_eq!(capitalize("step"), "Step");
+        assert_eq!(capitalize("ke"), "Ke");
+        assert_eq!(capitalize(""), "");
+        assert_eq!(capitalize("a"), "A");
+    }
+
+    #[test]
+    fn test_dump_registry_has_callbacks() {
+        let mut reg = DumpRegistry::new();
+        assert!(!reg.has_callbacks());
+        reg.register_scalar("test", |_atoms, _reg| vec![]);
+        assert!(reg.has_callbacks());
+    }
+
+    #[test]
+    fn test_column_width_minimum() {
+        let col = parse_thermo_column("ke");
+        // "Ke" is 2 chars, but minimum width is 12
+        assert_eq!(col.width, 12);
+    }
+
+    #[test]
+    fn test_column_width_long_header() {
+        let col = parse_thermo_column("virial_xx/long_group_name");
+        // "Virial_xx/long_group_name" is 25 chars > 12
+        assert!(col.width >= 12);
+        assert_eq!(col.width, col.header.len());
     }
 }
