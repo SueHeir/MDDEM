@@ -1,4 +1,31 @@
-//! Atom manipulation fixes: addforce, setforce, freeze, move_linear.
+//! Atom manipulation fixes for MDDEM simulations.
+//!
+//! This crate provides a collection of per-atom fixes that modify forces and
+//! velocities during a simulation timestep. Each fix targets atoms in a named
+//! group and is configured via TOML arrays in the simulation config file.
+//!
+//! # Available Fixes
+//!
+//! | Fix | TOML key | Description |
+//! |-----|----------|-------------|
+//! | [`AddForceDef`] | `[[addforce]]` | Adds a constant force vector to atoms |
+//! | [`SetForceDef`] | `[[setforce]]` | Overwrites the force vector on atoms |
+//! | [`MoveLinearDef`] | `[[move_linear]]` | Moves atoms at a constant velocity |
+//! | [`FreezeDef`] | `[[freeze]]` | Zeros velocity and force (immobilizes atoms) |
+//! | [`ViscousDef`] | `[[viscous]]` | Applies velocity-proportional damping (F = −γv) |
+//! | [`GravityConfig`] | `[gravity]` | Applies gravitational body force (F = mg) |
+//!
+//! # Plugins
+//!
+//! - [`FixesPlugin`] — registers all group-based fixes (addforce, setforce, move_linear, freeze, viscous)
+//! - [`GravityPlugin`] — registers the gravity body force
+//!
+//! # Schedule Ordering
+//!
+//! - `move_linear` runs in **PreInitialIntegration** (to set velocity before position update)
+//!   and **PostForce** (to zero force so FinalIntegration doesn't alter velocity).
+//! - `addforce`, `setforce`, `freeze`, and `viscous` all run in **PostForce**.
+//! - `gravity` runs in **Force**.
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
@@ -12,67 +39,166 @@ fn default_zero() -> f64 {
     0.0
 }
 
+/// Adds a constant external force to every atom in the specified group.
+///
+/// The force components `(fx, fy, fz)` are **added** to each atom's existing
+/// force every timestep during the PostForce schedule phase.
+///
+/// # TOML Configuration
+///
+/// ```toml
+/// [[addforce]]
+/// group = "fluid"   # (required) name of the atom group
+/// fx = 0.1          # force in x direction (default: 0.0)
+/// fy = 0.0          # force in y direction (default: 0.0)
+/// fz = 0.0          # force in z direction (default: 0.0)
+/// ```
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct AddForceDef {
+    /// Name of the atom group this fix applies to.
     pub group: String,
+    /// Force component in the x direction. Default: 0.0.
     #[serde(default = "default_zero")]
     pub fx: f64,
+    /// Force component in the y direction. Default: 0.0.
     #[serde(default = "default_zero")]
     pub fy: f64,
+    /// Force component in the z direction. Default: 0.0.
     #[serde(default = "default_zero")]
     pub fz: f64,
 }
 
+/// Overwrites the force on every atom in the specified group with a constant value.
+///
+/// Unlike [`AddForceDef`], this **replaces** the force rather than adding to it.
+/// Useful for boundary atoms where computed forces should be ignored.
+///
+/// # TOML Configuration
+///
+/// ```toml
+/// [[setforce]]
+/// group = "wall"    # (required) name of the atom group
+/// fx = 0.0          # force in x direction (default: 0.0)
+/// fy = 0.0          # force in y direction (default: 0.0)
+/// fz = 0.0          # force in z direction (default: 0.0)
+/// ```
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct SetForceDef {
+    /// Name of the atom group this fix applies to.
     pub group: String,
+    /// Force component in the x direction. Default: 0.0.
     #[serde(default = "default_zero")]
     pub fx: f64,
+    /// Force component in the y direction. Default: 0.0.
     #[serde(default = "default_zero")]
     pub fy: f64,
+    /// Force component in the z direction. Default: 0.0.
     #[serde(default = "default_zero")]
     pub fz: f64,
 }
 
+/// Moves atoms in a group at a prescribed constant velocity.
+///
+/// Before the Verlet position update (PreInitialIntegration), this fix sets
+/// the velocity of group atoms to `(vx, vy, vz)`. After forces are computed
+/// (PostForce), it zeros the force so that FinalIntegration does not alter
+/// the velocity. The result is that group atoms translate at a constant rate
+/// regardless of applied forces.
+///
+/// # TOML Configuration
+///
+/// ```toml
+/// [[move_linear]]
+/// group = "piston"  # (required) name of the atom group
+/// vx = 0.0          # velocity in x direction (default: 0.0)
+/// vy = 0.0          # velocity in y direction (default: 0.0)
+/// vz = -0.001       # velocity in z direction (default: 0.0)
+/// ```
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct MoveLinearDef {
+    /// Name of the atom group this fix applies to.
     pub group: String,
+    /// Prescribed velocity in the x direction. Default: 0.0.
     #[serde(default = "default_zero")]
     pub vx: f64,
+    /// Prescribed velocity in the y direction. Default: 0.0.
     #[serde(default = "default_zero")]
     pub vy: f64,
+    /// Prescribed velocity in the z direction. Default: 0.0.
     #[serde(default = "default_zero")]
     pub vz: f64,
 }
 
+/// Freezes atoms in a group by zeroing both velocity and force every timestep.
+///
+/// This effectively immobilizes atoms — they remain at their initial positions
+/// and do not respond to any forces. Useful for fixed boundary particles.
+///
+/// # TOML Configuration
+///
+/// ```toml
+/// [[freeze]]
+/// group = "frozen"   # (required) name of the atom group
+/// ```
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct FreezeDef {
+    /// Name of the atom group this fix applies to.
     pub group: String,
 }
 
+/// Applies velocity-proportional viscous damping to atoms in a group.
+///
+/// Adds a damping force **F** = −γ **v** to each atom, where γ (`gamma`) is
+/// the damping coefficient and **v** is the atom's velocity. This dissipates
+/// kinetic energy and is commonly used to reach static equilibrium in DEM
+/// simulations.
+///
+/// # TOML Configuration
+///
+/// ```toml
+/// [[viscous]]
+/// group = "all"      # (required) name of the atom group
+/// gamma = 0.1        # (required) damping coefficient (force/velocity units)
+/// ```
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ViscousDef {
+    /// Name of the atom group this fix applies to.
     pub group: String,
+    /// Damping coefficient γ. Units: force / velocity.
     pub gamma: f64,
 }
 
 // ── Registry ───────────────────────────────────────────────────────────────
 
+/// Central storage for all configured fix definitions.
+///
+/// Populated at plugin build time from the TOML config and stored as an
+/// [`App`] resource. Each system reads its corresponding vector from here.
 pub struct FixesRegistry {
+    /// All `[[addforce]]` definitions.
     pub add_forces: Vec<AddForceDef>,
+    /// All `[[setforce]]` definitions.
     pub set_forces: Vec<SetForceDef>,
+    /// All `[[move_linear]]` definitions.
     pub move_linears: Vec<MoveLinearDef>,
+    /// All `[[freeze]]` definitions.
     pub freezes: Vec<FreezeDef>,
+    /// All `[[viscous]]` definitions.
     pub viscous: Vec<ViscousDef>,
 }
 
 // ── Plugin ─────────────────────────────────────────────────────────────────
 
+/// Plugin that registers group-based atom fixes: addforce, setforce,
+/// move_linear, freeze, and viscous damping.
+///
+/// Only registers update systems for fix types that have at least one
+/// definition in the config, avoiding unnecessary per-timestep overhead.
 pub struct FixesPlugin;
 
 impl Plugin for FixesPlugin {
@@ -157,6 +283,12 @@ impl Plugin for FixesPlugin {
 
 // ── Systems ────────────────────────────────────────────────────────────────
 
+/// Validates all fix group names at setup time and prints a summary on rank 0.
+///
+/// # Panics
+///
+/// Panics (via `GroupRegistry::validate_name`) if any fix references a group
+/// name that has not been defined.
 fn setup_fixes(registry: Res<FixesRegistry>, comm: Res<CommResource>, groups: Res<GroupRegistry>) {
     // Validate all group names at setup time.
     for f in &registry.add_forces {
@@ -178,6 +310,8 @@ fn setup_fixes(registry: Res<FixesRegistry>, comm: Res<CommResource>, groups: Re
     if comm.rank() != 0 {
         return;
     }
+
+    // Print a summary of all active fixes on rank 0.
     for f in &registry.add_forces {
         println!(
             "Fix addforce: group='{}', fx={}, fy={}, fz={}",
@@ -204,7 +338,8 @@ fn setup_fixes(registry: Res<FixesRegistry>, comm: Res<CommResource>, groups: Re
     }
 }
 
-/// Set velocity = constant BEFORE Verlet position update, so positions move at prescribed rate.
+/// Sets velocity to the prescribed constant **before** the Verlet position update,
+/// so that atoms move at the exact prescribed rate during InitialIntegration.
 fn apply_move_linear_pre(
     mut atoms: ResMut<Atom>,
     registry: Res<FixesRegistry>,
@@ -223,7 +358,8 @@ fn apply_move_linear_pre(
     }
 }
 
-/// Add a constant force to all atoms in the group.
+/// Adds a constant force `(fx, fy, fz)` to every atom in the group.
+/// Applied during PostForce, so it accumulates on top of pair/bond forces.
 fn apply_add_force(
     mut atoms: ResMut<Atom>,
     registry: Res<FixesRegistry>,
@@ -242,7 +378,8 @@ fn apply_add_force(
     }
 }
 
-/// Overwrite force on all atoms in the group.
+/// Overwrites the force on every atom in the group with `(fx, fy, fz)`,
+/// discarding any previously computed forces for those atoms.
 fn apply_set_force(
     mut atoms: ResMut<Atom>,
     registry: Res<FixesRegistry>,
@@ -261,7 +398,7 @@ fn apply_set_force(
     }
 }
 
-/// Zero velocity and force on frozen atoms.
+/// Zeros both velocity and force on every frozen atom, keeping them immobile.
 fn apply_freeze(
     mut atoms: ResMut<Atom>,
     registry: Res<FixesRegistry>,
@@ -283,7 +420,8 @@ fn apply_freeze(
     }
 }
 
-/// Zero force on move_linear atoms so FinalIntegration doesn't change velocity.
+/// Zeros force on move_linear atoms after force computation, preventing
+/// FinalIntegration from altering their prescribed velocity.
 fn apply_move_linear_post(
     mut atoms: ResMut<Atom>,
     registry: Res<FixesRegistry>,
@@ -302,7 +440,8 @@ fn apply_move_linear_post(
     }
 }
 
-/// Apply velocity-proportional damping: F = -gamma * v.
+/// Applies velocity-proportional viscous damping: **F**_damp = −γ **v**.
+/// Subtracts `gamma * velocity` from each force component of group atoms.
 fn apply_viscous(
     mut atoms: ResMut<Atom>,
     registry: Res<FixesRegistry>,
@@ -324,17 +463,29 @@ fn apply_viscous(
 
 // ── Gravity ─────────────────────────────────────────────────────────────────
 
+/// Gravitational acceleration configuration.
+///
+/// Applies a body force **F** = m **g** to every local atom each timestep,
+/// where m is the atom's mass and **g** = `(gx, gy, gz)`.
+///
+/// # TOML Configuration
+///
+/// ```toml
+/// [gravity]
+/// gx = 0.0      # acceleration in x direction (default: 0.0)
+/// gy = 0.0      # acceleration in y direction (default: 0.0)
+/// gz = -9.81    # acceleration in z direction (default: -9.81)
+/// ```
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-/// TOML `[gravity]` — gravitational acceleration components.
 pub struct GravityConfig {
-    /// Gravity in x direction (m/s²).
+    /// Gravitational acceleration in x direction. Default: 0.0.
     #[serde(default)]
     pub gx: f64,
-    /// Gravity in y direction (m/s²).
+    /// Gravitational acceleration in y direction. Default: 0.0.
     #[serde(default)]
     pub gy: f64,
-    /// Gravity in z direction (m/s²). Default: -9.81.
+    /// Gravitational acceleration in z direction. Default: −9.81.
     #[serde(default = "default_gravity_gz")]
     pub gz: f64,
 }
@@ -353,7 +504,8 @@ fn default_gravity_gz() -> f64 {
     -9.81
 }
 
-/// Applies a constant gravitational body force to all local atoms.
+/// Plugin that applies a constant gravitational body force (**F** = m**g**)
+/// to all local atoms during the Force schedule phase.
 pub struct GravityPlugin;
 
 impl Plugin for GravityPlugin {
@@ -373,6 +525,9 @@ gz = -9.81"#,
     }
 }
 
+/// Applies gravitational body force **F**_i = m_i **g** to all local atoms.
+///
+/// Ghost atoms (index ≥ `nlocal`) are not affected.
 pub fn apply_gravity(mut atoms: ResMut<Atom>, gravity: Res<GravityConfig>) {
     for i in 0..atoms.nlocal as usize {
         atoms.force[i][0] += atoms.mass[i] * gravity.gx;
