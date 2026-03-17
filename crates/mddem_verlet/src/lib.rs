@@ -1,4 +1,25 @@
 //! Translational Velocity Verlet time integration (half-step kick-drift-kick).
+//!
+//! This crate implements the **velocity Verlet** algorithm for integrating
+//! Newton's equations of motion. The scheme is split into two phases that
+//! bracket the force calculation each timestep:
+//!
+//! **Initial integration** (before forces):
+//!
+//! ```text
+//!   v(t + Δt/2) = v(t)     + (Δt / 2m) · F(t)      // half-step velocity kick
+//!   x(t + Δt)   = x(t)     + Δt · v(t + Δt/2)       // full-step position drift
+//! ```
+//!
+//! **Final integration** (after forces):
+//!
+//! ```text
+//!   v(t + Δt)   = v(t + Δt/2) + (Δt / 2m) · F(t + Δt) // completing velocity kick
+//! ```
+//!
+//! This "kick-drift-kick" decomposition is symplectic, time-reversible, and
+//! second-order accurate in Δt. It exactly integrates constant-force motion
+//! and conserves energy to O(Δt²) per step for Hamiltonian systems.
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
@@ -63,11 +84,22 @@ impl Plugin for VelocityVerletPlugin {
     }
 }
 
+/// Performs the first half of velocity Verlet: half-step velocity kick + position drift.
+///
+/// For each local atom *i*:
+///
+/// ```text
+///   v_i  +=  (Δt / 2m_i) · F_i     (half-kick using forces from previous step)
+///   x_i  +=  Δt · v_i               (drift at the updated half-step velocity)
+/// ```
+///
+/// This runs at [`ScheduleSet::InitialIntegration`], **before** force computation.
 pub fn initial_integration(mut atoms: ResMut<Atom>) {
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
     // SAFETY: i < nlocal <= len for all arrays (inv_mass, force, vel, pos).
-    // Use raw pointers to avoid borrow checker conflicts between different fields.
+    // Raw pointers avoid borrow-checker conflicts when mutating vel/pos while
+    // reading inv_mass/force from the same struct.
     let inv_mass_ptr = atoms.inv_mass.as_ptr();
     let force_ptr = atoms.force.as_ptr();
     let vel_ptr = atoms.vel.as_mut_ptr();
@@ -77,9 +109,11 @@ pub fn initial_integration(mut atoms: ResMut<Atom>) {
             let half_dt_over_m = 0.5 * dt * *inv_mass_ptr.add(i);
             let f = &*force_ptr.add(i);
             let v = &mut *vel_ptr.add(i);
+            // Half-step velocity kick: v(t) → v(t + Δt/2)
             v[0] += half_dt_over_m * f[0];
             v[1] += half_dt_over_m * f[1];
             v[2] += half_dt_over_m * f[2];
+            // Full-step position drift using the half-step velocity
             let p = &mut *pos_ptr.add(i);
             p[0] += v[0] * dt;
             p[1] += v[1] * dt;
@@ -88,6 +122,17 @@ pub fn initial_integration(mut atoms: ResMut<Atom>) {
     }
 }
 
+/// Performs the second half of velocity Verlet: completing the velocity kick.
+///
+/// For each local atom *i*:
+///
+/// ```text
+///   v_i  +=  (Δt / 2m_i) · F_i     (half-kick using newly computed forces)
+/// ```
+///
+/// After this step the velocity is fully updated: v(t + Δt/2) → v(t + Δt).
+///
+/// This runs at [`ScheduleSet::FinalIntegration`], **after** force computation.
 pub fn final_integration(mut atoms: ResMut<Atom>) {
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
@@ -100,6 +145,7 @@ pub fn final_integration(mut atoms: ResMut<Atom>) {
             let half_dt_over_m = 0.5 * dt * *inv_mass_ptr.add(i);
             let f = &*force_ptr.add(i);
             let v = &mut *vel_ptr.add(i);
+            // Completing velocity kick: v(t + Δt/2) → v(t + Δt)
             v[0] += half_dt_over_m * f[0];
             v[1] += half_dt_over_m * f[1];
             v[2] += half_dt_over_m * f[2];
