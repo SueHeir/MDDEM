@@ -1,49 +1,142 @@
-//! MD bond potentials: harmonic springs, FENE, and bond angle (cosine bending).
+//! MD bond potentials for bead-spring polymer models.
 //!
-//! Reads bond topology from [`BondStore`] and applies pairwise bond forces.
-//! Optionally reads angle topology from [`AngleStore`] for 3-body bending forces.
-//! Supports two bond styles:
-//! - **Harmonic**: `U = k/2 (r - r0)^2`
-//! - **FENE**: `U = -0.5 k R0^2 ln(1 - (r/R0)^2)` (used in Kremer-Grest bead-spring model)
+//! This crate provides pairwise bond forces and optional three-body angle bending
+//! forces for molecular dynamics simulations. Bond topology is read from
+//! [`BondStore`] and angle topology from [`AngleStore`].
 //!
-//! Bond angle potential (cosine bending):
-//! - `U(θ) = k_angle (1 - cos θ)` where θ is the angle between consecutive bonds
+//! # Bond Styles
+//!
+//! ## Harmonic
+//!
+//! A simple spring with equilibrium length `r0`:
+//!
+//! ```text
+//! U(r) = k/2 (r - r0)²
+//! F(r) = k (r - r0) / r   (directed along the bond)
+//! ```
+//!
+//! Attractive when stretched (`r > r0`), repulsive when compressed (`r < r0`).
+//!
+//! ## FENE (Finitely Extensible Nonlinear Elastic)
+//!
+//! Used in the Kremer–Grest bead-spring model. The bond diverges at maximum
+//! extension `R0`, preventing chain crossing:
+//!
+//! ```text
+//! U(r) = -0.5 k R0² ln(1 - (r/R0)²)
+//! F(r) = k r / (1 - (r/R0)²)
+//! ```
+//!
+//! The FENE potential is purely attractive (equilibrium at `r = 0`) and diverges
+//! as `r → R0`. In practice it is combined with a repulsive LJ potential (WCA)
+//! to set an effective equilibrium bond length. If the bond stretches beyond `R0`
+//! (e.g. due to a too-large timestep), the force is capped at the value for
+//! `r = 0.99 R0` and a warning is printed.
+//!
+//! # Angle Potential (Cosine Bending)
+//!
+//! For three consecutively bonded atoms i—j—k, the cosine bending potential
+//! penalizes deviations from a straight chain:
+//!
+//! ```text
+//! U(θ) = k_angle (1 - cos θ)
+//! ```
+//!
+//! where `θ` is the angle at the central atom `j`. The minimum energy is at
+//! `θ = 0` (straight chain) and maximum at `θ = π` (fully folded).
+//! Set `k_angle = 0.0` (default) for fully flexible chains.
+//!
+//! # TOML Configuration
+//!
+//! ```toml
+//! [md_bond]
+//! style = "fene"    # "harmonic" or "fene"
+//! k = 30.0          # spring constant (energy/length²)
+//! r0 = 1.5          # max extension R0 (FENE) or equilibrium length (harmonic)
+//! k_angle = 0.0     # bond angle stiffness (0 = fully flexible chains)
+//! ```
+//!
+//! ## Example: Kremer–Grest bead-spring model
+//!
+//! ```toml
+//! [md_bond]
+//! style = "fene"
+//! k = 30.0
+//! r0 = 1.5
+//! ```
+//!
+//! ## Example: Harmonic bonds with stiff angles
+//!
+//! ```toml
+//! [md_bond]
+//! style = "harmonic"
+//! k = 100.0
+//! r0 = 1.0
+//! k_angle = 25.0
+//! ```
 
 use mddem_app::prelude::*;
 use mddem_core::{AnglePlugin, AngleStore, Atom, AtomDataRegistry, BondStore, Config, Domain, VirialStress};
 use mddem_scheduler::prelude::*;
 use serde::Deserialize;
 
-// ── Config ──────────────────────────────────────────────────────────────────
+// ── Config defaults ─────────────────────────────────────────────────────────
 
+/// Default bond style: FENE (Kremer–Grest model).
 fn default_style() -> String {
     "fene".to_string()
 }
+/// Default spring constant: 30.0 (standard Kremer–Grest value).
 fn default_k() -> f64 {
     30.0
 }
+/// Default maximum extension / equilibrium length: 1.5.
 fn default_r0() -> f64 {
     1.5
 }
+/// Default angle stiffness: 0.0 (fully flexible chains).
 fn default_k_angle() -> f64 {
     0.0
 }
 
 /// TOML `[md_bond]` configuration.
+///
+/// All fields have defaults suitable for the Kremer–Grest bead-spring model
+/// (FENE with `k = 30.0`, `R0 = 1.5`).
+///
+/// # Fields
+///
+/// | Field     | Type     | Default  | Description |
+/// |-----------|----------|----------|-------------|
+/// | `style`   | `String` | `"fene"` | Bond style: `"harmonic"` or `"fene"` |
+/// | `k`       | `f64`    | `30.0`   | Spring constant (energy/length²) |
+/// | `r0`      | `f64`    | `1.5`    | Max extension `R0` (FENE) or equilibrium length (harmonic) |
+/// | `k_angle` | `f64`    | `0.0`    | Angle bending stiffness; `0.0` = fully flexible |
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct MdBondConfig {
-    /// Bond style: "harmonic" or "fene".
+    /// Bond style: `"harmonic"` or `"fene"`.
+    ///
+    /// - **harmonic**: Simple spring with equilibrium at `r0`.
+    /// - **fene**: Finitely extensible bond that diverges at `r0`.
     #[serde(default = "default_style")]
     pub style: String,
-    /// Spring constant (energy / length^2 for harmonic, energy / length^2 for FENE).
+    /// Spring constant in energy/length² units.
+    ///
+    /// For harmonic bonds: `F = k (r - r0)`.
+    /// For FENE bonds: `F = k r / (1 - (r/R0)²)`.
     #[serde(default = "default_k")]
     pub k: f64,
-    /// Maximum extension for FENE, or equilibrium length for harmonic.
+    /// Equilibrium length (harmonic) or maximum extension `R0` (FENE).
+    ///
+    /// For FENE, the bond potential diverges as `r → r0`, preventing
+    /// chain crossing. Typical Kremer–Grest value: `1.5`.
     #[serde(default = "default_r0")]
     pub r0: f64,
-    /// Bond angle bending stiffness. U(θ) = k_angle (1 - cos θ).
-    /// Set to 0.0 (default) for fully flexible chains.
+    /// Bond angle bending stiffness for the cosine potential `U(θ) = k_angle (1 - cos θ)`.
+    ///
+    /// Set to `0.0` (default) for fully flexible chains. Positive values
+    /// penalize deviations from a straight chain configuration.
     #[serde(default = "default_k_angle")]
     pub k_angle: f64,
 }
@@ -59,20 +152,36 @@ impl Default for MdBondConfig {
     }
 }
 
-/// Parsed bond style enum for fast dispatch.
+/// Parsed bond style for fast runtime dispatch.
+///
+/// Created from the `style` string in [`MdBondConfig`] during plugin initialization.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BondStyle {
+    /// Harmonic spring: `U = k/2 (r - r0)²`.
     Harmonic,
+    /// Finitely Extensible Nonlinear Elastic: `U = -0.5 k R0² ln(1 - (r/R0)²)`.
     Fene,
 }
 
+/// Runtime state for the bond plugin, holding the parsed [`BondStyle`].
 pub struct MdBondState {
+    /// The active bond style for this simulation.
     pub style: BondStyle,
 }
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
-/// MD bond force plugin. Requires [`BondPlugin`](mddem_core::BondPlugin) to be registered.
+/// MD bond force plugin.
+///
+/// Registers bond force computation in the [`ScheduleSet::Force`] phase.
+/// Automatically registers [`BondPlugin`](mddem_core::BondPlugin) for bond topology
+/// and [`VirialStressPlugin`](mddem_core::VirialStressPlugin) for pressure calculation.
+/// If `k_angle > 0`, also registers [`AnglePlugin`] for angle topology.
+///
+/// # Panics
+///
+/// Panics during `build()` if the `style` field in `[md_bond]` config is not
+/// `"harmonic"` or `"fene"`.
 pub struct MdBondPlugin;
 
 impl Plugin for MdBondPlugin {
@@ -114,6 +223,14 @@ k_angle = 0.0     # bond angle stiffness (0 = fully flexible)"#,
 
 // ── Force computation ───────────────────────────────────────────────────────
 
+/// Compute pairwise bond forces and (optionally) angle bending forces.
+///
+/// Iterates over all local atoms, looks up their bond partners via [`BondStore`],
+/// and applies the configured force law (harmonic or FENE). Each bond is computed
+/// once (for the atom with the smaller tag) and Newton's third law is applied.
+/// Bond contributions to the virial stress tensor are accumulated when active.
+///
+/// If `k_angle > 0`, also computes three-body angle forces from [`AngleStore`].
 #[allow(clippy::too_many_arguments)]
 pub fn md_bond_force(
     mut atoms: ResMut<Atom>,
@@ -205,22 +322,28 @@ pub fn md_bond_force(
                     k * (r - r0_bond) / r
                 }
                 BondStyle::Fene => {
-                    // FENE potential: U = -0.5 k R0^2 ln(1 - (r/R0)^2)
-                    // Force magnitude: F = -dU/dr = k r / (1 - (r/R0)^2)
+                    // FENE potential: U = -0.5 k R0² ln(1 - (r/R0)²)
+                    // Force:          F = -dU/dr = k r / (1 - (r/R0)²)
                     //
-                    // `fpair` is F/r (force magnitude divided by distance) because
-                    // it gets multiplied by the unnormalized displacement vector
-                    // (dx, dy, dz) to produce force components:
-                    //   fx = fpair * dx = (F/r) * dx = F * (dx/r)
-                    // This avoids a separate normalization step.
+                    // `fpair` is F/r so that force components are simply:
+                    //   fx = fpair * dx,  fy = fpair * dy,  fz = fpair * dz
+                    // This avoids a separate normalization of the displacement vector.
+                    //
+                    // The denominator (1 - (r/R0)²) → 0 as r → R0, causing the
+                    // force to diverge. This divergence is the key feature of FENE:
+                    // it prevents bonds from stretching beyond R0, which would allow
+                    // unphysical chain crossing in polymer simulations.
                     let ratio2 = r2 / (r0_config * r0_config);
                     if ratio2 >= 1.0 {
+                        // Bond has exceeded maximum extension — this typically indicates
+                        // the timestep is too large. Apply a capped restoring force at
+                        // r = 0.99 R0 to pull the atoms back, rather than producing
+                        // NaN or infinite forces.
                         eprintln!(
-                            "WARNING: FENE bond exceeded maximum extension! r={:.4}, R0={:.4}, tags=({},{})",
+                            "WARNING: FENE bond exceeded maximum extension! r={:.4}, R0={:.4}, tags=({},{}). \
+                             Consider reducing the timestep.",
                             r, r0_config, atoms.tag[i], bond.partner_tag
                         );
-                        // Cap at the force value at r = 0.99 * R0 as an emergency restoring force.
-                        // F(0.99*R0)/r ≈ k / (1 - 0.99^2) = k / 0.0199 ≈ 50.25 * k
                         let cap_ratio2 = 0.99 * 0.99;
                         k / (1.0 - cap_ratio2)
                     } else {
