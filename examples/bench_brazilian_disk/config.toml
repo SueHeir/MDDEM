@@ -1,0 +1,94 @@
+# Brazilian Disk Tensile Test Benchmark
+#
+# A bonded hex-lattice disk compressed between two platens until tensile failure.
+# Bond stiffness k_n = 1e5 N/m is chosen to be stable with the auto-computed
+# Rayleigh timestep (~2.9e-6 s). Verlet stability limit: dt < 2/sqrt(k/m) ~ 7e-6 s.
+#
+# Disk: radius = 0.01 m, particle radius = 0.0005 m, hex lattice (~313 particles).
+# Walls start just outside the disk and move inward at 5 mm/s each.
+
+[domain]
+x_low  = -0.020
+x_high =  0.020
+y_low  = -0.002
+y_high =  0.002
+z_low  = -0.020
+z_high =  0.020
+periodic_x = false
+periodic_y = false
+periodic_z = false
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.002
+
+[output]
+dir = "examples/bench_brazilian_disk"
+
+# ── Material ──────────────────────────────────────────────────────────────
+
+[[dem.materials]]
+name = "rock"
+youngs_mod = 5.0e7       # Young's modulus [Pa]
+poisson_ratio = 0.25
+restitution = 0.5
+friction = 0.5
+
+# ── Walls (platens) ──────────────────────────────────────────────────────
+# Platens start 50 um outside the disk surface (no initial overlap).
+
+# Bottom platen — normal +z, moves up at 5 mm/s.
+[[wall]]
+wall_type = "plane"
+point_x = 0.0
+point_y = 0.0
+point_z = -0.01005
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "rock"
+velocity = [0.0, 0.0, 0.005]
+
+# Top platen — normal -z, moves down at 5 mm/s.
+[[wall]]
+wall_type = "plane"
+point_x = 0.0
+point_y = 0.0
+point_z = 0.01005
+normal_x = 0.0
+normal_y = 0.0
+normal_z = -1.0
+material = "rock"
+velocity = [0.0, 0.0, -0.005]
+
+# ── Bonds ─────────────────────────────────────────────────────────────────
+# Soft bonds compatible with auto-computed Rayleigh timestep.
+# Verlet stability: dt < 2/sqrt(k/m) ~ 7.2e-6 s (auto dt ~ 2.9e-6 s: stable).
+
+[bonds]
+auto_bond = true
+bond_tolerance = 1.05           # 5% tolerance for bonding distance
+normal_stiffness = 1.0e5        # Bond normal stiffness [N/m]
+normal_damping = 5.0            # Bond normal damping [N*s/m]
+tangential_stiffness = 5.0e4    # Bond tangential stiffness [N/m]
+tangential_damping = 2.5        # Bond tangential damping [N*s/m]
+break_normal_stretch = 0.005    # Break at 0.5% normal strain
+break_shear = 0.000005          # Break at 5 um shear displacement [m]
+
+# ── Thermo output ─────────────────────────────────────────────────────────
+
+[thermo]
+columns = ["step", "ke", "bond_strain", "bonds_broken", "walltime"]
+
+# ── Run ───────────────────────────────────────────────────────────────────
+# Auto-computed dt ~ 2.9e-6 s. At 5 mm/s wall speed:
+# - Time to contact: 50 um / 5 mm/s = 0.01 s = ~3500 steps
+# - 500k steps = ~1.44 s total time = ~7.2 mm wall travel each
+# - Compression well exceeds bond break threshold
+
+[run]
+steps = 500000
+thermo = 5000
+
+[dump]
+interval = 50000
