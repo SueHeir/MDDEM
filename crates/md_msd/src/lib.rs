@@ -1,20 +1,60 @@
 //! Per-type mean-squared displacement (MSD) plugin with diffusion coefficient estimation.
 //!
-//! Tracks unwrapped particle positions by detecting periodic boundary crossings,
-//! then computes MSD = <|r(t) - r(0)|²> for each atom type independently.
-//! Outputs both per-type MSD(t) and the Einstein diffusion coefficient D = MSD/(6t).
+//! # Mean-Squared Displacement
+//!
+//! The mean-squared displacement measures how far particles travel from their
+//! initial positions over time, averaged over all particles of a given type:
+//!
+//! ```text
+//! MSD(t) = <|r(t) - r(0)|²> = (1/N) Σᵢ |rᵢ(t) - rᵢ(0)|²
+//! ```
+//!
+//! where `r(t)` are **unwrapped** coordinates (accounting for periodic boundary
+//! crossings) and `N` is the number of atoms of that type.
+//!
+//! # Einstein Relation (Diffusion Coefficient)
+//!
+//! In the long-time limit, the MSD of a diffusing particle grows linearly with
+//! time. The Einstein relation connects MSD to the self-diffusion coefficient:
+//!
+//! ```text
+//! D = lim(t→∞) MSD(t) / (2 * d * t)
+//! ```
+//!
+//! where `d` is the spatial dimensionality (3 for 3D simulations). This plugin
+//! reports `D = MSD(t) / (6 * t)` at each sample point. Note that `D` is only
+//! meaningful in the diffusive (linear) regime — early-time ballistic motion
+//! will give artificially large values.
+//!
+//! # Coordinate Unwrapping
+//!
+//! In periodic simulations, atoms that cross a boundary are wrapped back to the
+//! other side of the box. This plugin detects these jumps by comparing each
+//! atom's current wrapped position to its previous wrapped position: if the
+//! displacement exceeds half the box length, a boundary crossing is inferred
+//! and the unwrapped coordinate is corrected accordingly.
 //!
 //! # Configuration
 //!
 //! ```toml
 //! [msd]
-//! interval = 10           # sample MSD every N steps
-//! output_interval = 1000  # write output files every N steps
+//! interval = 10           # sample MSD every N steps (default: 10)
+//! output_interval = 1000  # write output files every N steps (default: 1000)
 //! ```
 //!
-//! The plugin automatically detects all atom types present in the simulation
-//! and writes separate `data/msd_type_<i>.txt` files for each type, plus a
-//! combined `data/msd_all.txt` for the overall MSD.
+//! # Output Files
+//!
+//! The plugin writes to `<output_dir>/data/`:
+//!
+//! - **`msd_all.txt`** — combined file with columns:
+//!   `dt_steps  dt_time  MSD_all  D_all  [MSD_typeN  D_typeN ...]`
+//! - **`msd_type_<i>.txt`** — per-type file with columns:
+//!   `dt_steps  dt_time  MSD  D`
+//!
+//! where `dt_steps` is the elapsed timesteps since the reference time,
+//! `dt_time = dt_steps * timestep`, and `D = MSD / (6 * dt_time)`.
+//!
+//! The plugin automatically detects all atom types present in the simulation.
 
 use std::fs;
 use std::io::Write;
@@ -34,14 +74,23 @@ fn default_output_interval() -> usize {
     1000
 }
 
+/// TOML `[msd]` section — controls how often MSD is sampled and written.
+///
+/// # Fields
+///
+/// | Field             | Type    | Default | Description                         |
+/// |-------------------|---------|---------|-------------------------------------|
+/// | `interval`        | `usize` | 10      | Sample MSD every N timesteps        |
+/// | `output_interval` | `usize` | 1000    | Write output files every N timesteps|
+///
+/// Set `interval = 0` to disable MSD tracking entirely.
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-/// TOML `[msd]` — per-type MSD measurement settings.
 pub struct MsdConfig {
-    /// Sample MSD every N steps.
+    /// Sample MSD every N timesteps. Set to 0 to disable.
     #[serde(default = "default_interval")]
     pub interval: usize,
-    /// Write output files every N steps.
+    /// Write output files every N timesteps.
     #[serde(default = "default_output_interval")]
     pub output_interval: usize,
 }
@@ -57,27 +106,36 @@ impl Default for MsdConfig {
 
 // ── Resources ───────────────────────────────────────────────────────────────
 
-/// Per-type MSD tracker with unwrapped coordinate support.
+/// Per-type MSD tracker that maintains unwrapped coordinates for all atoms.
+///
+/// All position arrays are indexed by **atom tag** (not local index), so that
+/// atoms can migrate between processors without losing their displacement history.
+///
+/// The tracker accumulates `(dt_steps, msd_all, msd_per_type)` tuples in
+/// [`values`](Self::values), which are periodically flushed to disk by
+/// [`write_type_msd`].
 pub struct TypeMsdTracker {
-    /// Reference positions at t=0 (indexed by atom tag).
+    /// Reference (initial) positions at the start of tracking, indexed by atom tag.
     pub ref_pos: Vec<[f64; 3]>,
-    /// Current unwrapped positions (indexed by atom tag).
+    /// Current unwrapped positions, indexed by atom tag. Updated each step by
+    /// adding the minimum-image displacement from the previous wrapped position.
     pub unwrapped: Vec<[f64; 3]>,
-    /// Previous wrapped positions for detecting PBC crossings (indexed by atom tag).
+    /// Previous **wrapped** positions, indexed by atom tag. Used to detect
+    /// periodic boundary crossings by comparing with the current wrapped position.
     pub prev_pos: Vec<[f64; 3]>,
-    /// Atom type for each tag (indexed by atom tag).
+    /// Atom type for each tag, indexed by atom tag.
     pub atom_types: Vec<u32>,
-    /// Whether we have an entry for this tag.
+    /// Whether we have recorded an entry for this atom tag.
     pub has_entry: Vec<bool>,
-    /// Number of atom types detected.
+    /// Number of distinct atom types in the simulation.
     pub ntypes: usize,
-    /// Per-type counts of tracked atoms.
+    /// Global count of atoms per type (as `f64` for use in averaging).
     pub type_counts: Vec<f64>,
-    /// Timestep for MSD reference.
+    /// Timestep number at which reference positions were recorded.
     pub ref_step: usize,
-    /// Time series: (dt, msd_all, msd_per_type).
+    /// Accumulated time series: `(dt_steps, msd_all, msd_per_type)`.
     pub values: Vec<(usize, f64, Vec<f64>)>,
-    /// Whether the tracker has been initialized.
+    /// Whether the tracker has been initialized with reference positions.
     pub initialized: bool,
 }
 
@@ -127,6 +185,12 @@ output_interval = 1000 # write output every N steps"#,
 
 // ── Systems ─────────────────────────────────────────────────────────────────
 
+/// System that updates unwrapped positions and computes per-type MSD each interval.
+///
+/// On the first call with atoms present, this system records reference positions
+/// and atom type counts. On subsequent calls at every `config.interval` steps,
+/// it computes MSD(t) = <|r(t) - r(0)|²> for each type and appends the result
+/// to [`TypeMsdTracker::values`].
 pub fn track_type_msd(
     atoms: Res<Atom>,
     run_state: Res<RunState>,
@@ -203,7 +267,11 @@ pub fn track_type_msd(
         return;
     }
 
-    // Update unwrapped positions by detecting PBC jumps
+    // --- Coordinate unwrapping ---
+    // Compare each atom's current wrapped position to its previous wrapped
+    // position. If the displacement exceeds half the box length in any axis,
+    // the atom must have crossed a periodic boundary, so we correct the
+    // unwrapped coordinate by subtracting/adding the full box length.
     let lx = domain.size[0];
     let ly = domain.size[1];
     let lz = domain.size[2];
@@ -213,7 +281,7 @@ pub fn track_type_msd(
 
     for i in 0..nlocal {
         let idx = atoms.tag[i] as usize;
-        // Grow arrays if needed
+        // Grow arrays if a new (higher-tagged) atom appears mid-simulation
         if idx >= msd.prev_pos.len() {
             let new_size = idx + 1;
             msd.ref_pos.resize(new_size, [0.0; 3]);
@@ -224,6 +292,8 @@ pub fn track_type_msd(
         }
 
         if msd.has_entry[idx] {
+            // Compute minimum-image displacement between current and previous
+            // wrapped positions. A jump > half-box means a PBC crossing occurred.
             let mut dx = atoms.pos[i][0] - msd.prev_pos[idx][0];
             let mut dy = atoms.pos[i][1] - msd.prev_pos[idx][1];
             let mut dz = atoms.pos[i][2] - msd.prev_pos[idx][2];
@@ -244,6 +314,7 @@ pub fn track_type_msd(
                 dz += lz;
             }
 
+            // Accumulate the corrected displacement into the unwrapped position
             msd.unwrapped[idx][0] += dx;
             msd.unwrapped[idx][1] += dy;
             msd.unwrapped[idx][2] += dz;
@@ -258,7 +329,8 @@ pub fn track_type_msd(
         return;
     }
 
-    // Compute per-type MSD
+    // --- Per-type MSD computation ---
+    // Sum |r_unwrapped(t) - r_ref(0)|² for each atom, grouped by type.
     let ntypes = msd.ntypes;
     let mut local_msd_sum = vec![0.0f64; ntypes];
     let mut local_msd_all = 0.0f64;
@@ -271,13 +343,14 @@ pub fn track_type_msd(
             let dz = msd.unwrapped[idx][2] - msd.ref_pos[idx][2];
             let dr2 = dx * dx + dy * dy + dz * dz;
             local_msd_all += dr2;
-            let t = atoms.atom_type[i] as usize;
-            if t < ntypes {
-                local_msd_sum[t] += dr2;
+            let atom_type = atoms.atom_type[i] as usize;
+            if atom_type < ntypes {
+                local_msd_sum[atom_type] += dr2;
             }
         }
     }
 
+    // Global reduction across all MPI ranks, then normalize by atom count
     let global_msd_all = comm.all_reduce_sum_f64(local_msd_all);
     let mut per_type_msd = vec![0.0f64; ntypes];
     for t in 0..ntypes {
@@ -300,6 +373,11 @@ pub fn track_type_msd(
     }
 }
 
+/// System that writes accumulated MSD time-series data to output files.
+///
+/// Runs on rank 0 only, every `config.output_interval` steps. Writes both a
+/// combined `msd_all.txt` (with all types side-by-side) and individual
+/// `msd_type_<i>.txt` files for each atom type.
 pub fn write_type_msd(
     run_state: Res<RunState>,
     config: Res<MsdConfig>,
@@ -342,13 +420,12 @@ pub fn write_type_msd(
                     0.0
                 };
                 write!(f, "{}  {:.6}  {:.6}  {:.6}", dt_steps, time, msd_all, d_all).ok();
-                for (t, &msd_t) in per_type.iter().enumerate() {
+                for (_type_idx, &msd_t) in per_type.iter().enumerate() {
                     let d_t = if time > 0.0 {
                         msd_t / (6.0 * time)
                     } else {
                         0.0
                     };
-                    let _ = t;
                     write!(f, "  {:.6}  {:.6}", msd_t, d_t).ok();
                 }
                 writeln!(f).ok();
