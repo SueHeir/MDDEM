@@ -1,7 +1,54 @@
 //! Dependency-injection scheduler with [`Res`]/[`ResMut`] resource access and ordered system execution.
 //!
-//! Systems are plain functions whose parameters implement [`SystemParam`]. The scheduler resolves
-//! resource indices at startup and executes systems in [`ScheduleSet`] order each timestep.
+//! # Overview
+//!
+//! This crate provides a lightweight, Bevy-inspired scheduler for MDDEM simulations.
+//! Systems are plain functions whose parameters implement [`SystemParam`]. The scheduler
+//! resolves resource indices at startup and executes systems in [`ScheduleSet`] order each
+//! timestep.
+//!
+//! # Architecture
+//!
+//! - **Resources**: Typed values stored in a flat `Vec<RefCell<Box<dyn Any>>>`, indexed by
+//!   [`TypeId`]. Systems access them via [`Res<T>`] (shared) or [`ResMut<T>`] (exclusive).
+//! - **Systems**: Functions with up to 10 [`SystemParam`] parameters, automatically converted
+//!   via [`IntoSystem`]. Systems are grouped into [`ScheduleSet`] phases and topologically
+//!   sorted within each phase using `before`/`after` constraints.
+//! - **Conditions**: Boolean functions attached via [`.run_if()`](SystemExt::run_if) that gate
+//!   whether a system executes on a given timestep.
+//! - **States**: [`CurrentState<S>`] / [`NextState<S>`] pairs for state-machine-driven
+//!   simulations, with [`in_state()`] and [`in_stage()`] run conditions.
+//!
+//! # Execution Order
+//!
+//! Each timestep executes systems in [`ScheduleSet`] order:
+//!
+//! 1. `Setup` — one-time per-step bookkeeping
+//! 2. `PreInitialIntegration` → `InitialIntegration` → `PostInitialIntegration`
+//! 3. `PreExchange` → `Exchange`
+//! 4. `PreNeighbor` → `Neighbor`
+//! 5. `PreForce` → `Force` → `PostForce`
+//! 6. `PreFinalIntegration` → `FinalIntegration` → `PostFinalIntegration`
+//!
+//! Within each phase, systems are topologically sorted by `.before()` / `.after()` constraints.
+//! Systems with no ordering constraints run in registration order.
+//!
+//! # Example
+//!
+//! ```rust
+//! use mddem_scheduler::prelude::*;
+//!
+//! struct Temperature(f64);
+//!
+//! fn compute_forces(temp: Res<Temperature>) {
+//!     // Access temperature as &Temperature via Deref
+//!     let _t = temp.0;
+//! }
+//!
+//! let mut scheduler = Scheduler::default();
+//! scheduler.add_resource(Temperature(300.0));
+//! scheduler.add_update_system(compute_forces, ScheduleSet::Force);
+//! ```
 
 #![allow(clippy::too_many_arguments)]
 // ANCHOR: All
@@ -147,16 +194,33 @@ macro_rules! impl_into_condition {
 
 // ANCHOR: SystemParam
 /// Types that can be injected as parameters into system functions.
+///
+/// Implementors define how to retrieve a value from the scheduler's resource storage.
+/// Built-in implementations include [`Res<T>`], [`ResMut<T>`], [`Local<T>`], and
+/// their `Option<_>` wrappers.
 pub trait SystemParam {
+    /// The concrete type returned by [`retrieve`](Self::retrieve) for a given lifetime.
     type Item<'new>;
+
+    /// Extracts this parameter from the resource storage.
+    ///
+    /// # Safety contract
+    ///
+    /// `locals` must point to a valid, exclusively-owned `HashMap` for the duration of the call.
     fn retrieve<'r>(
         resources: &'r [RefCell<Box<dyn Any>>],
         index: usize,
         locals: *mut HashMap<TypeId, Box<dyn Any>>,
     ) -> Self::Item<'r>;
+
+    /// Returns the [`TypeId`] and human-readable name of the resource this param needs,
+    /// or `None` if it doesn't require a resource (e.g., [`Local`]).
     fn resource_type_id() -> Option<(TypeId, &'static str)> {
         None
     }
+
+    /// Returns `true` if this parameter is optional (won't cause a validation error
+    /// when the resource is missing). Used by `Option<Res<T>>` and `Option<ResMut<T>>`.
     fn is_optional() -> bool {
         false
     }
@@ -173,7 +237,9 @@ impl<'res, T: 'static> SystemParam for Res<'res, T> {
     ) -> Self::Item<'r> {
         let guard = resources[index].borrow();
         // Downcast once here; Deref uses the cached pointer.
-        let ptr: *const T = guard.downcast_ref::<T>().unwrap();
+        let ptr: *const T = guard
+            .downcast_ref::<T>()
+            .expect("Res<T>: resource type mismatch during downcast");
         Res { _guard: guard, ptr }
     }
     fn resource_type_id() -> Option<(TypeId, &'static str)> {
@@ -192,7 +258,9 @@ impl<'res, T: 'static> SystemParam for ResMut<'res, T> {
     ) -> Self::Item<'r> {
         let mut guard = resources[index].borrow_mut();
         // Downcast once here; Deref/DerefMut use the cached pointer.
-        let ptr: *mut T = guard.downcast_mut::<T>().unwrap();
+        let ptr: *mut T = guard
+            .downcast_mut::<T>()
+            .expect("ResMut<T>: resource type mismatch during downcast");
         ResMut { _guard: guard, ptr }
     }
     fn resource_type_id() -> Option<(TypeId, &'static str)> {
@@ -275,7 +343,9 @@ impl<'res, T: Default + 'static> SystemParam for Local<'res, T> {
             .entry(TypeId::of::<T>())
             .or_insert_with(|| Box::new(T::default()));
         Local {
-            value: entry.downcast_mut::<T>().unwrap(),
+            value: entry
+                .downcast_mut::<T>()
+                .expect("Local<T>: type mismatch in per-system local storage"),
             _marker: PhantomData,
         }
     }
@@ -307,7 +377,9 @@ impl<'res, T: 'static> SystemParam for Option<Res<'res, T>> {
             return None;
         }
         let guard = resources[index].borrow();
-        let ptr: *const T = guard.downcast_ref::<T>().unwrap();
+        let ptr: *const T = guard
+            .downcast_ref::<T>()
+            .expect("Option<Res<T>>: resource type mismatch during downcast");
         Some(Res { _guard: guard, ptr })
     }
     fn resource_type_id() -> Option<(TypeId, &'static str)> {
@@ -329,7 +401,9 @@ impl<'res, T: 'static> SystemParam for Option<ResMut<'res, T>> {
             return None;
         }
         let mut guard = resources[index].borrow_mut();
-        let ptr: *mut T = guard.downcast_mut::<T>().unwrap();
+        let ptr: *mut T = guard
+            .downcast_mut::<T>()
+            .expect("Option<ResMut<T>>: resource type mismatch during downcast");
         Some(ResMut { _guard: guard, ptr })
     }
     fn resource_type_id() -> Option<(TypeId, &'static str)> {
@@ -344,31 +418,49 @@ impl<'res, T: 'static> SystemParam for Option<ResMut<'res, T>> {
 
 // ANCHOR: System
 /// A runnable unit of work that receives resources via dependency injection.
+///
+/// Most users never implement this directly — instead, write a plain function with
+/// [`SystemParam`] parameters and the scheduler converts it via [`IntoSystem`].
 pub trait System {
+    /// Executes the system, borrowing resources from the scheduler's storage.
     fn run(&mut self, resources: &[RefCell<Box<dyn Any>>]);
+
+    /// Resolves resource indices from the type-id map. Returns names of any missing resources.
+    ///
+    /// Called once during [`Scheduler::organize_systems`] before the run loop begins.
     fn prepare(&mut self, _index: &HashMap<TypeId, usize>) -> Vec<String> {
         Vec::new()
     }
+
+    /// Returns the system's human-readable name (typically `std::any::type_name::<F>()`).
     fn name(&self) -> &str {
         "unknown"
     }
+
+    /// Returns the name of this system's run condition, if any.
     fn condition_name(&self) -> Option<&str> {
         None
     }
 }
 // ANCHOR_END: System
 
+/// A type-erased wrapper around a function that implements [`System`].
+///
+/// Created automatically by [`IntoSystem`] — users should not construct this directly.
 pub struct FunctionSystem<Input, F> {
     f: F,
     marker: PhantomData<fn() -> Input>,
     /// Per-system-instance local state, keyed by TypeId.
     locals: HashMap<TypeId, Box<dyn Any>>,
-    /// Cached resource indices resolved during prepare().
+    /// Cached resource indices resolved during [`System::prepare`].
     indices: Vec<usize>,
 }
 
+/// Converts a function (with up to 10 [`SystemParam`] parameters) into a [`System`].
 pub trait IntoSystem<Input> {
+    /// The concrete [`System`] type produced by this conversion.
     type System: System;
+    /// Performs the conversion.
     fn into_system(self) -> Self::System;
 }
 
@@ -452,17 +544,26 @@ impl_into_system_label!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
 
 // ─── Condition trait & FunctionCondition ─────────────────────────────────────
 
-/// A DI-injected function that returns `bool`, used with `.run_if()`.
+/// A dependency-injected predicate that returns `bool`, used with
+/// [`.run_if()`](SystemExt::run_if) to conditionally execute systems.
 pub trait Condition {
+    /// Evaluates the condition against the current resource state.
     fn evaluate(&mut self, resources: &[RefCell<Box<dyn Any>>]) -> bool;
+
+    /// Resolves resource indices. Returns names of any missing resources.
     fn prepare(&mut self, _index: &HashMap<TypeId, usize>) -> Vec<String> {
         Vec::new()
     }
+
+    /// Returns the condition's human-readable name for diagnostics and DOT output.
     fn name(&self) -> &str {
         ""
     }
 }
 
+/// A type-erased wrapper around a boolean function that implements [`Condition`].
+///
+/// Created automatically by [`IntoCondition`] — users should not construct this directly.
 pub struct FunctionCondition<Input, F> {
     f: F,
     marker: PhantomData<fn() -> Input>,
@@ -470,8 +571,11 @@ pub struct FunctionCondition<Input, F> {
     indices: Vec<usize>,
 }
 
+/// Converts a boolean function (with up to 5 [`SystemParam`] parameters) into a [`Condition`].
 pub trait IntoCondition<Input> {
+    /// The concrete [`Condition`] type produced by this conversion.
     type Condition: Condition;
+    /// Performs the conversion.
     fn into_condition(self) -> Self::Condition;
 }
 
@@ -520,27 +624,45 @@ impl<S: System, C: Condition> System for ConditionalSystem<S, C> {
 // ─── SystemDescriptor ─────────────────────────────────────────────────────────
 
 /// Wraps a system with ordering metadata (label, before/after constraints).
+///
+/// Created via the fluent API on [`SystemExt`] (e.g., `my_system.label("x").after("y")`).
+/// Supports chaining: `.label()`, `.before()`, `.after()`, `.requires_label()`, `.run_if()`.
 pub struct SystemDescriptor<S: System + 'static> {
+    /// The underlying system.
     pub system: S,
+    /// Optional human-readable label for this system (used as an ordering target).
     pub label: Option<String>,
+    /// Labels of systems that must run *after* this one.
     pub befores: Vec<String>,
+    /// Labels of systems that must run *before* this one.
     pub afters: Vec<String>,
+    /// Labels that must exist in the same [`ScheduleSet`] (validation-only, no ordering).
     pub requires: Vec<String>,
 }
 
 impl<S: System + 'static> SystemDescriptor<S> {
+    /// Assigns a label to this system, making it addressable by `.before()` / `.after()`.
     pub fn label(mut self, lbl: impl Into<String>) -> Self {
         self.label = Some(lbl.into());
         self
     }
+
+    /// Declares that this system must run *before* the given target.
     pub fn before<M>(mut self, target: impl IntoSystemLabel<M>) -> Self {
         self.befores.push(target.into_label());
         self
     }
+
+    /// Declares that this system must run *after* the given target.
     pub fn after<M>(mut self, target: impl IntoSystemLabel<M>) -> Self {
         self.afters.push(target.into_label());
         self
     }
+
+    /// Declares that the given label must exist in the same [`ScheduleSet`].
+    ///
+    /// This is a validation constraint only — it does not impose ordering.
+    /// Panics during [`Scheduler::organize_systems`] if the label is missing.
     pub fn requires_label<M>(mut self, target: impl IntoSystemLabel<M>) -> Self {
         self.requires.push(target.into_label());
         self
@@ -693,45 +815,88 @@ impl<S: System + 'static> IntoScheduledSystem<DescMarker> for SystemDescriptor<S
 
 // ─── StoredSystemEntry ────────────────────────────────────────────────────────
 
+/// A boxed system together with its ordering metadata, ready for storage in the scheduler.
+///
+/// Created by [`IntoScheduledSystem::into_stored`] during system registration.
 pub struct StoredSystemEntry {
+    /// The type-erased, boxed system.
     pub system: Box<dyn System>,
+    /// The system's name (from `std::any::type_name`).
     pub name: String,
+    /// Optional explicit label for ordering references.
     pub label: Option<String>,
+    /// Systems that must run after this one (by label or function name).
     pub befores: Vec<String>,
+    /// Systems that must run before this one (by label or function name).
     pub afters: Vec<String>,
+    /// Labels that must exist in the same [`ScheduleSet`] (validation only).
     pub requires: Vec<String>,
+    /// Name of the attached run condition, if any (for diagnostics / DOT output).
     pub condition_name: Option<String>,
 }
 
 // ─── Schedule sets ────────────────────────────────────────────────────────────
 
-/// Execution phase within each timestep (run loop).
+/// Execution phase within each timestep (the run loop).
+///
+/// Systems are sorted first by their `ScheduleSet` phase, then topologically within
+/// each phase using `before`/`after` constraints. The phases execute in the order
+/// listed below, mirroring a standard velocity-Verlet integration cycle:
+///
+/// | Index | Phase                    | Typical use                          |
+/// |-------|--------------------------|--------------------------------------|
+/// | 0     | `Setup`                  | Per-step bookkeeping                 |
+/// | 1–3   | `Pre/Initial/PostInitialIntegration` | First half-step velocity update |
+/// | 4–5   | `Pre/Exchange`           | Particle migration (MPI)             |
+/// | 6–7   | `Pre/Neighbor`           | Neighbor-list rebuild                |
+/// | 8–10  | `Pre/Force/PostForce`    | Force computation                    |
+/// | 11–13 | `Pre/Final/PostFinalIntegration` | Second half-step velocity update |
 #[derive(Debug)]
 pub enum ScheduleSet {
+    /// Per-step bookkeeping (e.g., incrementing timestep counters).
     Setup,
+    /// Runs before the initial (first half-step) integration.
     PreInitialIntegration,
+    /// First half-step velocity update (velocity-Verlet first kick).
     InitialIntegration,
+    /// Runs after the initial integration (e.g., position updates).
     PostInitialIntegration,
+    /// Runs before particle exchange / migration.
     PreExchange,
+    /// Particle exchange across MPI ranks or periodic boundaries.
     Exchange,
+    /// Runs before neighbor-list construction.
     PreNeighbor,
+    /// Neighbor-list build / rebuild.
     Neighbor,
+    /// Runs before force computation (e.g., zeroing force arrays).
     PreForce,
+    /// Main force computation phase.
     Force,
+    /// Runs after force computation (e.g., force modifications, diagnostics).
     PostForce,
+    /// Runs before the final (second half-step) integration.
     PreFinalIntegration,
+    /// Second half-step velocity update (velocity-Verlet second kick).
     FinalIntegration,
+    /// Runs after final integration (e.g., output, end-of-step fixes).
     PostFinalIntegration,
 }
 
-/// Execution phase during one-time setup (before the run loop).
+/// Execution phase during one-time setup (before the run loop begins).
+///
+/// Setup systems run once per stage in order: `PreSetup` → `Setup` → `PostSetup`.
 #[derive(Debug)]
 pub enum ScheduleSetupSet {
+    /// Runs before the main setup phase (e.g., early resource initialization).
     PreSetup,
+    /// Main setup phase (e.g., creating neighbor lists, reading restart files).
     Setup,
+    /// Runs after setup (e.g., initial force computation, diagnostics).
     PostSetup,
 }
 
+/// Maps a [`ScheduleSet`] variant to its execution-order index (0–13).
 pub fn set_to_value(schedule_set: &ScheduleSet) -> u32 {
     match schedule_set {
         ScheduleSet::Setup => 0,
@@ -751,6 +916,7 @@ pub fn set_to_value(schedule_set: &ScheduleSet) -> u32 {
     }
 }
 
+/// Maps a [`ScheduleSetupSet`] variant to its execution-order index (0–2).
 pub fn setup_set_to_value(schedule_set: &ScheduleSetupSet) -> u32 {
     match schedule_set {
         ScheduleSetupSet::PreSetup => 0,
@@ -762,15 +928,22 @@ pub fn setup_set_to_value(schedule_set: &ScheduleSetupSet) -> u32 {
 // ─── Simulation states ────────────────────────────────────────────────────────
 
 /// The currently active simulation state.
+///
+/// Registered as a resource. Read by [`in_state()`] conditions to gate system execution.
+/// Updated automatically by [`apply_state_transitions`] at the end of each step.
 pub struct CurrentState<S: Clone + PartialEq + 'static>(pub S);
 
-/// The next state to transition to at the end of the step. Set via `NextState::set()`.
+/// The pending next state, applied at the end of the step by [`apply_state_transitions`].
+///
+/// Call [`set()`](NextState::set) from any system to request a state transition.
 pub struct NextState<S: Clone + PartialEq + 'static>(pub Option<S>);
 
 impl<S: Clone + PartialEq + 'static> NextState<S> {
+    /// Requests a transition to the given state at the end of the current step.
     pub fn set(&mut self, state: S) {
         self.0 = Some(state);
     }
+    /// Cancels any pending state transition.
     pub fn clear(&mut self) {
         self.0 = None;
     }
@@ -788,7 +961,9 @@ pub struct InStateMarker;
 impl<S: Clone + PartialEq + 'static> Condition for InStateCondition<S> {
     fn evaluate(&mut self, resources: &[RefCell<Box<dyn Any>>]) -> bool {
         let borrow = resources[self.index].borrow();
-        let current = borrow.downcast_ref::<CurrentState<S>>().unwrap();
+        let current = borrow
+            .downcast_ref::<CurrentState<S>>()
+            .expect("in_state: CurrentState<S> resource type mismatch");
         current.0 == self.target
     }
     fn prepare(&mut self, index: &HashMap<TypeId, usize>) -> Vec<String> {
@@ -851,7 +1026,9 @@ pub struct InStageMarker;
 impl Condition for InStageCondition {
     fn evaluate(&mut self, resources: &[RefCell<Box<dyn Any>>]) -> bool {
         let borrow = resources[self.index].borrow();
-        let sm = borrow.downcast_ref::<SchedulerManager>().unwrap();
+        let sm = borrow
+            .downcast_ref::<SchedulerManager>()
+            .expect("in_stage: SchedulerManager resource type mismatch");
         sm.stage_name.as_deref() == Some(self.stage.as_str())
     }
     fn prepare(&mut self, index: &HashMap<TypeId, usize>) -> Vec<String> {
@@ -887,7 +1064,9 @@ pub struct FirstStageOnlyMarker;
 impl Condition for FirstStageOnlyCondition {
     fn evaluate(&mut self, resources: &[RefCell<Box<dyn Any>>]) -> bool {
         let borrow = resources[self.index].borrow();
-        let sm = borrow.downcast_ref::<SchedulerManager>().unwrap();
+        let sm = borrow
+            .downcast_ref::<SchedulerManager>()
+            .expect("first_stage_only: SchedulerManager resource type mismatch");
         sm.index == 0
     }
     fn prepare(&mut self, index: &HashMap<TypeId, usize>) -> Vec<String> {
@@ -932,6 +1111,11 @@ pub fn check_stage_advance<S: StageName + Clone + PartialEq + 'static>(
 
 // ─── Topological sort within a ScheduleSet group ─────────────────────────────
 
+/// Topologically sorts systems within a single [`ScheduleSet`] group using Kahn's algorithm.
+///
+/// # Panics
+///
+/// Panics if a cycle is detected in the `before`/`after` ordering constraints.
 fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, ScheduleSet)>) {
     let n = group.len();
     if n <= 1 {
@@ -986,24 +1170,52 @@ fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, ScheduleSet)>) {
     let mut temp: Vec<Option<(StoredSystemEntry, ScheduleSet)>> =
         group.drain(..).map(Some).collect();
     for idx in order {
-        group.push(temp[idx].take().unwrap());
+        group.push(
+            temp[idx]
+                .take()
+                .expect("topo_sort_group: duplicate index in topological order"),
+        );
     }
 }
 
 // ─── Scheduler ────────────────────────────────────────────────────────────────
 
 // ANCHOR: Scheduler
-/// Manages system registration, resource storage, ordering, and per-step execution.
+/// The central scheduler: manages system registration, resource storage, ordering, and
+/// per-step execution.
+///
+/// # Usage
+///
+/// 1. Create a scheduler with [`Scheduler::default()`].
+/// 2. Register resources with [`add_resource`](Scheduler::add_resource).
+/// 3. Register systems with [`add_setup_system`](Scheduler::add_setup_system) and
+///    [`add_update_system`](Scheduler::add_update_system).
+/// 4. Call [`start`](Scheduler::start) to run the simulation loop.
+///
+/// # Environment Variables
+///
+/// - `MDDEM_TRACE` — when set, prints each system name to stderr as it executes.
+/// - `MDDEM_SUPPRESS_WARNINGS` — when set, suppresses schedule validation warnings.
 pub struct Scheduler {
+    /// Setup systems, run once per stage before the main loop.
     setup_systems: Vec<(StoredSystemEntry, ScheduleSetupSet)>,
+    /// Update systems, run every timestep in the main loop.
     update_systems: Vec<(StoredSystemEntry, ScheduleSet)>,
+    /// Flat resource storage, indexed by position.
     pub resources: Vec<RefCell<Box<dyn Any>>>,
+    /// Maps `TypeId` → index into `resources`.
     resource_index: HashMap<TypeId, usize>,
+    /// Whether to write a DOT file of the schedule after organizing.
     print_schedule: bool,
+    /// Cumulative per-system wall-clock timing (seconds), indexed by update system position.
     system_timings: Vec<f64>,
+    /// Number of timesteps completed (for timing averages).
     timing_steps: usize,
+    /// When true, prints system names to stderr during execution.
     trace: bool,
+    /// When true, suppresses schedule validation warnings.
     suppress_warnings: bool,
+    /// Stage names from `[[run]]` config sections (for multi-stage simulations).
     stage_names: Vec<String>,
 }
 // ANCHOR_END: Scheduler
@@ -1029,6 +1241,14 @@ impl Default for Scheduler {
 
 // ANCHOR: SchedulerImpl
 impl Scheduler {
+    /// Sorts all registered systems by [`ScheduleSet`] phase, topologically sorts within
+    /// each phase, resolves resource indices, and validates the schedule.
+    ///
+    /// # Panics
+    ///
+    /// - If any non-optional system parameter references a resource that hasn't been registered.
+    /// - If a `requires_label` constraint references a label not present in its [`ScheduleSet`].
+    /// - If a cycle is detected in `before`/`after` ordering constraints.
     pub fn organize_systems(&mut self) {
         self.setup_systems
             .sort_by_key(|(_, f)| setup_set_to_value(f));
@@ -1177,12 +1397,14 @@ impl Scheduler {
         }
     }
 
+    /// Runs all setup systems in order. Called once per stage before the run loop.
     pub fn setup(&mut self) {
         for (entry, _set) in self.setup_systems.iter_mut() {
             entry.system.run(&self.resources);
         }
     }
 
+    /// Executes one timestep: runs all update systems in order, recording per-system timing.
     pub fn run(&mut self) {
         for (idx, (entry, set)) in self.update_systems.iter_mut().enumerate() {
             if self.trace {
@@ -1195,6 +1417,10 @@ impl Scheduler {
         self.timing_steps += 1;
     }
 
+    /// Runs the full simulation lifecycle: organize → setup → run loop → timing summary.
+    ///
+    /// The loop continues until a system sets [`SchedulerManager::state`] to
+    /// [`SchedulerState::End`].
     pub fn start(&mut self) {
         self.add_scheduler_manager();
         let mut schedule_state = SchedulerState::Setup;
@@ -1208,7 +1434,9 @@ impl Scheduler {
 
                 let sm_idx = self.resource_index[&TypeId::of::<SchedulerManager>()];
                 let mut binding = self.resources[sm_idx].borrow_mut();
-                let sm = binding.downcast_mut::<SchedulerManager>().unwrap();
+                let sm = binding
+                    .downcast_mut::<SchedulerManager>()
+                    .expect("SchedulerManager resource missing or wrong type");
                 sm.state = SchedulerState::Run;
             }
 
@@ -1218,7 +1446,9 @@ impl Scheduler {
 
             let sm_idx = self.resource_index[&TypeId::of::<SchedulerManager>()];
             let mut binding = self.resources[sm_idx].borrow_mut();
-            let sm = binding.downcast_mut::<SchedulerManager>().unwrap();
+            let sm = binding
+                .downcast_mut::<SchedulerManager>()
+                .expect("SchedulerManager resource missing or wrong type");
             schedule_state = sm.state;
         }
 
@@ -1229,7 +1459,7 @@ impl Scheduler {
                 .zip(self.system_timings.iter())
                 .map(|((entry, _), &time)| (&entry.name, time))
                 .collect::<Vec<_>>();
-            sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             println!("\n--- Per-system timing ({} steps) ---", self.timing_steps);
             println!("{:<50} {:>10} {:>8}", "System", "Time(s)", "%");
             println!("{}", "-".repeat(70));
@@ -1242,6 +1472,7 @@ impl Scheduler {
         }
     }
 
+    /// Registers a system to run once during the setup phase.
     pub fn add_setup_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
@@ -1251,6 +1482,7 @@ impl Scheduler {
             .push((system.into_stored(), schedule_set));
     }
 
+    /// Registers a system to run every timestep in the given [`ScheduleSet`] phase.
     pub fn add_update_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
@@ -1260,6 +1492,7 @@ impl Scheduler {
             .push((system.into_stored(), schedule_set));
     }
 
+    /// Removes an update system by its function handle (matching on `type_name`).
     pub fn remove_update_system<I, S: System + 'static>(
         &mut self,
         system: impl IntoSystem<I, System = S>,
@@ -1270,15 +1503,19 @@ impl Scheduler {
             .retain(|(entry, _)| entry.name != name);
     }
 
+    /// Removes all update systems whose explicit label matches `label`.
     pub fn remove_update_system_by_label(&mut self, label: &str) {
         self.update_systems
             .retain(|(entry, _)| entry.label.as_deref() != Some(label));
     }
 
+    /// Registers a default [`SchedulerManager`] resource (called automatically by [`start`](Self::start)).
     pub fn add_scheduler_manager(&mut self) {
         self.add_resource(SchedulerManager::new());
     }
 
+    /// Inserts or replaces a typed resource. If a resource of type `R` already exists,
+    /// it is overwritten in place.
     pub fn add_resource<R: 'static>(&mut self, res: R) {
         let type_id = TypeId::of::<R>();
         if let Some(&idx) = self.resource_index.get(&type_id) {
@@ -1290,26 +1527,37 @@ impl Scheduler {
         }
     }
 
+    /// Returns a reference to the [`RefCell`]-wrapped resource for the given [`TypeId`],
+    /// or `None` if no resource of that type has been registered.
     pub fn get_mut_resource(&mut self, res: TypeId) -> Option<&RefCell<Box<dyn Any>>> {
         self.resource_index
             .get(&res)
             .map(|&idx| &self.resources[idx])
     }
 
+    /// Returns a shared borrow of a resource by type, or `None` if not registered.
+    ///
+    /// Useful for inspecting resources outside the system execution context (e.g., in tests).
     pub fn get_resource_ref<R: 'static>(&self) -> Option<std::cell::Ref<'_, R>> {
         self.resource_index
             .get(&TypeId::of::<R>())
             .map(|&idx| {
                 std::cell::Ref::map(self.resources[idx].borrow(), |b| {
-                    b.downcast_ref::<R>().unwrap()
+                    b.downcast_ref::<R>()
+                        .expect("get_resource_ref: resource type mismatch during downcast")
                 })
             })
     }
 
+    /// Enables writing a Graphviz DOT file (`schedule.dot`) after organizing systems.
     pub fn enable_schedule_print(&mut self) {
         self.print_schedule = true;
     }
 
+    /// Sets the stage names for multi-stage simulations (from `[[run]]` config sections).
+    ///
+    /// When set, the DOT output uses per-stage sub-graphs, and conditions like
+    /// [`in_stage()`] and [`first_stage_only()`] can filter systems by stage.
     pub fn set_stage_names(&mut self, names: &[&str]) {
         self.stage_names = names.iter().map(|s| s.to_string()).collect();
     }
@@ -1350,6 +1598,7 @@ impl Scheduler {
         Self::short_name(full)
     }
 
+    /// Prints the full schedule to stdout, grouped by [`ScheduleSetupSet`] and [`ScheduleSet`].
     pub fn print_schedule(&self) {
         println!("\n═══ Setup Systems ═══");
         let mut last_set: Option<u32> = None;
@@ -1915,10 +2164,16 @@ impl Scheduler {
 
 // ─── SchedulerState / SchedulerManager ───────────────────────────────────────
 
+/// The lifecycle phase of the scheduler's main loop.
+///
+/// Systems can read and write this via [`SchedulerManager`] to control the simulation lifecycle.
 #[derive(Debug, Clone, Copy)]
 pub enum SchedulerState {
+    /// Initial phase: organizing systems and running setup systems.
     Setup,
+    /// Main simulation loop: executing update systems each timestep.
     Run,
+    /// Signals the scheduler to exit the main loop and print timing results.
     End,
 }
 
