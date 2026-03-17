@@ -1,39 +1,34 @@
-# md_lj
+# md_lj: Lennard-Jones 12-6 Pair Potential
 
-Lennard-Jones 12-6 pair force for [MDDEM](https://github.com/SueHeir/MDDEM): the standard continuous pair potential for molecular dynamics.
+Fast, production-ready Lennard-Jones 12-6 pair force plugin for MDDEM molecular dynamics.
 
-## Physics
+## Overview
 
-### LJ 12-6 Pair Force (`LJForcePlugin`)
-Standard Lennard-Jones potential with cutoff:
-- Force: `f/r = 24*eps/r^2 * (2*(sigma/r)^12 - (sigma/r)^6)`
-- Repulsive at `r < sigma`, attractive at `sigma < r < cutoff`
-- Full virial stress tensor accumulation (via `VirialStressPlugin` from `mddem_core`)
-- Ghost atom scaling (0.5 for cross-boundary pairs)
-- Conditional virial: the force inner loop skips virial bookkeeping between thermo steps for zero overhead on most steps
+Implements the standard LJ 12-6 potential: `V(r) = 4ε[(σ/r)¹² − (σ/r)⁶]` with cutoff. Features include single/multi-type interactions with mixing rules, precomputed pair coefficients for speed, virial stress accumulation, and analytical long-range tail corrections.
 
-### Tail Corrections
-Long-range corrections computed once at setup from density and cutoff:
-- Energy tail: `E_tail = (8/3)*pi*N*rho*eps*sigma^3 * [(1/3)(sigma/rc)^9 - (sigma/rc)^3]`
-- Pressure tail: `P_tail = (16/3)*pi*rho^2*eps*sigma^3 * [(2/3)(sigma/rc)^9 - (sigma/rc)^3]`
+## Key Types & Resources
 
-For multi-type systems, tail corrections sum over all `(i,j)` pair combinations using the pair table. An equimolar type distribution (`1/ntypes` each) is assumed — a warning is printed for non-equimolar mixtures.
+- **`LJForcePlugin`**: Register this plugin with your app; depends on `NeighborPlugin`
+- **`LJConfig`**: TOML config holder (epsilon, sigma, cutoff, mixing rule, per-type/pair overrides)
+- **`LJPairCoeffs`**: Precomputed coefficients (lj1, lj2, cutoff2) for fast force evaluation
+- **`LJPairTable`**: Symmetric NxN pair coefficient table
+- **`LJTailCorrections`**: Energy and pressure corrections beyond cutoff
 
-## Config
+## TOML Configuration
 
-### Single-type (backward compatible)
+**Single-type (default):**
 ```toml
 [lj]
-epsilon = 1.0    # well depth (reduced units)
-sigma = 1.0      # length scale
-cutoff = 2.5     # cutoff distance in sigma units
+epsilon = 1.0
+sigma = 1.0
+cutoff = 2.5
 ```
 
-### Multi-type
+**Multi-type with mixing:**
 ```toml
 [lj]
 cutoff = 2.5
-mixing = "geometric"     # "geometric" (default) or "arithmetic"
+mixing = "geometric"  # or "arithmetic"
 
 [[lj.types]]
 epsilon = 1.0
@@ -41,33 +36,25 @@ sigma = 1.0
 
 [[lj.types]]
 epsilon = 0.5
-sigma = 0.8
+sigma = 1.2
 
-# Optional explicit pair overrides (including per-pair cutoff)
-[[lj.pair_coeffs]]
+[[lj.pair_coeffs]]  # optional overrides
 types = [0, 1]
-epsilon = 0.75
-sigma = 0.9
-cutoff = 3.0         # per-pair cutoff override (optional)
+epsilon = 0.8
+sigma = 1.1
 ```
-
-When `types` is present, the plugin builds an NxN `PairCoeffTable<LJPairCoeffs>` with mixed parameters. Explicit `pair_coeffs` entries override the mixed values for specific pairs, including optional per-pair cutoff distances.
-
-## Resources
-
-- `LJConfig` — deserialized config
-- `LJPairTable` — precomputed NxN pair coefficient table (`PairCoeffTable<LJPairCoeffs>`)
-- `VirialStress` — full symmetric virial stress tensor (from `mddem_core`, shared with bond/contact forces)
-- `LJTailCorrections` — energy and pressure tail corrections (computed once at first stage setup)
 
 ## Usage
 
 ```rust
-use mddem::prelude::*;
-
-let mut app = App::new();
-app.add_plugins(CorePlugins).add_plugins(LJDefaultPlugins);
-app.start();
+app.add_plugins(LJForcePlugin);
 ```
 
-Part of the [MDDEM](https://github.com/SueHeir/MDDEM) workspace.
+The plugin loads config from `[lj]`, builds the pair table at setup, computes tail corrections (first stage only), and evaluates forces with virial accumulation in the Force schedule. Automatically registers `VirialStressPlugin`.
+
+## Performance
+
+- Raw pointer arithmetic eliminates bounds checks in inner loop
+- Precomputed coefficients avoid expensive power calculations
+- Half neighbor list (Newton's third law) reduces pair evaluations by ~50%
+- Virial accumulation integrated into force loop (no extra pair pass)

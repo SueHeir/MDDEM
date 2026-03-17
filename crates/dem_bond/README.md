@@ -1,79 +1,65 @@
 # dem_bond
 
-Bonded particle model for [MDDEM](https://github.com/SueHeir/MDDEM): inter-particle bonds with normal, tangential, and bending forces, plus breakage criteria.
+Elastic bond force models for DEM simulations in MDDEM.
 
-## Features
+## Overview
 
-- Auto-bonding of initially touching particles at setup
-- Normal spring-dashpot bond forces (tension and compression)
-- Tangential spring-dashpot with history tracking
-- Bending moments from relative angular velocity
-- Bond breakage by normal stretch or shear displacement thresholds
-- Bond topology loading from LAMMPS data files
-- Bond metrics output to thermo (average strain, bonds broken)
+`dem_bond` adds bonded interactions between particle pairs. Each bond resists relative motion along three independent channels: normal (stretch/compression), tangential (sliding), and bending (rotation).
 
-## Physics
+## Key Types
 
-### Normal Bond Force
-Linear spring with damping:
-- `F = k_n * delta + gamma_n * v_n` where `delta = dist - r0`
-- Tensile (`delta > 0`) and compressive (`delta < 0`)
-- Equilibrium length `r0` set at bond creation
+- **BondConfig**: Deserialized TOML configuration for bond stiffness, damping, and breakage thresholds
+- **BondHistoryStore**: Tracks accumulated tangential displacement and relative rotation per bond (implements `AtomData` for MPI)
+- **BondHistoryEntry**: Per-bond storage of `delta_t` (tangential displacement) and `delta_theta` (rotation angle)
+- **BondMetrics**: Aggregates step-wise bond strain and breakage counts for output
+- **DemBondPlugin**: Main plugin that registers resources and integrates force computation
 
-### Tangential Bond Force
-Spring-history with damping:
-- Incremental tangential displacement `delta_t` integrated from relative tangential velocity
-- `F_t = -(k_t * delta_t + gamma_t * v_t)`
-- No Coulomb cap (bonds are cohesive, not frictional)
-- Displacement projected to remain perpendicular to bond each step
+## Force Model
 
-### Bending Moment
-Angular spring with damping:
-- Incremental rotation `delta_theta` integrated from `(omega_j - omega_i) * dt`
-- `M = -(k_bend * delta_theta + gamma_bend * omega_rel)`
-- Applied as torque on both particles
+| Channel | Force Equation | Notes |
+|---------|---|---|
+| **Normal** | `F_n = (k_n·δ + γ_n·v_n)·n̂` | δ = bond stretch, v_n = normal velocity |
+| **Tangential** | `F_t = −(k_t·Δs + γ_t·v_t)` | Δs = accumulated displacement, history tracked |
+| **Bending** | `M = −(k_bend·Δθ + γ_bend·ω_rel)` | Δθ = relative rotation, damped by angular velocity |
 
-### Bond Breakage
-Bonds break when thresholds are exceeded (optional):
-- `break_normal_stretch` — fractional strain `|delta| / r0`
-- `break_shear` — tangential displacement magnitude `|delta_t|`
+Bonds can break on normal strain (`|δ/r₀| > threshold`) or tangential displacement (`|Δs| > threshold`).
 
-Broken bonds are removed after the force loop. Bond metrics (`bond_strain`, `bonds_broken`) are available as thermo columns.
-
-## Configuration
+## TOML Configuration
 
 ```toml
 [bonds]
-auto_bond = true              # bond initially touching particles
-bond_tolerance = 1.001        # distance multiplier for auto-bonding (sum of radii * tolerance)
-normal_stiffness = 1e6        # N/m
-normal_damping = 100.0        # Ns/m
-tangential_stiffness = 5e5    # N/m
-tangential_damping = 50.0     # Ns/m
-bending_stiffness = 1e3       # Nm/rad
-bending_damping = 10.0        # Nms/rad
-# break_normal_stretch = 0.05  # fractional strain threshold
-# break_shear = 0.001          # tangential displacement threshold
-
-# Load bonds from LAMMPS data file (alternative to auto_bond)
-# file = "data.lammps"
-# format = "lammps_data"
+auto_bond = true              # bond touching particles at setup
+bond_tolerance = 1.001        # auto-bond tolerance multiplier
+normal_stiffness = 1e7        # k_n (N/m)
+normal_damping = 10.0         # γ_n (N·s/m)
+tangential_stiffness = 5e6    # k_t (N/m)
+tangential_damping = 5.0      # γ_t (N·s/m)
+bending_stiffness = 1e4       # k_bend (N·m/rad)
+bending_damping = 1.0         # γ_bend (N·m·s/rad)
+break_normal_stretch = 0.1    # break on 10% strain (optional)
+break_shear = 0.0005          # break on displacement (optional)
+# file = "bonds.lammps"       # load from LAMMPS data file
+# format = "lammps_data"      # file format
 ```
 
-## Bond Exclusions
+## Usage Example
 
-Bonded pairs (1-2 neighbors) and atoms sharing a common bonded neighbor (1-3 neighbors) are excluded from contact force calculations via `BondStore::are_excluded`.
+Enable bonding in your TOML config:
 
-## Usage
+```toml
+[bonds]
+auto_bond = true
+normal_stiffness = 1e7
+tangential_stiffness = 5e6
+break_normal_stretch = 0.1
+```
+
+Add the plugin to your app:
 
 ```rust
-use mddem::prelude::*;
+use dem_bond::DemBondPlugin;
 
-let mut app = App::new();
-app.add_plugins(CorePlugins)
-    .add_plugins(GranularDefaultPlugins)
-    .add_plugins(DemBondPlugin);
-app.start();
+app.add_plugins(DemBondPlugin);
 ```
 
-Part of the [MDDEM](https://github.com/SueHeir/MDDEM) workspace.
+Bonds will be created at setup (auto-bonding or file-based), and forces computed each timestep with optional breakage tracking.

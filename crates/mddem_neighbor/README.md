@@ -1,47 +1,55 @@
 # mddem_neighbor
 
-Neighbor list algorithms for [MDDEM](https://github.com/SueHeir/MDDEM) simulations. Determines which particle pairs are close enough to potentially interact, avoiding O(N^2) all-pairs checks.
+Neighbor list construction for [MDDEM](https://github.com/SueHeir/MDDEM) simulations. Efficiently identifies particle pairs within interaction range, providing three strategies from O(N²) brute-force to O(N) spatial binning.
 
 ## Algorithms
 
-- **Brute Force** — O(N^2) all-pairs check. Useful for small systems and testing.
-- **Sweep and Prune** — Sorts particles along one axis, then prunes pairs that are too far apart. Good general-purpose performance.
-- **Bin-based** — Assigns particles to spatial bins (cells) and only checks neighboring bins. GPU-ready with flat CSR storage (`sorted_atoms`, `bin_start` arrays) and forward-only stencil. Atoms are sorted by bin for cache-friendly access.
+| Algorithm | Complexity | Best for |
+|---|---|---|
+| **BruteForce** | O(N²) | Tiny systems (< 100 atoms), debugging |
+| **SweepAndPrune** | O(N log N) | Small-to-medium systems without binning |
+| **Bin** | O(N) expected | Production runs, large systems |
 
-## Pair Iteration
+All strategies produce a **half neighbor list** in CSR (Compressed Sparse Row) format: each local atom `i` stores neighbors `j > i`, avoiding duplicate pairs.
 
-Force systems iterate over neighbor pairs using `neighbor.pairs(nlocal)`:
+## Key Types
 
-```rust
-fn my_force(atoms: Res<Atom>, neighbor: Res<Neighbor>) {
-    let nlocal = atoms.nlocal;
-    for (i, j) in neighbor.pairs(nlocal) {
-        // i is always a local atom, j may be local or ghost
-    }
-}
-```
+- **`Neighbor`**: Main state holding CSR indices, bin grid, and rebuild tracking.
+- **`NeighborConfig`**: TOML configuration for rebuild strategy and binning.
+- **`NeighborStyle`**: Enum selecting BruteForce, SweepAndPrune, or Bin.
+- **`PairIter`**: Iterator over (i, j) pairs from CSR list.
 
 ## Configuration
 
+Add to your TOML simulation config:
+
 ```toml
 [neighbor]
-skin_fraction = 1.1    # Neighbor list cutoff = skin_fraction * max_interaction_radius
-bin_size = 0.005       # Minimum bin size for bin-based neighbor list
+skin_fraction = 1.12       # Multiplier on cutoff radius (> 1.0 reduces rebuilds)
+bin_size = 1.0             # Spatial bin width for bin-based strategy
+every = 0                  # Rebuild interval: 0 = displacement-based only
+check = true               # With every > 0, also check displacement threshold
+sort_every = 1000          # Atom reordering by bin every N steps (0 = disabled)
+rebuild_on_pbc_wrap = false # Force rebuild when atoms cross periodic boundaries
 ```
 
 ## Usage
 
-`NeighborPlugin` is included in `CorePlugins`. To use a specific algorithm:
+Iterate over neighbor pairs:
 
 ```rust
-use mddem_neighbor::{NeighborPlugin, NeighborStyle};
-
-// CorePlugins uses Bin by default; override with a different algorithm:
-app.add_plugins(NeighborPlugin {
-    style: NeighborStyle::SweepAndPrune,
-});
+for (i, j) in neighbor.pairs(nlocal) {
+    let r_sq = distance_squared(&atoms.pos[i], &atoms.pos[j]);
+    if r_sq < cutoff_sq {
+        // process force pair
+    }
+}
 ```
 
-The neighbor list is rebuilt automatically when particles have moved more than half the skin distance since the last build. Bin-sorting also reorders all registered `AtomData` extensions via `apply_permutation`.
+## Rebuild Strategies
+
+- **Displacement-based** (`every = 0`): Rebuilds when max atom displacement exceeds `(skin_fraction - 1) × min_cutoff`.
+- **Periodic** (`every = N`): Rebuilds every N steps.
+- **Hybrid** (`every = N, check = true`): Rebuilds on displacement OR every N steps, whichever comes first (like LAMMPS `neigh_modify every N check yes`).
 
 Part of the [MDDEM](https://github.com/SueHeir/MDDEM) workspace.

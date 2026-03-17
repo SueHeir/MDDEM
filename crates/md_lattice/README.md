@@ -1,40 +1,47 @@
 # md_lattice
 
-FCC lattice initialization for [MDDEM](https://github.com/SueHeir/MDDEM): places atoms on a face-centered cubic lattice with Maxwell-Boltzmann velocities.
+FCC lattice initialization with Maxwell-Boltzmann velocities for [MDDEM](https://github.com/SueHeir/MDDEM).
 
-## Physics
+## What it does
 
-### FCC Lattice Insertion (`LatticePlugin`)
-- Lattice constant `a = (4/rho)^(1/3)` (4 atoms per FCC unit cell)
-- Adjusted per-dimension to fit the simulation box exactly
-- 4 FCC basis positions per cell: (0,0,0), (1/2,1/2,0), (1/2,0,1/2), (0,1/2,1/2)
-- Maxwell-Boltzmann velocity initialization with COM drift removal
-- Velocities rescaled to exact target temperature
+Populates the simulation domain with atoms on a face-centered cubic (FCC) lattice and assigns each atom a velocity drawn from the Maxwell-Boltzmann distribution at a specified temperature. Velocities are automatically corrected to remove center-of-mass drift and rescaled to match the target temperature exactly.
 
-### Timestep
-Sets `dt = 0.005` in LJ reduced units (standard for LJ simulations).
+## Key features
 
-## Config
+- **FCC lattice**: 4 atoms per unit cell at positions (0,0,0), (½,½,0), (½,0,½), (0,½,½)
+- **Automatic fitting**: Lattice constant adjusted per-dimension so cells tile the domain exactly
+- **Proper velocity initialization**: Samples from `N(0, σ_v)` where `σ_v = √(T/m)`, removes COM drift, rescales to exact T
+- **Multi-type support**: Optional per-type masses and cumulative type fractions for mixed systems
+- **Standard timestep**: Automatically sets `dt = 0.005` (LJ reduced units)
+
+## Key types
+
+- **`LatticeConfig`**: TOML configuration struct with density, temperature, mass, skin distance
+- **`LatticePlugin`**: ECS plugin that registers `fcc_insert` and `lattice_set_dt` systems
+
+## TOML configuration
 
 ```toml
 [lattice]
-style = "fcc"
-density = 0.85       # number density rho*
-temperature = 0.85   # initial T* for Maxwell-Boltzmann velocities
-mass = 1.0           # particle mass
-skin = 1.25          # neighbor skin distance
+style = "fcc"           # Lattice type (only "fcc" supported)
+density = 0.85          # Number density ρ* (atoms per unit volume)
+temperature = 0.85      # Initial temperature T* for velocity sampling
+mass = 1.0              # Default atom mass (LJ reduced units)
+skin = 1.25             # Neighbor-list skin distance
+
+# Optional: multi-type systems
+# type_fractions = [0.8, 1.0]   # Cumulative fractions → 80% type 0, 20% type 1
+# type_masses = [1.0, 2.0]      # Per-type masses (overrides `mass`)
 ```
 
-## Usage
+## Usage example
 
 ```rust
-use mddem::prelude::*;
+use mddem_app::prelude::*;
 
 let mut app = App::new();
-app.add_plugins(CorePlugins).add_plugins(LJDefaultPlugins);
-app.start();
+app.add_plugins(md_lattice::LatticePlugin);
+app.setup();
 ```
 
-This plugin replaces `DemAtomInsertPlugin` for LJ simulations. It adds `AtomPlugin` automatically if not already present.
-
-Part of the [MDDEM](https://github.com/SueHeir/MDDEM) workspace.
+The plugin automatically reads `[lattice]` config and runs on the first stage (rank 0 only). Atoms are then redistributed to other ranks during communication setup.

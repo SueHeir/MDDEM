@@ -1,55 +1,55 @@
 # mddem_fire
 
-FIRE (Fast Inertial Relaxation Engine) energy minimization for [MDDEM](https://github.com/SueHeir/MDDEM).
+FIRE (Fast Inertial Relaxation Engine) energy minimization for MDDEM simulations.
 
-## Algorithm
+## Overview
 
-Standard FIRE minimizer with adaptive timestep and velocity mixing:
-- Velocity Verlet integration (half-kick + position update + half-kick)
-- Power `P = F . v` computed each step
-- When `P > 0` for `n_delay` steps: increase dt, decay mixing parameter alpha
-- When `P < 0`: zero velocities, decrease dt, reset alpha
-- Converged when max per-atom force magnitude < `ftol`
+This crate implements the FIRE algorithm ([Bitzek et al., 2006](https://doi.org/10.1103/PhysRevLett.97.170201)), a damped-dynamics minimizer that rapidly converges systems to local energy minima. FIRE steers velocities toward force directions and adaptively adjusts the timestep based on power feedback (`P = F · V`), achieving faster convergence than naive steepest descent.
 
-## Stage Support
+## Key Features
 
-`FireMinPlugin` can run in all stages or be restricted to a named stage:
+- **Adaptive timestep**: Grows after sustained downhill motion, shrinks on uphill steps
+- **Velocity mixing**: Steers particle velocities toward force directions via parameter `α`
+- **Convergence criterion**: Stops when maximum per-atom force magnitude drops below `ftol`
+- **Stage-aware**: Can run in a single stage or coexist with Velocity Verlet for multi-stage workflows
 
-```rust
-// Run FIRE in all stages (replaces Velocity Verlet entirely)
-app.add_plugins(FireMinPlugin::new());
+## Key Types
 
-// Run FIRE only during the "minimize" stage
-// Can coexist with VelocityVerletPlugin for other stages
-app.add_plugins(FireMinPlugin::for_stage("minimize"));
-```
+- **`FireConfig`** — TOML configuration struct with tunable parameters (force tolerance, timestep growth factors, mixing strength, etc.)
+- **`FireState`** — Runtime state tracking current timestep `dt_fire`, mixing parameter `alpha`, positive-power step counter, and convergence status
+- **`FireMinPlugin`** — Plugin that registers FIRE systems into the scheduler
 
-On convergence (when `stop_on_converge = true`), the plugin requests stage advancement to the next `[[run]]` block.
-
-## Configuration
+## Configuration Example
 
 ```toml
 [fire]
-ftol = 1e-6              # max per-atom force for convergence
-dt_max_factor = 10.0     # max dt as multiple of base dt
-f_inc = 1.1              # dt increase factor on positive power
-f_dec = 0.5              # dt decrease factor on negative power
-alpha_start = 0.1        # initial velocity mixing parameter
-f_alpha = 0.99           # alpha decay factor
-n_delay = 5              # positive-power steps before dt increases
-stop_on_converge = true  # advance to next stage on convergence
+ftol = 1e-6           # force convergence tolerance
+dt_max_factor = 10.0  # max timestep = base dt × this factor
+f_inc = 1.1           # timestep growth multiplier
+f_dec = 0.5           # timestep shrink multiplier
+alpha_start = 0.1     # initial velocity-mixing strength
+f_alpha = 0.99        # alpha decay factor
+n_delay = 5           # steps required before timestep grows
+stop_on_converge = true  # auto-advance to next stage at convergence
 ```
 
-## Usage
+## Usage Example
 
+**Single-stage minimization** (replaces Velocity Verlet entirely):
 ```rust
-use mddem::prelude::*;
-
-let mut app = App::new();
-app.add_plugins(CorePlugins)
-    .add_plugins(GranularDefaultPlugins)
-    .add_plugins(FireMinPlugin::for_stage("minimize"));
-app.start();
+app.add_plugins(FireMinPlugin::new());
 ```
 
-Part of the [MDDEM](https://github.com/SueHeir/MDDEM) workspace.
+**Multi-stage workflow** (minimize → dynamics):
+```rust
+app.add_plugins(GranularDefaultPlugins)              // includes Verlet
+    .add_plugins(FireMinPlugin::for_stage("minimize")); // FIRE only in "minimize" stage
+```
+
+After minimization, inspect `Res<FireState>` to check `converged` status or iteration count.
+
+## References
+
+Bitzek, E., Koskinen, P., Gähler, F., Moseler, M., & Derlet, P. (2006).
+*Structural Relaxation Made Simple.* Physical Review Letters, **97**(17), 170201.
+https://doi.org/10.1103/PhysRevLett.97.170201
