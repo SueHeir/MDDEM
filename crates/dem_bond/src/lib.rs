@@ -1,9 +1,81 @@
-//! Bond force models for MDDEM.
+//! Bond force models for DEM simulations.
 //!
-//! Provides [`DemBondPlugin`] which registers the
-//! [`BondStore`](mddem_core::BondStore), auto-bonds initially touching
-//! particles, and computes normal, tangential, and bending bond forces
-//! with optional breakage criteria.
+//! This crate provides [`DemBondPlugin`], which adds elastic bond forces
+//! between particle pairs. Bonds resist relative motion along three
+//! independent channels:
+//!
+//! ## Bond types
+//!
+//! | Channel    | Stiffness         | Damping          | Description                       |
+//! |------------|-------------------|------------------|-----------------------------------|
+//! | Normal     | `normal_stiffness`     | `normal_damping`     | Resists stretch/compression along bond axis |
+//! | Tangential | `tangential_stiffness` | `tangential_damping` | Resists sliding perpendicular to bond axis  |
+//! | Bending    | `bending_stiffness`    | `bending_damping`    | Resists relative rotation between particles |
+//!
+//! ## Force equations
+//!
+//! **Normal force** (along the bond axis, unit vector **n̂** from *i* to *j*):
+//!
+//! ```text
+//! F_n = (k_n · δ + γ_n · v_n) · n̂
+//! ```
+//!
+//! where `δ = |r_ij| − r₀` is the stretch and `v_n` is the relative velocity
+//! projected onto the bond axis.
+//!
+//! **Tangential force** (perpendicular to bond axis):
+//!
+//! ```text
+//! F_t = −(k_t · Δs + γ_t · v_t)
+//! ```
+//!
+//! where `Δs` is the accumulated tangential displacement history and `v_t` is the
+//! tangential relative velocity. Tangential displacement is rotated each step to
+//! stay perpendicular to the current bond orientation.
+//!
+//! **Bending moment** (resists relative angular velocity **ω_rel**):
+//!
+//! ```text
+//! M = −(k_bend · Δθ + γ_bend · ω_rel)
+//! ```
+//!
+//! where `Δθ` is the accumulated relative rotation angle.
+//!
+//! ## Breakage criteria
+//!
+//! Bonds can optionally break when thresholds are exceeded:
+//!
+//! - **Normal stretch**: bond breaks if `|δ / r₀| > break_normal_stretch`
+//! - **Shear displacement**: bond breaks if `|Δs| > break_shear`
+//!
+//! ## Bond creation
+//!
+//! Bonds can be created in two ways:
+//!
+//! - **Auto-bonding**: set `auto_bond = true` to bond all particles whose centers
+//!   are within `bond_tolerance × (r_i + r_j)` at the start of the simulation.
+//! - **File loading**: set `file = "path.lammps"` and `format = "lammps_data"` to
+//!   read bonds from a LAMMPS data file's `Bonds` section.
+//!
+//! ## TOML configuration
+//!
+//! All parameters live under the `[bonds]` section:
+//!
+//! ```toml
+//! [bonds]
+//! auto_bond = true              # auto-bond touching particles at setup
+//! bond_tolerance = 1.001        # multiplier on sum-of-radii for auto-bond
+//! normal_stiffness = 1e7        # k_n (N/m)
+//! normal_damping = 10.0         # γ_n (N·s/m)
+//! tangential_stiffness = 5e6    # k_t (N/m)
+//! tangential_damping = 5.0      # γ_t (N·s/m)
+//! bending_stiffness = 1e4       # k_bend (N·m/rad)
+//! bending_damping = 1.0         # γ_bend (N·m·s/rad)
+//! break_normal_stretch = 0.1    # fractional strain threshold (optional)
+//! break_shear = 0.0005          # tangential displacement threshold (optional)
+//! # file = "bonds.lammps"       # optional: load bonds from file
+//! # format = "lammps_data"      # file format (only lammps_data supported)
+//! ```
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -20,43 +92,58 @@ use mddem_print::Thermo;
 
 // ── BondConfig ──────────────────────────────────────────────────────────────
 
-/// TOML `[bonds]` configuration section.
+/// Deserialized TOML `[bonds]` configuration section.
+///
+/// Controls bond stiffness, damping, breakage thresholds, and creation mode.
+/// See the [module-level docs](crate) for the full list of parameters and an
+/// example TOML block.
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct BondConfig {
-    /// Auto-bond initially touching particles (default: false).
+    /// When `true`, automatically bond all particle pairs whose centre-to-centre
+    /// distance is within `bond_tolerance × (r_i + r_j)` during setup.
+    /// Default: `false`.
     #[serde(default)]
     pub auto_bond: bool,
-    /// Multiplier on sum of radii for auto-bond distance check (default: 1.001).
+    /// Multiplier applied to the sum of radii when checking auto-bond eligibility.
+    /// A value slightly above 1.0 prevents missing bonds due to floating-point
+    /// round-off. Default: `1.001`.
     #[serde(default = "default_bond_tolerance")]
     pub bond_tolerance: f64,
-    /// Normal spring stiffness k_n (N/m). Default: 0.
+    /// Normal spring stiffness *k_n* (N/m). Controls resistance to stretch and
+    /// compression along the bond axis. Default: `0.0`.
     #[serde(default)]
     pub normal_stiffness: f64,
-    /// Normal damping coefficient gamma_n. Default: 0.
+    /// Normal viscous damping coefficient *γ_n* (N·s/m). Dissipates energy from
+    /// relative normal velocity. Default: `0.0`.
     #[serde(default)]
     pub normal_damping: f64,
-    /// Tangential spring stiffness k_t (N/m). Default: 0.
+    /// Tangential spring stiffness *k_t* (N/m). Controls resistance to sliding
+    /// perpendicular to the bond axis. Default: `0.0`.
     #[serde(default)]
     pub tangential_stiffness: f64,
-    /// Tangential damping coefficient. Default: 0.
+    /// Tangential viscous damping coefficient *γ_t* (N·s/m). Default: `0.0`.
     #[serde(default)]
     pub tangential_damping: f64,
-    /// Bending stiffness k_bend (N·m/rad). Default: 0.
+    /// Bending stiffness *k_bend* (N·m/rad). Controls resistance to relative
+    /// rotation between bonded particles. Default: `0.0`.
     #[serde(default)]
     pub bending_stiffness: f64,
-    /// Bending damping coefficient. Default: 0.
+    /// Bending damping coefficient *γ_bend* (N·m·s/rad). Default: `0.0`.
     #[serde(default)]
     pub bending_damping: f64,
-    /// Critical normal strain for bond breaking (e.g. 0.1 = 10%). None = unbreakable.
+    /// Critical normal strain for bond breakage, expressed as a fraction of the
+    /// equilibrium length *r₀* (e.g. `0.1` = 10% strain). When `Some`, bonds
+    /// break if `|δ / r₀| > break_normal_stretch`. Default: `None` (unbreakable).
     #[serde(default)]
     pub break_normal_stretch: Option<f64>,
-    /// Critical tangential displacement for bond breaking. None = unbreakable.
+    /// Critical tangential displacement magnitude for bond breakage (m). When
+    /// `Some`, bonds break if `|Δs| > break_shear`. Default: `None` (unbreakable).
     #[serde(default)]
     pub break_shear: Option<f64>,
-    /// Path to a LAMMPS data file containing a Bonds section.
+    /// Path to a LAMMPS data file containing a `Bonds` section to load at setup.
     pub file: Option<String>,
-    /// File format identifier (e.g. `"lammps_data"`).
+    /// File format identifier. Currently only `"lammps_data"` is supported.
     pub format: Option<String>,
 }
 
@@ -85,23 +172,32 @@ impl Default for BondConfig {
 
 // ── BondHistoryStore ────────────────────────────────────────────────────────
 
-/// Per-bond tangential displacement and bending angle history.
+/// Per-bond history tracking tangential displacement and bending angle.
+///
+/// Each bonded pair maintains its own `BondHistoryEntry` so that incremental
+/// tangential and bending springs can be integrated across time steps.
 #[derive(Clone, Debug)]
 pub struct BondHistoryEntry {
-    /// Global tag of the bonded partner.
+    /// Global tag of the bonded partner particle.
     pub partner_tag: u32,
-    /// Accumulated tangential spring displacement.
+    /// Accumulated tangential spring displacement vector **Δs** (m).
+    /// Rotated each step to stay perpendicular to the current bond axis.
     pub delta_t: [f64; 3],
-    /// Accumulated bending angle displacement.
+    /// Accumulated relative rotation angle vector **Δθ** (rad).
     pub delta_theta: [f64; 3],
 }
 
-/// Per-atom bond history storage, parallel to BondStore.
+/// Per-atom storage of [`BondHistoryEntry`] lists, kept in sync with
+/// [`BondStore`](mddem_core::BondStore).
+///
+/// Implements [`AtomData`] for MPI communication and atom reordering.
 pub struct BondHistoryStore {
+    /// Outer index = local atom index, inner = one entry per bond on that atom.
     pub history: Vec<Vec<BondHistoryEntry>>,
 }
 
 impl BondHistoryStore {
+    /// Creates an empty bond history store with no atom entries.
     pub fn new() -> Self {
         BondHistoryStore {
             history: Vec::new(),
@@ -130,7 +226,9 @@ impl AtomData for BondHistoryStore {
         self.history[..n].clone_from_slice(&new_history);
     }
 
-    /// Pack format: `[count, (partner_tag, dt[3], dtheta[3]) × count]` — 1 + 7×count f64s.
+    /// Pack bond history for atom `i` into `buf`.
+    ///
+    /// Wire format: `[count, (partner_tag, dt[3], dθ[3]) × count]` — `1 + 7 × count` f64s.
     fn pack(&self, i: usize, buf: &mut Vec<f64>) {
         if i < self.history.len() {
             let list = &self.history[i];
@@ -171,18 +269,31 @@ impl AtomData for BondHistoryStore {
 
 // ── BondMetrics ─────────────────────────────────────────────────────────────
 
-/// Accumulated bond metrics for strain output.
+/// Accumulated per-step bond metrics, exposed via the thermo system.
+///
+/// Reset each step in [`zero_bond_metrics`] and populated during
+/// [`bond_force`]. The average strain and cumulative breakage count are
+/// written to [`Thermo`] in [`output_bond_metrics`].
 #[derive(Default)]
 pub struct BondMetrics {
+    /// Sum of `δ / r₀` over all active bonds this step.
     pub strain_sum: f64,
+    /// Number of active bonds evaluated this step.
     pub bond_count: usize,
+    /// Number of bonds broken during this step.
     pub bonds_broken_this_step: usize,
+    /// Cumulative number of bonds broken since the start of the simulation.
     pub total_bonds_broken: usize,
 }
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
-/// Plugin that enables bond support in an MDDEM simulation.
+/// Plugin that enables elastic bond forces between DEM particles.
+///
+/// Registers the [`BondStore`](mddem_core::BondStore), [`BondHistoryStore`],
+/// and [`BondMetrics`] resources, and adds setup systems for auto-bonding and
+/// file-based bond loading, plus per-step force computation with optional
+/// breakage.
 pub struct DemBondPlugin;
 
 impl Plugin for DemBondPlugin {
@@ -229,6 +340,11 @@ impl Plugin for DemBondPlugin {
 // ── Setup systems ───────────────────────────────────────────────────────────
 
 /// Auto-bond initially touching particles at setup time.
+///
+/// For every pair of local atoms whose centre-to-centre distance is within
+/// `bond_tolerance × (r_i + r_j)`, a symmetric bond entry is created in
+/// both atoms' bond lists with the current separation as the equilibrium
+/// length *r₀*.
 pub fn auto_bond_touching(
     atoms: Res<Atom>,
     registry: Res<AtomDataRegistry>,
@@ -281,6 +397,10 @@ pub fn auto_bond_touching(
 }
 
 /// Load bonds from a LAMMPS data file at setup time.
+///
+/// Parses the `Bonds` section of a LAMMPS data file. Each line in that
+/// section has the format `bond_id bond_type atom1_tag atom2_tag`.
+/// The equilibrium length *r₀* is computed from the atoms' current positions.
 pub fn load_bonds_from_file(
     atoms: Res<Atom>,
     registry: Res<AtomDataRegistry>,
@@ -306,7 +426,10 @@ pub fn load_bonds_from_file(
         std::process::exit(1);
     });
     let reader = BufReader::new(file);
-    let lines: Vec<String> = reader.lines().map(|l| l.unwrap()).collect();
+    let lines: Vec<String> = reader
+        .lines()
+        .map(|l| l.expect("failed to read line from bond file"))
+        .collect();
 
     let section_headers = [
         "Atoms", "Velocities", "Bonds", "Angles", "Dihedrals", "Impropers",
@@ -366,8 +489,12 @@ pub fn load_bonds_from_file(
         }
 
         let bond_type: u32 = fields[1].parse().unwrap_or(0);
-        let tag1: u32 = fields[2].parse().unwrap();
-        let tag2: u32 = fields[3].parse().unwrap();
+        let tag1: u32 = fields[2]
+            .parse()
+            .expect("failed to parse atom tag1 in Bonds section");
+        let tag2: u32 = fields[3]
+            .parse()
+            .expect("failed to parse atom tag2 in Bonds section");
 
         let idx1 = match tag_to_local.get(&tag1) {
             Some(&i) => i,
@@ -404,7 +531,11 @@ pub fn load_bonds_from_file(
     }
 }
 
-/// Initialize bond history store to match bond store (zero-initialized entries).
+/// Initialize bond history entries to match the current bond store.
+///
+/// For every bond that does not yet have a corresponding history entry, a
+/// zero-initialized [`BondHistoryEntry`] is created. This is called once
+/// during setup after bonds have been created or loaded.
 pub fn init_bond_history(registry: Res<AtomDataRegistry>) {
     let bond_store = registry.get::<BondStore>();
     let bonds = match bond_store {
@@ -438,7 +569,12 @@ pub fn init_bond_history(registry: Res<AtomDataRegistry>) {
 
 // ── Force systems ───────────────────────────────────────────────────────────
 
-/// Unified bond force: normal + tangential + bending with optional breaking.
+/// Computes normal, tangential, and bending bond forces for all local atoms.
+///
+/// Iterates over every bond owned by each local atom, computing elastic spring
+/// and viscous damping contributions. Each bond is processed once (lower tag
+/// owns the computation). Bonds exceeding breakage thresholds are collected and
+/// removed after the force loop completes.
 pub fn bond_force(
     mut atoms: ResMut<Atom>,
     registry: Res<AtomDataRegistry>,
@@ -533,15 +669,16 @@ pub fn bond_force(
                 }
             }
 
-            // Normal spring force
+            // Normal spring force: F_spring = k_n · δ  (positive = tension)
             let f_spring = k_n * delta;
 
-            // Relative velocity projected onto bond axis
+            // Relative velocity of j w.r.t. i, projected onto bond axis
             let dvx = atoms.vel[j][0] - atoms.vel[i][0];
             let dvy = atoms.vel[j][1] - atoms.vel[i][1];
             let dvz = atoms.vel[j][2] - atoms.vel[i][2];
             let v_n = dvx * nx + dvy * ny + dvz * nz;
 
+            // Total normal force: spring + viscous damping, applied along n̂
             let f_damp = gamma_n * v_n;
             let f_total_n = f_spring + f_damp;
 
@@ -572,7 +709,7 @@ pub fn bond_force(
                     .iter()
                     .position(|h| h.partner_tag == bond.partner_tag);
 
-                // Tangential relative velocity
+                // Tangential relative velocity: v_t = v_rel − (v_rel · n̂) n̂
                 let vt_x = dvx - v_n * nx;
                 let vt_y = dvy - v_n * ny;
                 let vt_z = dvz - v_n * nz;
@@ -609,7 +746,7 @@ pub fn bond_force(
                     }
                 }
 
-                // Tangential force: spring + damping
+                // Tangential force: F_t = −(k_t · Δs + γ_t · v_t)
                 let ft_x = -(k_t * dt_x + gamma_t * vt_x);
                 let ft_y = -(k_t * dt_y + gamma_t * vt_y);
                 let ft_z = -(k_t * dt_z + gamma_t * vt_z);
@@ -621,8 +758,10 @@ pub fn bond_force(
                 atoms.force[j][1] -= ft_y;
                 atoms.force[j][2] -= ft_z;
 
-                // Torques from tangential force
-                // τ_i = (r0/2 * n) × f_t, τ_j = (-r0/2 * n) × (-f_t) = (r0/2 * n) × f_t
+                // Torques from tangential bond force: τ = r × F_t
+                // Lever arm is half the equilibrium length along the bond axis.
+                // Both particles receive the same torque direction because the
+                // lever arms and forces are both flipped: τ_j = (−r) × (−F_t) = r × F_t
                 let half_r0 = bond.r0 * 0.5;
                 let rn_x = half_r0 * nx;
                 let rn_y = half_r0 * ny;
@@ -671,7 +810,8 @@ pub fn bond_force(
                     (new_dth[0], new_dth[1], new_dth[2])
                 };
 
-                // Bending moment: M = -k_bend * delta_theta - gamma_bend * omega_rel
+                // Bending moment: M = −(k_bend · Δθ + γ_bend · ω_rel)
+                // Applied as +M to atom i and −M to atom j (equal and opposite).
                 let mx = -(k_bend * dth_x + gamma_bend * omega_rel_x);
                 let my = -(k_bend * dth_y + gamma_bend * omega_rel_y);
                 let mz = -(k_bend * dth_z + gamma_bend * omega_rel_z);
@@ -726,14 +866,17 @@ pub fn bond_force(
     }
 }
 
-/// Reset bond metrics to zero before force computation.
+/// Reset per-step bond metrics to zero before the force computation pass.
 pub fn zero_bond_metrics(mut metrics: ResMut<BondMetrics>) {
     metrics.strain_sum = 0.0;
     metrics.bond_count = 0;
     metrics.bonds_broken_this_step = 0;
 }
 
-/// Output bond metrics to thermo after force computation.
+/// Write bond metrics to thermo output after force computation.
+///
+/// Publishes `bond_strain` (average `δ/r₀` across all bonds) and
+/// `bonds_broken` (cumulative count) to the [`Thermo`] resource.
 pub fn output_bond_metrics(
     metrics: Res<BondMetrics>,
     comm: Res<CommResource>,
