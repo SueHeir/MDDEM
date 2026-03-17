@@ -1,7 +1,59 @@
-//! Contact-based heat conduction for DEM particles.
+//! Contact-based heat conduction between DEM particles.
 //!
-//! Per-atom temperature with heat transfer through contact area:
-//! `Q = conductivity * 2*a * (Tj - Ti)` where `a = sqrt(r_eff * delta)`.
+//! This crate implements thermal conduction through particle-particle contacts
+//! in a Discrete Element Method (DEM) simulation. When two particles overlap
+//! (i.e., are in mechanical contact), heat flows from the hotter particle to the
+//! cooler one at a rate proportional to the contact area and the temperature
+//! difference.
+//!
+//! # Heat Transfer Model
+//!
+//! The heat flux between two contacting particles *i* and *j* is:
+//!
+//! ```text
+//! Q = k · 2a · (Tⱼ − Tᵢ)
+//! ```
+//!
+//! where:
+//! - **k** is the thermal conductivity (W/(m·K)),
+//! - **a** = √(r_eff · δ) is the contact radius from Hertz theory,
+//! - **r_eff** = (rᵢ · rⱼ) / (rᵢ + rⱼ) is the effective radius,
+//! - **δ** = (rᵢ + rⱼ) − d is the overlap (d = center-to-center distance),
+//! - **Tᵢ**, **Tⱼ** are particle temperatures (K).
+//!
+//! Temperature is then integrated forward in time:
+//!
+//! ```text
+//! Tᵢ(t + dt) = Tᵢ(t) + dt · Qᵢ / (mᵢ · cₚ)
+//! ```
+//!
+//! where **mᵢ** is the particle mass and **cₚ** is the specific heat capacity.
+//!
+//! # TOML Configuration
+//!
+//! Add a `[thermal]` section to your simulation config file:
+//!
+//! ```toml
+//! [thermal]
+//! conductivity = 1.0          # Thermal conductivity in W/(m·K)
+//! specific_heat = 500.0       # Specific heat capacity in J/(kg·K)
+//! initial_temperature = 300.0 # Initial temperature for all particles in K (default: 300.0)
+//! ```
+//!
+//! If the `[thermal]` section is omitted entirely, the plugin registers the
+//! [`ThermalAtom`] data but does not add any systems — temperatures remain
+//! at their initial values.
+//!
+//! # Per-Atom Data
+//!
+//! This crate extends each particle with [`ThermalAtom`] fields:
+//! - `temperature` — current particle temperature (K), communicated to ghost atoms
+//! - `heat_flux` — accumulated heat flux (W), reverse-communicated and zeroed each step
+//!
+//! # Plugin Dependencies
+//!
+//! [`ThermalPlugin`] requires `DemAtomPlugin` (for particle radii) and
+//! `NeighborPlugin` (for contact pair iteration).
 
 use mddem_app::prelude::*;
 use mddem_derive::AtomData;
@@ -15,7 +67,24 @@ use mddem_neighbor::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
-/// TOML `[thermal]` — heat conduction configuration.
+/// Configuration for contact-based heat conduction, deserialized from `[thermal]`.
+///
+/// # TOML Fields
+///
+/// | Field                 | Type  | Default | Unit    | Description                       |
+/// |-----------------------|-------|---------|---------|-----------------------------------|
+/// | `conductivity`        | `f64` | 1.0     | W/(m·K) | Thermal conductivity              |
+/// | `specific_heat`       | `f64` | 500.0   | J/(kg·K)| Specific heat capacity            |
+/// | `initial_temperature` | `f64` | 300.0   | K       | Initial temperature for all atoms |
+///
+/// # Example
+///
+/// ```toml
+/// [thermal]
+/// conductivity = 50.0
+/// specific_heat = 900.0
+/// initial_temperature = 350.0
+/// ```
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ThermalConfig {
@@ -23,7 +92,7 @@ pub struct ThermalConfig {
     pub conductivity: f64,
     /// Specific heat capacity (J/(kg·K)).
     pub specific_heat: f64,
-    /// Initial temperature for all particles (K).
+    /// Initial temperature for all particles (K). Defaults to 300.0 if omitted.
     #[serde(default = "default_initial_temperature")]
     pub initial_temperature: f64,
 }
@@ -44,7 +113,20 @@ impl Default for ThermalConfig {
 
 // ── Per-atom thermal data ───────────────────────────────────────────────────
 
-/// Per-atom thermal extension: temperature and heat flux.
+/// Per-atom thermal extension: temperature and accumulated heat flux.
+///
+/// Registered automatically by [`ThermalPlugin`]. Access via the
+/// [`AtomDataRegistry`] in your systems:
+///
+/// ```ignore
+/// let thermal = registry.expect::<ThermalAtom>("my_system");
+/// let temp_i = thermal.temperature[i];
+/// ```
+///
+/// Communication attributes:
+/// - `temperature` is `#[forward]`-communicated so ghost atoms carry correct temps.
+/// - `heat_flux` is `#[reverse]`-communicated (summed back to owning proc) and
+///   `#[zero]`ed each timestep.
 #[derive(AtomData)]
 pub struct ThermalAtom {
     /// Per-atom temperature (K). Communicated forward to ghost atoms.
@@ -63,6 +145,7 @@ impl Default for ThermalAtom {
 }
 
 impl ThermalAtom {
+    /// Creates an empty `ThermalAtom` with no particles.
     pub fn new() -> Self {
         ThermalAtom {
             temperature: Vec::new(),
@@ -73,7 +156,20 @@ impl ThermalAtom {
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
-/// Registers thermal per-atom data and heat conduction systems.
+/// Plugin that adds contact-based heat conduction to a DEM simulation.
+///
+/// When the `[thermal]` config section is present, this plugin registers three
+/// systems:
+///
+/// 1. **`initialize_temperatures`** (`PostSetup`) — sets all particle
+///    temperatures to [`ThermalConfig::initial_temperature`].
+/// 2. **`compute_heat_conduction`** (`Force`) — loops over neighbor pairs,
+///    computes `Q = k · 2a · (Tⱼ − Tᵢ)` for contacting particles.
+/// 3. **`integrate_temperature`** (`PostFinalIntegration`) — updates each
+///    particle's temperature: `T += dt · Q / (m · cₚ)`.
+///
+/// If `[thermal]` is absent from the config, only the [`ThermalAtom`] data is
+/// registered (with default values) and no systems are added.
 pub struct ThermalPlugin;
 
 impl Plugin for ThermalPlugin {
@@ -123,7 +219,7 @@ impl Plugin for ThermalPlugin {
 
 // ── Systems ─────────────────────────────────────────────────────────────────
 
-/// Set initial temperatures for all atoms.
+/// Set initial temperatures for all atoms to [`ThermalConfig::initial_temperature`].
 fn initialize_temperatures(
     atoms: Res<Atom>,
     registry: Res<AtomDataRegistry>,
@@ -139,7 +235,17 @@ fn initialize_temperatures(
     }
 }
 
-/// Compute heat conduction through contacts: Q = conductivity * 2*a * (Tj - Ti).
+/// Compute contact-based heat conduction between neighboring particles.
+///
+/// For each pair of overlapping particles, the heat flux is:
+///
+/// ```text
+/// Q = k · 2a · (Tⱼ − Tᵢ)
+/// ```
+///
+/// where `a = √(r_eff · δ)` is the Hertzian contact radius. The computed
+/// flux is added to atom *i*'s accumulator and subtracted from atom *j*'s,
+/// ensuring energy conservation (antisymmetric).
 pub fn compute_heat_conduction(
     atoms: Res<Atom>,
     neighbor: Res<Neighbor>,
@@ -149,7 +255,7 @@ pub fn compute_heat_conduction(
     let dem = registry.expect::<DemAtom>("compute_heat_conduction");
     let mut thermal = registry.expect_mut::<ThermalAtom>("compute_heat_conduction");
 
-    // Ensure thermal vectors cover all atoms
+    // Ensure thermal vectors cover all atoms (including ghosts added after setup)
     while thermal.temperature.len() < atoms.len() {
         thermal.temperature.push(config.initial_temperature);
     }
@@ -164,30 +270,37 @@ pub fn compute_heat_conduction(
         let r1 = dem.radius[i];
         let r2 = dem.radius[j];
         let sum_r = r1 + r2;
+
+        // Effective radius for Hertz contact: r_eff = (r1 * r2) / (r1 + r2)
         let r_eff = (r1 * r2) / sum_r;
 
+        // Compute center-to-center distance
         let dx = atoms.pos[j][0] - atoms.pos[i][0];
         let dy = atoms.pos[j][1] - atoms.pos[i][1];
         let dz = atoms.pos[j][2] - atoms.pos[i][2];
         let dist_sq = dx * dx + dy * dy + dz * dz;
 
+        // Skip non-contacting pairs (no overlap)
         if dist_sq >= sum_r * sum_r {
             continue;
         }
 
         let distance = dist_sq.sqrt();
+        // Overlap depth: δ = (r1 + r2) - distance
         let delta = sum_r - distance;
         if delta <= 0.0 {
             continue;
         }
 
-        // Contact radius: a = sqrt(r_eff * delta)
+        // Hertzian contact radius: a = √(r_eff · δ)
         let a = (r_eff * delta).sqrt();
 
-        // Heat transfer: Q = conductivity * 2*a * (Tj - Ti)
+        // Heat transfer through contact: Q = k · 2a · (Tⱼ − Tᵢ)
+        // Positive Q means atom i gains heat (j is hotter), negative means i loses heat
         let dt_temp = thermal.temperature[j] - thermal.temperature[i];
         let q = k * 2.0 * a * dt_temp;
 
+        // Accumulate flux antisymmetrically to conserve energy
         thermal.heat_flux[i] += q;
         thermal.heat_flux[j] -= q;
     }
@@ -195,9 +308,16 @@ pub fn compute_heat_conduction(
 
 /// Compute heat conduction between walls with temperature and contacting particles.
 ///
-/// For each wall with a temperature set, computes `Q = k * 2*a * (T_wall - T_particle)`
-/// where `a = sqrt(R_eff * delta)` is the contact radius. Walls have infinite thermal mass
-/// so wall temperature does not change.
+/// For each wall with a temperature set, computes:
+///
+/// ```text
+/// Q = k · 2a · (T_wall − T_particle)
+/// ```
+///
+/// where `a = √(R_eff · δ)` is the contact radius. Walls have infinite thermal
+/// mass so wall temperature does not change.
+///
+/// Handles plane, cylinder, sphere, and region wall types.
 pub fn compute_wall_heat_conduction(
     atoms: Res<Atom>,
     walls: Res<Walls>,
@@ -373,7 +493,16 @@ pub fn compute_wall_heat_conduction(
     }
 }
 
-/// Integrate temperature: T += dt * heat_flux / (mass * cp).
+/// Integrate temperature forward in time using accumulated heat flux.
+///
+/// For each local atom:
+///
+/// ```text
+/// T += dt · Q / (m · cₚ)
+/// ```
+///
+/// where `dt` is the simulation timestep, `Q` is the accumulated heat flux,
+/// `m` is the particle mass, and `cₚ` is the specific heat capacity.
 pub fn integrate_temperature(
     atoms: Res<Atom>,
     registry: Res<AtomDataRegistry>,
@@ -385,6 +514,7 @@ pub fn integrate_temperature(
     let dt = atoms.dt;
 
     for i in 0..nlocal {
+        // dT = dt * Q / (m * cp): convert heat flux (W) to temperature change (K)
         thermal.temperature[i] += dt * thermal.heat_flux[i] / (atoms.mass[i] * cp);
     }
 }
