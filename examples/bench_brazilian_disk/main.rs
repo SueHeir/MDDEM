@@ -1,8 +1,13 @@
 //! Brazilian disk (indirect tensile) test benchmark.
 //!
-//! Creates a circular disk of bonded particles compressed between two flat
-//! platens. Validates that the disk fails by a vertical tensile crack and
-//! that the measured tensile strength is consistent with bond parameters.
+//! A circular disk of bonded particles is compressed between two flat platens.
+//! The disk fails by a vertical tensile crack and the measured tensile
+//! strength is validated against the analytical Brazilian test formula:
+//! `sigma_t = 2P / (pi D t)`.
+//!
+//! Bond stiffness is chosen to be compatible with the auto-computed Rayleigh
+//! timestep, avoiding the need for manual dt override. Platens start just
+//! outside the disk surface to avoid initial overlaps.
 //!
 //! ```bash
 //! cargo run --release --example bench_brazilian_disk --no-default-features \
@@ -34,14 +39,18 @@ fn main() {
     app.start();
 }
 
+// ---------------------------------------------------------------------------
+// Setup: hexagonal close-packed disk
+// ---------------------------------------------------------------------------
+
 /// Create a circular disk of particles on a hexagonal lattice, centered at
-/// the origin in the xz-plane. The y-direction is periodic (quasi-2D).
+/// the origin in the xz-plane.  The y-direction is thin (quasi-2D).
 fn setup_disk(
     mut atom: ResMut<Atom>,
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
 ) {
-    let radius: f64 = 0.0005; // particle radius [m]
+    let radius: f64 = 0.0005;  // particle radius [m]
     let density: f64 = 2500.0; // density [kg/m^3]
     let disk_radius: f64 = 0.010; // disk outer radius [m]
 
@@ -51,8 +60,7 @@ fn setup_disk(
 
     let mut dem = registry.expect_mut::<DemAtom>("setup_disk");
 
-    // Hexagonal close-packed lattice in xz-plane
-    let spacing = 2.0 * radius; // center-to-center distance
+    let spacing = 2.0 * radius;
     let row_height = spacing * (3.0_f64).sqrt() / 2.0;
 
     let n_rows = (2.0 * disk_radius / row_height).ceil() as i32 + 1;
@@ -71,7 +79,6 @@ fn setup_disk(
         for col in -n_cols..=n_cols {
             let x = col as f64 * spacing + x_offset;
 
-            // Only place particles inside the disk
             let dist_from_center = (x * x + z * z).sqrt();
             if dist_from_center + radius > disk_radius {
                 continue;
@@ -111,10 +118,11 @@ fn setup_disk(
     );
 }
 
+// ---------------------------------------------------------------------------
+// Data recording
+// ---------------------------------------------------------------------------
+
 /// Record wall forces and platen displacement to a CSV file each thermo step.
-///
-/// Bottom platen = wall 0 (normal +z), top platen = wall 1 (normal -z).
-/// Load P = average of the two wall force accumulator magnitudes.
 fn record_load_displacement(
     walls: Res<Walls>,
     atoms: Res<Atom>,
@@ -141,21 +149,16 @@ fn record_load_displacement(
     let path = format!("{}/load_displacement.csv", base_dir);
 
     let step = run_state.total_cycle;
-    let time = run_state.total_cycle as f64 * atoms.dt;
+    let time = step as f64 * atoms.dt;
 
-    // Bottom platen is wall 0 (normal +z), top platen is wall 1 (normal -z)
     let f_bottom = walls.planes[0].force_accumulator;
     let f_top = walls.planes[1].force_accumulator;
-
-    // Load is the compressive force (average of magnitudes)
     let load = (f_bottom.abs() + f_top.abs()) / 2.0;
 
-    // Current platen positions
     let z_bottom = walls.planes[0].point_z;
     let z_top = walls.planes[1].point_z;
     let gap = z_top - z_bottom;
 
-    // Bond tracking
     let bonds_broken = bond_metrics.total_bonds_broken;
     let bond_count = bond_metrics.bond_count;
 
