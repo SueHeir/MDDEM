@@ -6,9 +6,9 @@
 //! A custom system tracks remaining particle count over time to compute the
 //! steady-state mass flow rate.
 //!
-//! The orifice width `D` is parameterized in config.toml via custom TOML keys
-//! read at startup. Run multiple times with different `D` values and use
-//! `validate.py` / `plot.py` to compare against Beverloo's equation.
+//! The orifice width `D` is parameterized in config.toml via wall bounds.
+//! Run multiple times with different `D` values using `run_sweep.sh` and
+//! use `validate.py` / `plot.py` to compare against Beverloo's equation.
 //!
 //! ```bash
 //! cargo run --release --example bench_beverloo_hopper --no-default-features \
@@ -54,7 +54,10 @@ fn main() {
     app.start();
 }
 
-/// Check if particles have settled (KE near zero) and remove the blocker wall.
+/// Check if particles have settled using per-particle KE threshold.
+/// With many particles under gravity, total KE can remain high even when
+/// particles are nearly at rest due to residual vibrations. Per-particle
+/// KE avoids this scaling issue.
 fn check_settled(
     atoms: Res<Atom>,
     run_state: Res<RunState>,
@@ -63,7 +66,9 @@ fn check_settled(
     mut next_state: ResMut<NextState<Phase>>,
 ) {
     let step = run_state.total_cycle;
-    if step < 2000 || step % 200 != 0 {
+    // Wait at least 5000 steps for particles to fall and begin settling,
+    // then check every 200 steps
+    if step < 5000 || step % 200 != 0 {
         return;
     }
 
@@ -77,14 +82,24 @@ fn check_settled(
         })
         .sum();
     let global_ke = comm.all_reduce_sum_f64(local_ke);
+    let global_n = comm.all_reduce_sum_f64(nlocal as f64);
 
-    if global_ke < 1e-6 {
+    // Per-particle KE threshold: ~1e-7 J corresponds to v ≈ 0.14 m/s
+    // for a 2mm glass sphere (mass ~1.05e-5 kg). This is slow enough
+    // to indicate settling while being achievable in reasonable time.
+    let ke_per_particle = if global_n > 0.0 {
+        global_ke / global_n
+    } else {
+        0.0
+    };
+
+    if ke_per_particle < 1e-7 {
         walls.deactivate_by_name("blocker");
         next_state.set(Phase::Discharge);
         if comm.rank() == 0 {
             println!(
-                "Step {}: KE = {:.3e} J — particles settled, removing blocker wall",
-                step, global_ke
+                "Step {}: KE/particle = {:.3e} J (total KE = {:.3e} J, N = {:.0}) — settled, removing blocker",
+                step, ke_per_particle, global_ke, global_n
             );
         }
     }
@@ -99,16 +114,15 @@ fn track_particle_count(
     input: Res<Input>,
 ) {
     let step = run_state.total_cycle;
-    // Record every 500 steps during discharge
-    if step % 500 != 0 {
+    // Record every 200 steps during discharge for good time resolution
+    if step % 200 != 0 {
         return;
     }
 
     let nlocal = atoms.nlocal as usize;
 
-    // Count particles still above the floor (z > 0, i.e., still in hopper region)
-    // We count particles above a threshold z to exclude those that have exited
-    let z_threshold = -0.01; // slightly below the orifice floor
+    // Count particles still above the floor (z > threshold, i.e., still in hopper)
+    let z_threshold = -0.005; // slightly below the orifice floor
     let local_count: f64 = (0..nlocal)
         .filter(|&i| atoms.pos[i][2] > z_threshold)
         .count() as f64;
