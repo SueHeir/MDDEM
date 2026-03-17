@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-description = "Nose-Hoover NVT thermostat for MDDEM"
-keywords = ["thermostat", "nose-hoover", "nvt", "molecular-dynamics"]
+description = "Nose-Hoover NVT and Langevin thermostats for MDDEM"
+keywords = ["thermostat", "nose-hoover", "langevin", "molecular-dynamics"]
 categories = ["simulation", "science"]
 
 [dependencies]

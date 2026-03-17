@@ -1,4 +1,50 @@
-//! Thermostats: Nose-Hoover NVT (symmetric Liouville splitting) and Langevin (stochastic).
+//! # Thermostats for Molecular Dynamics
+//!
+//! This crate provides two thermostat implementations for controlling temperature
+//! in MD simulations:
+//!
+//! ## Nosé-Hoover NVT thermostat ([`NoseHooverPlugin`])
+//!
+//! A deterministic, time-reversible thermostat that extends the physical system with
+//! an auxiliary "heat bath" degree of freedom. It uses symmetric Trotter (Liouville)
+//! splitting to integrate the extended equations of motion, preserving a modified
+//! Hamiltonian (the Nosé-Hoover conserved quantity). This thermostat produces the
+//! canonical (NVT) ensemble and is preferred for equilibrium simulations where
+//! time-correlation functions matter.
+//!
+//! **Use when:** you need correct NVT sampling with deterministic, time-reversible
+//! dynamics — e.g., equilibrium MD, transport properties, correlation functions.
+//!
+//! ## Langevin thermostat ([`LangevinPlugin`])
+//!
+//! A stochastic thermostat that adds friction (drag) and random forces satisfying
+//! the fluctuation-dissipation theorem (FDT). It drives the system to the correct
+//! equilibrium temperature but introduces artificial damping that alters dynamics.
+//!
+//! **Use when:** you need rapid thermalization, implicit-solvent effects, or don't
+//! care about dynamical properties — e.g., energy minimization, coarse-grained
+//! models, quenching.
+//!
+//! ## TOML Configuration
+//!
+//! ### Nosé-Hoover (`[thermostat]`)
+//!
+//! ```toml
+//! [thermostat]
+//! temperature = 0.85   # Target temperature T* (reduced units) [default: 0.85]
+//! coupling = 1.0       # Relaxation time τ_T (reduced units) [default: 1.0]
+//! # group = "mobile"   # Optional: only thermostat atoms in this group
+//! ```
+//!
+//! ### Langevin (`[langevin]`)
+//!
+//! ```toml
+//! [langevin]
+//! temperature = 0.85   # Target temperature T* (reduced units) [default: 0.85]
+//! damping = 1.0        # Friction coefficient γ (reduced units) [default: 1.0]
+//! seed = 12345         # RNG seed for reproducibility [default: 12345]
+//! # group = "mobile"   # Optional: only thermostat atoms in this group
+//! ```
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
@@ -18,17 +64,34 @@ fn default_coupling() -> f64 {
     1.0
 }
 
+/// TOML `[thermostat]` section for the Nosé-Hoover NVT thermostat.
+///
+/// # Fields
+///
+/// | Field         | Type          | Default | Description                              |
+/// |---------------|---------------|---------|------------------------------------------|
+/// | `temperature` | `f64`         | `0.85`  | Target temperature T* (reduced units)    |
+/// | `coupling`    | `f64`         | `1.0`   | Relaxation time τ_T (reduced units)      |
+/// | `group`       | `Option<str>` | `None`  | Only thermostat atoms in this group      |
+///
+/// The coupling time `τ_T` controls how strongly the thermostat acts. Smaller
+/// values give tighter temperature control but can cause oscillations; larger
+/// values allow more natural fluctuations. A good starting point is `τ_T ≈ 100 × dt`.
+///
+/// The thermostat mass is computed as `Q = N_dof × T_target × τ² `, where `N_dof`
+/// is the number of degrees of freedom (3N − 3 for the full system).
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-/// TOML `[thermostat]` — Nose-Hoover thermostat settings.
 pub struct ThermostatConfig {
-    /// Target temperature (reduced units).
+    /// Target temperature in reduced units (default: 0.85).
     #[serde(default = "default_temperature")]
     pub temperature: f64,
-    /// Coupling time constant (reduced units).
+    /// Coupling time constant τ_T in reduced units (default: 1.0).
+    /// Controls thermostat strength: smaller = tighter control, larger = gentler.
     #[serde(default = "default_coupling")]
     pub coupling: f64,
-    /// Optional group name — only thermostat atoms in this group.
+    /// Optional group name — only thermostat atoms belonging to this group.
+    /// If `None`, all atoms are thermostatted.
     #[serde(default)]
     pub group: Option<String>,
 }
@@ -45,12 +108,33 @@ impl Default for ThermostatConfig {
 
 // ── Resource ────────────────────────────────────────────────────────────────
 
-/// Internal state of the Nose-Hoover thermostat chain variable.
+/// Runtime state of the Nosé-Hoover extended system.
+///
+/// The Nosé-Hoover thermostat introduces an auxiliary variable ξ (with conjugate
+/// momentum p_ξ) that couples to the physical system. The equations of motion are:
+///
+/// ```text
+///   dp_ξ/dt = 2·KE − N_dof · T_target     (thermostat "force")
+///   dv_i/dt = F_i/m_i − (p_ξ/Q) · v_i     (friction from heat bath)
+/// ```
+///
+/// where `Q = N_dof · T_target · τ²` is the thermostat mass. The extended
+/// Hamiltonian `H_ext = KE + PE + p_ξ²/(2Q) + N_dof · T · ξ` is conserved
+/// by the integration scheme.
+///
+/// This struct stores the thermostat momentum `p_ξ`, mass `Q`, and related
+/// parameters. It is initialized by [`setup_nose_hoover`] and updated each
+/// timestep by [`nh_pre_initial`] and [`nh_post_final`].
 pub struct NoseHooverState {
+    /// Thermostat momentum p_ξ — drives velocity rescaling.
     pub p_xi: f64,
+    /// Thermostat mass Q = N_dof · T_target · τ². Larger Q → weaker coupling.
     pub q_mass: f64,
+    /// Target temperature T* in reduced units.
     pub target_temp: f64,
+    /// Number of degrees of freedom (3N − 3 for COM-subtracted system).
     pub ndof: f64,
+    /// Optional group name — only thermostat atoms in this group.
     pub group_name: Option<String>,
 }
 
@@ -68,7 +152,17 @@ impl Default for NoseHooverState {
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
-/// Registers Nose-Hoover NVT thermostat integration systems.
+/// Plugin for the Nosé-Hoover NVT thermostat.
+///
+/// Registers three systems:
+/// - [`setup_nose_hoover`] at `PostSetup` — computes thermostat mass Q and degrees of freedom
+/// - [`nh_pre_initial`] at `PreInitialIntegration` — half-step thermostat + Velocity Verlet initial
+/// - [`nh_post_final`] at `PostFinalIntegration` — Velocity Verlet final + half-step thermostat
+///
+/// The symmetric splitting (thermostat–Verlet–thermostat) ensures time-reversibility
+/// and second-order accuracy.
+///
+/// Reads the `[thermostat]` TOML section (see [`ThermostatConfig`]).
 pub struct NoseHooverPlugin;
 
 impl Plugin for NoseHooverPlugin {
@@ -93,6 +187,11 @@ coupling = 1.0       # relaxation time tau_T
 
 // ── Systems ─────────────────────────────────────────────────────────────────
 
+/// Initialize the Nosé-Hoover thermostat state from config.
+///
+/// Computes the number of degrees of freedom (3N − 3) and thermostat mass
+/// `Q = N_dof · T_target · τ²`. Resets the thermostat momentum `p_ξ = 0`.
+/// Supports per-stage config overrides for temperature ramps.
 pub fn setup_nose_hoover(
     atoms: Res<Atom>,
     comm: Res<CommResource>,
@@ -100,7 +199,6 @@ pub fn setup_nose_hoover(
     mut nh: ResMut<NoseHooverState>,
     stage_overrides: Res<StageOverrides>,
 ) {
-    // Read config from stage overrides (allows per-stage temperature changes)
     let config: ThermostatConfig = Config::load_stage_aware(&stage_overrides, "thermostat");
 
     if let Some(ref gname) = config.group {
@@ -109,6 +207,7 @@ pub fn setup_nose_hoover(
 
     nh.group_name = config.group.clone();
 
+    // Count atoms across all MPI ranks (either group members or all local atoms)
     let n = if let Some(ref gname) = config.group {
         let group = groups.expect(gname);
         comm.all_reduce_sum_f64(group.count as f64)
@@ -116,9 +215,11 @@ pub fn setup_nose_hoover(
         comm.all_reduce_sum_f64(atoms.nlocal as f64)
     };
 
-    let ndof = 3.0 * n - 3.0; // subtract COM degrees of freedom
+    // Degrees of freedom: 3 per atom minus 3 for center-of-mass momentum conservation
+    let ndof = 3.0 * n - 3.0;
     let tau = config.coupling;
     let t_target = config.temperature;
+    // Thermostat mass Q = N_dof × T_target × τ²  (Nosé mass parameter)
     let q_mass = ndof * t_target * tau * tau;
 
     nh.ndof = ndof;
@@ -141,10 +242,15 @@ pub fn setup_nose_hoover(
     }
 }
 
-/// Fused pre-initial: half-step NH thermostat + Velocity Verlet initial integration.
-/// 1. Compute KE (global reduction for MPI)
-/// 2. Update p_xi by half step
-/// 3. Fused loop: rescale velocities, half-kick, drift
+/// First half of the Nosé-Hoover + Velocity Verlet integration (runs at `PreInitialIntegration`).
+///
+/// Performs three operations in a single fused pass:
+/// 1. **Thermostat half-step**: update `p_ξ` using `dp_ξ/dt = 2·KE − N_dof·T_target`
+/// 2. **Velocity rescaling**: `v *= exp(−(dt/2)·p_ξ/Q)` (thermostat friction)
+/// 3. **Velocity Verlet initial**: half-kick `v += (dt/2)·F/m`, then drift `x += v·dt`
+///
+/// The velocity rescaling uses an exponential factor (rather than the naive
+/// `1 − (dt/2)·p_ξ/Q`) for improved energy conservation at large coupling.
 pub fn nh_pre_initial(
     mut atoms: ResMut<Atom>,
     mut nh: ResMut<NoseHooverState>,
@@ -154,10 +260,14 @@ pub fn nh_pre_initial(
     let dt = atoms.dt;
     let mask = groups.mask_for(&nh.group_name);
 
+    // Step 1: Compute global kinetic energy via MPI reduction
     let ke_local = compute_ke(&atoms, mask);
     let ke = comm.all_reduce_sum_f64(ke_local);
+    // Half-step update of thermostat momentum: dp_ξ = (dt/2)(2·KE − N_dof·T_target)
     nh.p_xi += (dt / 2.0) * (2.0 * ke - nh.ndof * nh.target_temp);
 
+    // Step 2: Compute velocity rescaling factor from thermostat friction
+    // Using exp(−(dt/2)·ξ̇) where ξ̇ = p_ξ/Q is the thermostat "velocity"
     let scale = (-dt / 2.0 * nh.p_xi / nh.q_mass).exp();
     let nlocal = atoms.nlocal as usize;
 
@@ -190,10 +300,16 @@ pub fn nh_pre_initial(
     }
 }
 
-/// Fused post-final: Velocity Verlet final integration + half-step NH thermostat.
-/// 1. Fused loop: half-kick, then rescale velocities
-/// 2. Recompute KE (global reduction for MPI)
-/// 3. Update p_xi by half step
+/// Second half of the Nosé-Hoover + Velocity Verlet integration (runs at `PostFinalIntegration`).
+///
+/// Performs the mirror-image operations of [`nh_pre_initial`]:
+/// 1. **Velocity Verlet final**: half-kick `v += (dt/2)·F/m`
+/// 2. **Velocity rescaling**: `v *= exp(−(dt/2)·p_ξ/Q)` (thermostat friction)
+/// 3. **Thermostat half-step**: update `p_ξ` using post-rescale KE
+///
+/// Together with [`nh_pre_initial`], this forms the symmetric Trotter splitting:
+/// `thermostat(dt/2) → Verlet(dt) → thermostat(dt/2)`, which is time-reversible
+/// and preserves the extended Hamiltonian to second order.
 pub fn nh_post_final(
     mut atoms: ResMut<Atom>,
     mut nh: ResMut<NoseHooverState>,
@@ -203,6 +319,7 @@ pub fn nh_post_final(
     let dt = atoms.dt;
     let mask = groups.mask_for(&nh.group_name);
 
+    // Velocity rescaling factor (same formula as pre-initial)
     let scale = (-dt / 2.0 * nh.p_xi / nh.q_mass).exp();
     let nlocal = atoms.nlocal as usize;
 
@@ -228,8 +345,10 @@ pub fn nh_post_final(
         }
     }
 
+    // Recompute KE after rescaling, then complete the thermostat half-step
     let ke_local = compute_ke(&atoms, mask);
     let ke = comm.all_reduce_sum_f64(ke_local);
+    // Second half-step update of thermostat momentum
     nh.p_xi += (dt / 2.0) * (2.0 * ke - nh.ndof * nh.target_temp);
 }
 
@@ -244,16 +363,37 @@ fn default_seed() -> u64 {
     12345
 }
 
+/// TOML `[langevin]` section for the Langevin stochastic thermostat.
+///
+/// # Fields
+///
+/// | Field         | Type          | Default | Description                              |
+/// |---------------|---------------|---------|------------------------------------------|
+/// | `temperature` | `f64`         | `0.85`  | Target temperature T* (reduced units)    |
+/// | `damping`     | `f64`         | `1.0`   | Friction coefficient γ (reduced units)   |
+/// | `seed`        | `u64`         | `12345` | RNG seed for reproducibility             |
+/// | `group`       | `Option<str>` | `None`  | Only thermostat atoms in this group      |
+///
+/// The friction coefficient γ controls the drag force `F_drag = −γ·m·v` and the
+/// amplitude of random forces. Larger γ gives faster thermalization but stronger
+/// artificial damping. For implicit-solvent MD, typical values are `γ ≈ 1/τ`
+/// where τ is the relaxation time scale.
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-/// TOML `[langevin]` — Langevin thermostat settings.
 pub struct LangevinConfig {
+    /// Target temperature in reduced units (default: 0.85).
     #[serde(default = "default_temperature")]
     pub temperature: f64,
+    /// Friction coefficient γ in reduced units (default: 1.0).
+    /// Controls the strength of both drag and random forces.
     #[serde(default = "default_damping")]
     pub damping: f64,
+    /// RNG seed for reproducible random forces (default: 12345).
+    /// Each MPI rank derives a unique seed from this base value.
     #[serde(default = "default_seed")]
     pub seed: u64,
+    /// Optional group name — only thermostat atoms belonging to this group.
+    /// If `None`, all atoms are thermostatted.
     #[serde(default)]
     pub group: Option<String>,
 }
@@ -269,10 +409,18 @@ impl Default for LangevinConfig {
     }
 }
 
+/// Runtime state of the Langevin thermostat.
+///
+/// Stores the random number generator and cached config values used by
+/// [`langevin_force`] each timestep. Initialized by [`setup_langevin`].
 pub struct LangevinState {
+    /// Deterministic RNG for reproducible random forces (seeded per MPI rank).
     pub rng: ChaCha8Rng,
+    /// Optional group name — only thermostat atoms in this group.
     pub group_name: Option<String>,
+    /// Target temperature T* in reduced units.
     pub temperature: f64,
+    /// Friction coefficient γ in reduced units.
     pub damping: f64,
 }
 
@@ -287,7 +435,23 @@ impl Default for LangevinState {
     }
 }
 
-/// Langevin thermostat plugin: stochastic friction + random force.
+/// Plugin for the Langevin stochastic thermostat.
+///
+/// Registers two systems:
+/// - [`setup_langevin`] at `PostSetup` — initializes RNG and reads config
+/// - [`langevin_force`] at `PostForce` — applies drag and random forces each step
+///
+/// The Langevin equation of motion for each atom is:
+///
+/// ```text
+///   m · dv/dt = F_conservative − γ·m·v + √(2·γ·m·kT) · η(t)
+/// ```
+///
+/// where `η(t)` is Gaussian white noise. The drag and noise amplitudes are
+/// related by the fluctuation-dissipation theorem (FDT), ensuring the correct
+/// equilibrium temperature.
+///
+/// Reads the `[langevin]` TOML section (see [`LangevinConfig`]).
 pub struct LangevinPlugin;
 
 impl Plugin for LangevinPlugin {
@@ -309,13 +473,17 @@ seed = 12345         # RNG seed
     }
 }
 
+/// Initialize the Langevin thermostat state from config.
+///
+/// Seeds the RNG with a per-rank offset (`base_seed + rank × 1_000_000_007`) to
+/// ensure each MPI process generates independent random forces. Supports per-stage
+/// config overrides for temperature ramps.
 pub fn setup_langevin(
     comm: Res<CommResource>,
     groups: Res<GroupRegistry>,
     mut state: ResMut<LangevinState>,
     stage_overrides: Res<StageOverrides>,
 ) {
-    // Read config from stage overrides (allows per-stage changes)
     let config: LangevinConfig = Config::load_stage_aware(&stage_overrides, "langevin");
 
     if let Some(ref gname) = config.group {
@@ -344,10 +512,20 @@ pub fn setup_langevin(
     }
 }
 
-/// Apply Langevin drag + random force at PostForce.
+/// Apply Langevin drag and random forces at `PostForce`.
 ///
-/// f_drag = -gamma * m * v
-/// f_rand = sqrt(2 * gamma * m * kT / dt) * N(0,1)
+/// For each thermostatted atom, adds two force contributions:
+///
+/// ```text
+///   F_drag  = −γ · m · v                         (dissipation)
+///   F_rand  = √(2 · γ · m · kT / dt) · N(0,1)   (fluctuation)
+/// ```
+///
+/// The ratio of noise amplitude to drag coefficient satisfies the
+/// fluctuation-dissipation theorem (FDT), guaranteeing that the system
+/// relaxes to the Boltzmann distribution at temperature `T`.
+///
+/// If `γ = 0`, no forces are applied (early return).
 pub fn langevin_force(
     mut atoms: ResMut<Atom>,
     mut state: ResMut<LangevinState>,
@@ -369,26 +547,36 @@ pub fn langevin_force(
             continue;
         }
         let m = atoms.mass[i];
+        // Drag coefficient: γ·m (appears in both drag and noise terms)
         let drag_coeff = gamma * m;
+        // Noise amplitude from FDT: σ_F = √(2·γ·m·kT/dt)
+        // The 1/√dt factor converts continuous white noise to discrete timestep
         let rand_coeff = (2.0 * drag_coeff * kt / dt).sqrt();
 
-        // Drag force
+        // Drag force: opposes motion, removes kinetic energy
         atoms.force[i][0] -= drag_coeff * atoms.vel[i][0];
         atoms.force[i][1] -= drag_coeff * atoms.vel[i][1];
         atoms.force[i][2] -= drag_coeff * atoms.vel[i][2];
 
-        // Random force (3 components, normal distribution)
+        // Random force: injects thermal energy (3 independent Gaussian samples)
         atoms.force[i][0] += rand_coeff * normal_sample(&mut state.rng);
         atoms.force[i][1] += rand_coeff * normal_sample(&mut state.rng);
         atoms.force[i][2] += rand_coeff * normal_sample(&mut state.rng);
     }
 }
 
-/// Sample from standard normal distribution using Box-Muller transform.
+/// Sample from the standard normal distribution N(0,1) using the Box-Muller transform.
+///
+/// Given two uniform random numbers u1, u2 ∈ (0, 1), produces:
+///   z = √(−2·ln(u1)) · cos(2π·u2)
+///
+/// The `u1.max(1e-300)` clamp prevents `ln(0)` from producing −∞.
+/// Only the cosine branch is used (the sine branch is discarded for simplicity).
 fn normal_sample(rng: &mut ChaCha8Rng) -> f64 {
     use std::f64::consts::TAU;
     let u1: f64 = rng.random::<f64>();
     let u2: f64 = rng.random::<f64>();
+    // Box-Muller: z = √(−2·ln(u1)) · cos(2π·u2)
     (-2.0 * u1.max(1e-300).ln()).sqrt() * (TAU * u2).cos()
 }
 
