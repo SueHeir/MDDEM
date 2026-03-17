@@ -1,3 +1,12 @@
+//! Simulation box geometry, domain decomposition, and periodic boundary conditions.
+//!
+//! This module provides:
+//! - [`Domain`]: runtime state for box boundaries, sub-domain bounds, and periodicity
+//! - [`DomainConfig`]: TOML `[domain]` section with boundary types and box extents
+//! - [`DomainDecomposition`] trait and [`CartesianDecomposition`]: split the box
+//!   across MPI ranks
+//! - [`DomainPlugin`]: registers setup, PBC wrapping, and shrink-wrap systems
+
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -344,6 +353,8 @@ fn boundary_type_char(bt: BoundaryType) -> char {
     }
 }
 
+/// Setup system: read `[domain]` config and initialize the [`Domain`] resource
+/// via the registered [`DomainDecomposition`].
 pub fn domain_read_input(
     config: Res<DomainConfig>,
     comm: Res<CommResource>,
@@ -352,7 +363,7 @@ pub fn domain_read_input(
 ) {
     let boundary_types = config.resolved_boundary_types();
 
-    let has_shrink_wrap = boundary_types.iter().any(|bt| *bt == BoundaryType::ShrinkWrap);
+    let has_shrink_wrap = boundary_types.contains(&BoundaryType::ShrinkWrap);
 
     // Shrink-wrap is not yet supported with MPI — fail early to prevent silent wrong results.
     // MPI support requires correct sub-domain bound updates and global reductions across ranks.
@@ -422,8 +433,8 @@ pub fn shrink_wrap_update(domain: &mut Domain, positions: &[[f64; 3]], nlocal: u
         // Find min/max positions on this axis
         let mut pos_min = f64::MAX;
         let mut pos_max = f64::MIN;
-        for i in 0..nlocal {
-            let p = positions[i][d];
+        for pos in &positions[..nlocal] {
+            let p = pos[d];
             if p < pos_min {
                 pos_min = p;
             }
@@ -479,6 +490,8 @@ fn wrap_periodic(mut pos: f64, low: f64, size: f64) -> f64 {
     pos
 }
 
+/// Apply periodic boundary conditions: wrap positions on periodic axes,
+/// remove out-of-bounds atoms on fixed/shrink-wrap axes.
 pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataRegistry>) {
     let low = domain.boundaries_low;
     let high = domain.boundaries_high;

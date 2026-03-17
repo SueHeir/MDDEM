@@ -1,3 +1,11 @@
+//! CLI argument parsing, TOML config loading, and the startup banner.
+//!
+//! The [`InputPlugin`] handles:
+//! - Parsing `args[1]` as the input TOML path
+//! - `--schedule` flag to print the system execution order
+//! - `--generate-config` flag to emit a complete example config
+//! - Loading and storing the parsed [`Config`] resource
+
 use std::env;
 
 use mddem_app::prelude::*;

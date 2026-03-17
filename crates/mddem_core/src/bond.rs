@@ -1,3 +1,9 @@
+//! Per-atom bond topology storage and 1-2/1-3 pair exclusions.
+//!
+//! [`BondStore`] is registered as an [`AtomData`] extension by [`BondPlugin`].
+//! Each atom stores its bond list; both partners of a bond hold a record
+//! (A→B and B→A), enabling local exclusion checks without global lookups.
+
 use std::any::Any;
 
 use mddem_app::prelude::*;
