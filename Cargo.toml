@@ -31,6 +31,10 @@ name = "granular_gas_benchmark"
 path = "examples/granular_gas_benchmark/main.rs"
 
 [[example]]
+name = "bench_hertz_rebound"
+path = "examples/bench_hertz_rebound/main.rs"
+
+[[example]]
 name = "toml_single"
 path = "examples/toml_single/main.rs"
 

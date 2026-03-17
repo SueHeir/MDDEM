@@ -1,0 +1,7 @@
+# Generated output — not tracked
+data/
+sweep/
+plots/
+output*/
+dump/
+GranularTemp.txt

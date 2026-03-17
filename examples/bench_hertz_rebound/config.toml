@@ -1,0 +1,60 @@
+# Hertz Contact Rebound Benchmark
+# Single glass sphere dropped onto a rigid flat wall.
+# Validates: COR, contact duration, peak overlap against Hertz theory.
+#
+# Run: cargo run --release --example bench_hertz_rebound --no-default-features -- examples/bench_hertz_rebound/config.toml
+
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[domain]
+# Simulation box [m] — small box, single particle
+x_low = -0.01
+x_high = 0.01
+y_low = -0.01
+y_high = 0.01
+z_low = 0.0
+z_high = 0.1
+periodic_x = false
+periodic_y = false
+periodic_z = false
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.015          # Bin size [m] — larger than particle diameter
+every = 1
+
+[[dem.materials]]
+name = "glass"
+youngs_mod = 70.0e9       # Young's modulus [Pa] — soda-lime glass
+poisson_ratio = 0.22      # Poisson's ratio [dimensionless]
+restitution = 0.9         # Coefficient of restitution [0–1]
+friction = 0.0            # No friction for clean normal-only rebound test
+
+[[particles.insert]]
+material = "glass"
+count = 1                 # Single particle
+radius = 0.005            # Particle radius [m] = 5 mm
+density = 2500.0          # Particle density [kg/m³] — glass
+velocity_z = -1.0         # Impact velocity [m/s] — downward
+# Place particle just above the wall so it impacts quickly (z = radius + small gap)
+region = { type = "block", min = [-0.001, -0.001, 0.007], max = [0.001, 0.001, 0.008] }
+
+# Floor wall (z = 0, normal +z)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "glass"
+
+[output]
+dir = "examples/bench_hertz_rebound"
+
+[run]
+steps = 20000             # Enough steps for impact and rebound (no gravity, particle close to wall)
+thermo = 1000
