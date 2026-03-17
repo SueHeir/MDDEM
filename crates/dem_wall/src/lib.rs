@@ -1,6 +1,107 @@
-//! Wall contact forces for DEM particles (Hertz normal + Coulomb friction).
-//! Supports plane, cylinder, sphere, and region-surface walls.
-//! Supports static, constant-velocity, oscillating, and servo-controlled walls.
+//! Wall contact forces for DEM simulations using Hertz normal contact with
+//! viscous damping and optional adhesion (JKR, DMT, SJKR cohesion).
+//!
+//! # Wall Types
+//!
+//! | Type | Description | Config key |
+//! |------|-------------|------------|
+//! | **Plane** | Infinite flat plane defined by a point and unit normal | `type = "plane"` |
+//! | **Cylinder** | Infinite cylinder along X/Y/Z axis with finite axial bounds | `type = "cylinder"` |
+//! | **Sphere** | Sphere defined by center and radius | `type = "sphere"` |
+//! | **Region** | Any [`Region`] shape used as a wall surface | `type = "region"` |
+//!
+//! All wall types treat the wall as having infinite mass and infinite radius
+//! for contact mechanics, so the effective radius equals the particle radius
+//! and the reduced mass equals the particle mass.
+//!
+//! # Motion Types
+//!
+//! | Motion | Description |
+//! |--------|-------------|
+//! | **Static** | Wall does not move (default) |
+//! | **Constant velocity** | Wall translates at a fixed velocity each timestep |
+//! | **Oscillating** | Sinusoidal displacement along the wall normal |
+//! | **Servo** | Proportional controller adjusting velocity to reach a target force |
+//!
+//! Motion is currently supported only for plane walls.
+//!
+//! # TOML Configuration
+//!
+//! Walls are defined as `[[wall]]` array-of-tables entries. Each entry requires
+//! a `material` field matching a name in `[[dem.materials]]`.
+//!
+//! ```toml
+//! # Plane wall (floor at z=0, normal pointing up)
+//! [[wall]]
+//! type = "plane"
+//! point_z = 0.0
+//! normal_z = 1.0
+//! material = "glass"
+//! name = "floor"                  # optional, for runtime enable/disable
+//!
+//! # Cylinder wall (particles confined inside a z-aligned cylinder)
+//! [[wall]]
+//! type = "cylinder"
+//! axis = "z"
+//! center = [0.005, 0.005]         # center in the XY plane
+//! radius = 0.004
+//! lo = 0.0                        # axial lo bound (default: -inf)
+//! hi = 0.01                       # axial hi bound (default: +inf)
+//! inside = true                   # particles live inside the cylinder
+//! material = "glass"
+//!
+//! # Sphere wall (particles confined inside a sphere)
+//! [[wall]]
+//! type = "sphere"
+//! center = [0.005, 0.005, 0.005]
+//! radius = 0.004
+//! inside = true
+//! material = "glass"
+//!
+//! # Region wall (any Region shape as a wall surface)
+//! [[wall]]
+//! type = "region"
+//! inside = true
+//! material = "glass"
+//! region = { type = "cone", center = [0.005, 0.005], axis = "z",
+//!            rad_lo = 0.004, rad_hi = 0.002, lo = 0.0, hi = 0.01 }
+//!
+//! # Moving wall with constant velocity
+//! [[wall]]
+//! type = "plane"
+//! normal_z = 1.0
+//! material = "glass"
+//! velocity = [0.0, 0.0, -0.01]    # [vx, vy, vz]
+//!
+//! # Oscillating wall (sinusoidal along normal)
+//! [[wall]]
+//! type = "plane"
+//! point_z = 0.1
+//! normal_z = 1.0
+//! material = "glass"
+//! oscillate = { amplitude = 0.001, frequency = 50.0 }
+//!
+//! # Servo-controlled wall (adjusts velocity to reach target force)
+//! [[wall]]
+//! type = "plane"
+//! point_z = 0.1
+//! normal_z = -1.0
+//! material = "glass"
+//! servo = { target_force = 100.0, max_velocity = 0.1, gain = 0.001 }
+//! ```
+//!
+//! # Plugin Registration
+//!
+//! Add [`WallPlugin`] to your app. It depends on `DemAtomPlugin` (for
+//! [`MaterialTable`] and [`DemAtom`] data).
+//!
+//! # Systems
+//!
+//! | System | Schedule | Purpose |
+//! |--------|----------|---------|
+//! | [`wall_move`] | `PreInitialIntegration` | Updates wall positions from motion modes |
+//! | [`wall_zero_force_accumulators`] | `PreForce` | Zeros per-wall force accumulators |
+//! | [`wall_contact_force`] | `Force` | Computes Hertz contact + damping + adhesion |
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
@@ -22,125 +123,216 @@ fn default_wall_type() -> String {
 
 // ── Config structs ──────────────────────────────────────────────────────────
 
-/// Oscillation parameters for a wall.
+/// Sinusoidal oscillation parameters for a wall.
+///
+/// The wall displaces along its normal as `amplitude * sin(2π * frequency * t)`.
+/// Velocity is computed analytically as the time derivative.
+///
+/// # TOML
+/// ```toml
+/// oscillate = { amplitude = 0.001, frequency = 50.0 }
+/// ```
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct OscillateDef {
+    /// Peak displacement from the origin position (meters).
     pub amplitude: f64,
+    /// Oscillation frequency (Hz).
     pub frequency: f64,
 }
 
-/// Servo control parameters for a wall.
+/// Proportional servo controller parameters for a wall.
+///
+/// Each timestep the servo computes `error = target_force - measured_force`,
+/// then sets `velocity = clamp(gain * error, -max_velocity, max_velocity)`
+/// along the wall normal. This drives the wall toward a steady-state contact
+/// force equal to `target_force`.
+///
+/// # TOML
+/// ```toml
+/// servo = { target_force = 100.0, max_velocity = 0.1, gain = 0.001 }
+/// ```
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ServoDef {
+    /// Desired total contact force on this wall (N).
     pub target_force: f64,
+    /// Maximum wall velocity magnitude (m/s), prevents overshooting.
     pub max_velocity: f64,
+    /// Proportional gain (m/s per N of force error).
     pub gain: f64,
 }
 
+/// TOML definition of a single wall entry (`[[wall]]`).
+///
+/// This is a union struct: different fields are relevant depending on `type`.
+/// See the [module-level docs](self) for TOML examples of each wall type.
 #[derive(Deserialize, Clone)]
-/// TOML definition of a wall: plane, cylinder, or sphere.
 pub struct WallDef {
-    /// Wall type: "plane" (default), "cylinder", or "sphere".
+    /// Wall type: `"plane"` (default), `"cylinder"`, `"sphere"`, or `"region"`.
     #[serde(default = "default_wall_type", rename = "type")]
     pub wall_type: String,
-    // ── Plane fields ──
+
+    // ── Plane fields ────────────────────────────────────────────────────
+    /// X-coordinate of a point on the plane (default: 0.0).
     #[serde(default)]
     pub point_x: f64,
+    /// Y-coordinate of a point on the plane (default: 0.0).
     #[serde(default)]
     pub point_y: f64,
+    /// Z-coordinate of a point on the plane (default: 0.0).
     #[serde(default)]
     pub point_z: f64,
+    /// X-component of the outward normal vector (will be normalized).
     #[serde(default)]
     pub normal_x: f64,
+    /// Y-component of the outward normal vector (will be normalized).
     #[serde(default)]
     pub normal_y: f64,
+    /// Z-component of the outward normal vector (will be normalized).
     #[serde(default)]
     pub normal_z: f64,
-    // ── Cylinder/sphere fields ──
-    /// Cylinder axis: "x", "y", or "z".
+
+    // ── Cylinder/sphere fields ──────────────────────────────────────────
+    /// Cylinder axis: `"x"`, `"y"`, or `"z"` (default: `"z"`).
     #[serde(default)]
     pub axis: Option<String>,
-    /// Center [x, y] for cylinder (in the 2D plane perpendicular to axis),
-    /// or [x, y, z] for sphere.
+    /// Center coordinates: `[c0, c1]` for cylinder (in the plane ⊥ to axis),
+    /// or `[x, y, z]` for sphere.
     #[serde(default)]
     pub center: Option<Vec<f64>>,
-    /// Radius of the cylinder or sphere wall.
+    /// Radius of the cylinder or sphere wall surface (meters).
     #[serde(default)]
     pub radius: Option<f64>,
-    /// Axial lo bound for cylinder.
+    /// Lower axial bound for cylinder (default: −∞).
     #[serde(default)]
     pub lo: Option<f64>,
-    /// Axial hi bound for cylinder.
+    /// Upper axial bound for cylinder (default: +∞).
     #[serde(default)]
     pub hi: Option<f64>,
-    /// If true, particles are inside the wall (normal points inward).
+    /// If `true`, particles live inside the wall surface and the contact
+    /// normal points inward. If `false` (default), particles are outside.
     #[serde(default)]
     pub inside: Option<bool>,
-    // ── Common fields ──
+
+    // ── Common fields ───────────────────────────────────────────────────
+    /// Material name — must match a `[[dem.materials]]` entry.
     pub material: String,
+    /// Optional name for runtime enable/disable via [`Walls::deactivate_by_name`].
     #[serde(default)]
     pub name: Option<String>,
+    /// Lower X bound for the plane wall's active region (default: −∞).
     #[serde(default = "default_neg_inf")]
     pub bound_x_low: f64,
+    /// Upper X bound for the plane wall's active region (default: +∞).
     #[serde(default = "default_pos_inf")]
     pub bound_x_high: f64,
+    /// Lower Y bound for the plane wall's active region (default: −∞).
     #[serde(default = "default_neg_inf")]
     pub bound_y_low: f64,
+    /// Upper Y bound for the plane wall's active region (default: +∞).
     #[serde(default = "default_pos_inf")]
     pub bound_y_high: f64,
+    /// Lower Z bound for the plane wall's active region (default: −∞).
     #[serde(default = "default_neg_inf")]
     pub bound_z_low: f64,
+    /// Upper Z bound for the plane wall's active region (default: +∞).
     #[serde(default = "default_pos_inf")]
     pub bound_z_high: f64,
-    /// Constant wall velocity [vx, vy, vz].
+    /// Constant wall velocity `[vx, vy, vz]` (m/s). Plane walls only.
     #[serde(default)]
     pub velocity: Option<[f64; 3]>,
-    /// Sinusoidal oscillation along the wall normal.
+    /// Sinusoidal oscillation parameters. Plane walls only.
     #[serde(default)]
     pub oscillate: Option<OscillateDef>,
-    /// Servo control: adjust velocity to reach target force.
+    /// Servo controller parameters. Plane walls only.
     #[serde(default)]
     pub servo: Option<ServoDef>,
-    /// Region definition for type = "region" walls.
+    /// Region definition for `type = "region"` walls.
     #[serde(default)]
     pub region: Option<Region>,
 }
 
 // ── Runtime types ───────────────────────────────────────────────────────────
 
-/// Wall motion type at runtime.
+/// Wall motion mode at runtime (plane walls only).
 pub enum WallMotion {
+    /// Wall is stationary.
     Static,
+    /// Wall translates at a constant velocity each timestep.
     ConstantVelocity,
-    Oscillate { amplitude: f64, frequency: f64 },
-    Servo { target_force: f64, max_velocity: f64, gain: f64 },
+    /// Wall oscillates sinusoidally: `displacement = amplitude * sin(2π * frequency * t)`.
+    Oscillate {
+        /// Peak displacement (meters).
+        amplitude: f64,
+        /// Oscillation frequency (Hz).
+        frequency: f64,
+    },
+    /// Proportional servo: velocity = clamp(gain × (target_force − measured_force), ±max_velocity).
+    Servo {
+        /// Desired total contact force (N).
+        target_force: f64,
+        /// Maximum wall speed (m/s).
+        max_velocity: f64,
+        /// Proportional gain (m/s per N).
+        gain: f64,
+    },
 }
 
-/// Runtime representation of a wall plane with resolved material index.
+/// Runtime representation of an infinite plane wall.
+///
+/// Contact geometry for a plane wall:
+/// ```text
+///          ·  particle center (px, py, pz)
+///         /|
+///        / |  distance = dot(P - W, n̂)
+///       /  |
+///   n̂ ↑   |  delta (overlap) = radius - distance
+///      |   |
+///  ────W───┴──── wall surface
+///      (point_x, point_y, point_z)
+/// ```
+///
+/// The signed distance from the particle center to the wall plane is
+/// `dot(pos - point, normal)`. Overlap is `delta = radius - distance`.
+/// Force is applied only when `delta > 0` (or within JKR adhesion range).
 pub struct WallPlane {
+    /// Current X-coordinate of a point on the plane (updated by motion).
     pub point_x: f64,
+    /// Current Y-coordinate of a point on the plane (updated by motion).
     pub point_y: f64,
+    /// Current Z-coordinate of a point on the plane (updated by motion).
     pub point_z: f64,
+    /// X-component of the unit outward normal.
     pub normal_x: f64,
+    /// Y-component of the unit outward normal.
     pub normal_y: f64,
+    /// Z-component of the unit outward normal.
     pub normal_z: f64,
+    /// Index into [`MaterialTable`] for this wall's material properties.
     pub material_index: usize,
+    /// Optional name for runtime enable/disable.
     pub name: Option<String>,
+    /// Lower X bound of the wall's active region.
     pub bound_x_low: f64,
+    /// Upper X bound of the wall's active region.
     pub bound_x_high: f64,
+    /// Lower Y bound of the wall's active region.
     pub bound_y_low: f64,
+    /// Upper Y bound of the wall's active region.
     pub bound_y_high: f64,
+    /// Lower Z bound of the wall's active region.
     pub bound_z_low: f64,
+    /// Upper Z bound of the wall's active region.
     pub bound_z_high: f64,
-    /// Current wall velocity.
+    /// Current wall velocity `[vx, vy, vz]` (m/s).
     pub velocity: [f64; 3],
-    /// Motion mode.
+    /// Motion mode (static, constant velocity, oscillating, or servo).
     pub motion: WallMotion,
-    /// Origin point (initial position, for oscillation reference).
+    /// Initial position of the wall point (reference for oscillation).
     pub origin: [f64; 3],
-    /// Accumulated contact force this step (scalar, along normal).
+    /// Accumulated scalar contact force this timestep (along normal),
+    /// used by the servo controller to compute the feedback error.
     pub force_accumulator: f64,
 }
 
@@ -157,64 +349,125 @@ impl WallPlane {
     }
 }
 
-/// Runtime cylinder wall.
+/// Runtime representation of a cylindrical wall aligned to one axis.
+///
+/// Contact geometry (cross-section, `inside = true`):
+/// ```text
+///        ╭──────────╮  cylinder surface (radius R)
+///       ╱            ╲
+///      │   ← n̂  ·    │  radial_dist from axis to particle
+///      │        ↑     │  gap = R - radial_dist
+///       ╲      particle╱  delta = particle_radius - gap
+///        ╰──────────╯
+/// ```
+///
+/// For `inside = true`, the normal points inward (toward the axis).
+/// For `inside = false`, the normal points outward (away from the axis).
+/// Particles outside the `[lo, hi]` axial range are ignored.
 pub struct WallCylinder {
-    /// Axis: 0=X, 1=Y, 2=Z.
+    /// Axis index: 0 = X, 1 = Y, 2 = Z.
     pub axis: usize,
-    /// Center in the 2D plane perpendicular to axis [c0, c1].
+    /// Center of the cylinder in the 2D plane perpendicular to the axis.
+    /// For a Z-cylinder, this is `[center_x, center_y]`.
     pub center: [f64; 2],
-    /// Cylinder radius.
+    /// Cylinder radius (meters).
     pub radius: f64,
-    /// Axial lo bound.
+    /// Lower axial bound — particles below this are ignored.
     pub lo: f64,
-    /// Axial hi bound.
+    /// Upper axial bound — particles above this are ignored.
     pub hi: f64,
-    /// If true, particles inside (normal points inward, delta = wall_radius - dist).
+    /// If `true`, particles live inside the cylinder and the contact normal
+    /// points inward (toward the axis).
     pub inside: bool,
+    /// Index into [`MaterialTable`] for this wall's material properties.
     pub material_index: usize,
+    /// Optional name for runtime enable/disable.
     pub name: Option<String>,
+    /// Accumulated scalar contact force this timestep.
     pub force_accumulator: f64,
 }
 
-/// Runtime sphere wall.
+/// Runtime representation of a spherical wall.
+///
+/// Contact geometry (`inside = true`):
+/// ```text
+///         ╭─────╮  sphere surface (radius R)
+///        ╱       ╲
+///       │  ← n̂  · │  dist = |pos - center|
+///       │       ↑  │  gap = R - dist
+///        ╲  particle╱  delta = particle_radius - gap
+///         ╰─────╯
+/// ```
+///
+/// For `inside = true`, the normal points inward (toward the center).
+/// For `inside = false`, the normal points outward (away from the center).
 pub struct WallSphere {
-    /// Sphere center [x, y, z].
+    /// Sphere center `[x, y, z]` (meters).
     pub center: [f64; 3],
-    /// Sphere radius.
+    /// Sphere radius (meters).
     pub radius: f64,
-    /// If true, particles inside (normal points inward).
+    /// If `true`, particles live inside the sphere and the contact normal
+    /// points inward (toward the center).
     pub inside: bool,
+    /// Index into [`MaterialTable`] for this wall's material properties.
     pub material_index: usize,
+    /// Optional name for runtime enable/disable.
     pub name: Option<String>,
+    /// Accumulated scalar contact force this timestep.
     pub force_accumulator: f64,
 }
 
-/// Runtime region wall: uses a `Region` surface for contact detection.
+/// Runtime representation of a region-surface wall.
+///
+/// Uses any [`Region`] shape (block, sphere, cylinder, cone, union,
+/// intersect, etc.) as a wall surface. Contact detection delegates to
+/// [`Region::closest_point_on_surface`] to get the signed distance and
+/// outward normal for each particle.
 pub struct WallRegion {
     /// The region whose surface acts as the wall.
     pub region: Region,
-    /// If true, particles are inside the region (normal points inward).
+    /// If `true`, particles live inside the region and the contact normal
+    /// points inward (away from the surface, toward the interior).
     pub inside: bool,
+    /// Index into [`MaterialTable`] for this wall's material properties.
     pub material_index: usize,
+    /// Optional name for runtime enable/disable.
     pub name: Option<String>,
+    /// Accumulated scalar contact force this timestep.
     pub force_accumulator: f64,
 }
 
 /// Collection of all wall types with per-wall active/inactive flags.
+///
+/// Stored as a resource in the [`App`]. Individual walls can be enabled or
+/// disabled at runtime via [`deactivate_by_name`](Self::deactivate_by_name).
 pub struct Walls {
+    /// Plane walls.
     pub planes: Vec<WallPlane>,
+    /// Per-plane active flags (parallel to `planes`).
     pub active: Vec<bool>,
+    /// Cylinder walls.
     pub cylinders: Vec<WallCylinder>,
+    /// Per-cylinder active flags (parallel to `cylinders`).
     pub cylinder_active: Vec<bool>,
+    /// Sphere walls.
     pub spheres: Vec<WallSphere>,
+    /// Per-sphere active flags (parallel to `spheres`).
     pub sphere_active: Vec<bool>,
+    /// Region-surface walls.
     pub regions: Vec<WallRegion>,
+    /// Per-region active flags (parallel to `regions`).
     pub region_active: Vec<bool>,
-    /// Elapsed simulation time (for oscillation phase tracking).
+    /// Elapsed simulation time (seconds), used for oscillation phase tracking.
     pub time: f64,
 }
 
 impl Walls {
+    /// Deactivate all walls (of any type) whose `name` matches the given string.
+    ///
+    /// Deactivated walls are skipped during contact force computation and
+    /// motion updates. This is useful for removing walls mid-simulation
+    /// (e.g., removing a lid after compaction).
     pub fn deactivate_by_name(&mut self, name: &str) {
         for (i, wall) in self.planes.iter().enumerate() {
             if wall.name.as_deref() == Some(name) {
@@ -241,7 +494,18 @@ impl Walls {
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
-/// Registers wall contact force system from `[[wall]]` TOML config.
+/// Plugin that registers wall contact force systems from `[[wall]]` TOML config.
+///
+/// Parses all `[[wall]]` entries, resolves material indices, and creates the
+/// [`Walls`] resource. Registers three systems:
+///
+/// - [`wall_move`] — updates wall positions (oscillation, servo, constant velocity)
+/// - [`wall_zero_force_accumulators`] — zeros per-wall force accumulators before force pass
+/// - [`wall_contact_force`] — computes Hertz + damping + adhesion forces for all wall types
+///
+/// # Dependencies
+///
+/// Requires `DemAtomPlugin` (provides [`MaterialTable`] and [`DemAtom`]).
 pub struct WallPlugin;
 
 impl Plugin for WallPlugin {
@@ -393,6 +657,7 @@ impl Plugin for WallPlugin {
                             force_accumulator: 0.0,
                         });
                     }
+                    // Default to plane for unrecognized types (backwards compatibility)
                     "plane" | _ => {
                         let mag =
                             (w.normal_x * w.normal_x + w.normal_y * w.normal_y + w.normal_z * w.normal_z)
@@ -479,7 +744,10 @@ impl Plugin for WallPlugin {
 
 // ── Systems ─────────────────────────────────────────────────────────────────
 
-/// Move walls according to their motion mode.
+/// Update wall positions and velocities according to their motion mode.
+///
+/// Runs in [`ScheduleSet::PreInitialIntegration`] so walls are moved
+/// *before* the integration step each timestep. Advances `walls.time` by `dt`.
 pub fn wall_move(mut walls: ResMut<Walls>, atoms: Res<Atom>) {
     let dt = atoms.dt;
     let time = walls.time;
@@ -530,7 +798,11 @@ pub fn wall_move(mut walls: ResMut<Walls>, atoms: Res<Atom>) {
     walls.time += dt;
 }
 
-/// Zero wall force accumulators before force computation.
+/// Zero all per-wall force accumulators before the force computation pass.
+///
+/// Runs in [`ScheduleSet::PreForce`]. The accumulators are summed during
+/// [`wall_contact_force`] and read by servo controllers in the next
+/// [`wall_move`] call.
 pub fn wall_zero_force_accumulators(mut walls: ResMut<Walls>) {
     for wall in &mut walls.planes {
         wall.force_accumulator = 0.0;
@@ -546,6 +818,18 @@ pub fn wall_zero_force_accumulators(mut walls: ResMut<Walls>) {
     }
 }
 
+/// Compute wall–particle contact forces for all wall types.
+///
+/// For each local atom and each active wall, this system:
+/// 1. Computes the signed distance and contact normal
+/// 2. Determines the overlap `delta = radius - gap`
+/// 3. Applies Hertz elastic force: `F_n = (4/3) * E_eff * sqrt(R_eff * delta) * delta`
+/// 4. Adds viscous damping: `F_diss = 2 * beta * sqrt(5/3) * sqrt(S_n * m) * v_n`
+/// 5. Optionally adds adhesion (JKR, DMT, or SJKR cohesion)
+/// 6. Applies twisting friction torque (plane walls only)
+/// 7. Accumulates the scalar contact force for servo control
+///
+/// Runs in [`ScheduleSet::Force`].
 pub fn wall_contact_force(
     mut atoms: ResMut<Atom>,
     mut walls: ResMut<Walls>,
@@ -715,7 +999,10 @@ pub fn wall_contact_force(
             let radius = dem.radius[i];
             let mat_i = atoms.atom_type[i] as usize;
 
-            // Project position onto cylinder axis to get radial distance
+            // Decompose position into axial and radial components.
+            // `axial` = coordinate along the cylinder axis.
+            // `d0, d1` = displacement from cylinder center in the 2D cross-section plane.
+            // For axis=Z: axial=z, d0=x-cx, d1=y-cy.
             let (axial, d0, d1) = match cyl.axis {
                 0 => (pos[0], pos[1] - cyl.center[0], pos[2] - cyl.center[1]),
                 1 => (pos[1], pos[0] - cyl.center[0], pos[2] - cyl.center[1]),
@@ -732,14 +1019,15 @@ pub fn wall_contact_force(
                 continue;
             }
 
-            // Distance from particle center to wall surface and normal direction
+            // Compute overlap (delta) and 3D contact normal (nx, ny, nz).
+            // The gap is the distance from the particle center to the wall surface.
+            // The normal always points from the wall surface toward the particle center.
+            let inv_r = 1.0 / radial_dist;
             let (delta, nx, ny, nz) = if cyl.inside {
-                // Particle inside cylinder: delta = wall_radius - radial_dist - particle_radius
-                // But we want overlap = particle_radius - gap = radius - (cyl.radius - radial_dist)
+                // Inside: gap = cylinder_radius - radial_distance
                 let gap = cyl.radius - radial_dist;
                 let delta = radius - gap;
-                // Normal points inward (toward axis)
-                let inv_r = 1.0 / radial_dist;
+                // Normal points inward (toward axis), pushing particle away from wall
                 let (n0, n1) = (-d0 * inv_r, -d1 * inv_r);
                 let (nx, ny, nz) = match cyl.axis {
                     0 => (0.0, n0, n1),
@@ -748,11 +1036,10 @@ pub fn wall_contact_force(
                 };
                 (delta, nx, ny, nz)
             } else {
-                // Particle outside cylinder: delta = radius - (radial_dist - cyl.radius)
+                // Outside: gap = radial_distance - cylinder_radius
                 let gap = radial_dist - cyl.radius;
                 let delta = radius - gap;
-                // Normal points outward (away from axis)
-                let inv_r = 1.0 / radial_dist;
+                // Normal points outward (away from axis), pushing particle away from wall
                 let (n0, n1) = (d0 * inv_r, d1 * inv_r);
                 let (nx, ny, nz) = match cyl.axis {
                     0 => (0.0, n0, n1),
