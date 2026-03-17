@@ -1,8 +1,38 @@
 //! FIRE (Fast Inertial Relaxation Engine) energy minimization.
 //!
+//! This crate implements the FIRE algorithm described in:
+//!
+//! > Bitzek, E., Koskinen, P., Gähler, F., Moseler, M., & Derlet, P. (2006).
+//! > *Structural Relaxation Made Simple.* Physical Review Letters, 97(17), 170201.
+//! > <https://doi.org/10.1103/PhysRevLett.97.170201>
+//!
+//! FIRE is a damped-dynamics minimizer that uses velocity feedback to accelerate
+//! convergence toward a local energy minimum. It works by:
+//!
+//! 1. **Velocity Verlet integration** — positions and velocities are advanced
+//!    using standard Verlet with an adaptive timestep.
+//! 2. **Power check** — the instantaneous power `P = F · V` determines whether
+//!    the system is moving downhill (`P > 0`) or uphill (`P < 0`).
+//! 3. **Velocity mixing** — when `P > 0`, velocities are steered toward the
+//!    force direction: `V ← (1 − α) V + α |V| (F / |F|)`.
+//! 4. **Adaptive timestep** — after enough consecutive downhill steps, the
+//!    timestep grows (up to `dt_max`); when `P < 0`, velocities are zeroed,
+//!    the timestep shrinks, and the mixing parameter α is reset.
+//!
+//! Minimization converges when the maximum per-atom force magnitude falls below
+//! the force tolerance `ftol`.
+//!
+//! # Usage
+//!
 //! Provides [`FireMinPlugin`] which replaces the standard Velocity Verlet
-//! integrator with an adaptive-timestep FIRE minimizer. Converges when the
-//! maximum per-atom force magnitude falls below `ftol`.
+//! integrator with an adaptive-timestep FIRE minimizer. Configure via the
+//! `[fire]` TOML section (see [`FireConfig`]).
+//!
+//! ```toml
+//! [fire]
+//! ftol = 1e-6          # force convergence tolerance
+//! dt_max_factor = 10.0 # maximum dt = dt_max_factor × base dt
+//! ```
 
 use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
@@ -13,31 +43,97 @@ use mddem_core::{Atom, Config};
 // ── Config ──────────────────────────────────────────────────────────────────
 
 /// TOML `[fire]` configuration section.
+///
+/// All fields have sensible defaults from the original FIRE paper. In most
+/// cases only `ftol` needs to be tuned.
+///
+/// # Example
+///
+/// ```toml
+/// [fire]
+/// ftol = 1e-8
+/// dt_max_factor = 5.0
+/// n_delay = 10
+/// ```
 #[derive(Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct FireConfig {
-    /// Force tolerance for convergence (max per-atom force magnitude).
+    /// Force tolerance for convergence (force units).
+    ///
+    /// Minimization stops when the maximum per-atom force magnitude drops
+    /// below this value. Smaller values yield tighter convergence but require
+    /// more iterations.
+    ///
+    /// **Default:** `1e-6`
     #[serde(default = "default_ftol")]
     pub ftol: f64,
-    /// Maximum timestep as a multiple of the base dt.
+
+    /// Maximum timestep expressed as a multiple of the base `dt`.
+    ///
+    /// The adaptive timestep will never exceed `dt_max_factor × dt`. Larger
+    /// values allow faster traversal of flat energy landscapes but may cause
+    /// instability near steep features.
+    ///
+    /// **Default:** `10.0`
     #[serde(default = "default_dt_max_factor")]
     pub dt_max_factor: f64,
-    /// Factor to increase dt when power is positive.
+
+    /// Timestep growth factor applied when power is positive (`P > 0`).
+    ///
+    /// After `n_delay` consecutive positive-power steps, the timestep is
+    /// multiplied by this factor (clamped to `dt_max`). Must be `> 1.0`.
+    ///
+    /// **Default:** `1.1`
     #[serde(default = "default_f_inc")]
     pub f_inc: f64,
-    /// Factor to decrease dt when power is negative.
+
+    /// Timestep shrink factor applied when power is negative (`P < 0`).
+    ///
+    /// When the system moves uphill, the timestep is multiplied by this factor
+    /// to pull back. Must be `< 1.0`.
+    ///
+    /// **Default:** `0.5`
     #[serde(default = "default_f_dec")]
     pub f_dec: f64,
-    /// Initial mixing parameter.
+
+    /// Initial velocity-mixing parameter α (dimensionless, 0–1).
+    ///
+    /// Controls how aggressively velocities are steered toward the force
+    /// direction. `α = 0` means no mixing (pure MD), `α = 1` means velocities
+    /// are set entirely along the force. The value decays toward zero via
+    /// `f_alpha` as the system converges.
+    ///
+    /// **Default:** `0.1`
     #[serde(default = "default_alpha_start")]
     pub alpha_start: f64,
-    /// Factor to decrease alpha when power is positive.
+
+    /// Decay factor for α (dimensionless, 0–1).
+    ///
+    /// Each time the timestep grows (after `n_delay` positive-power steps),
+    /// `α` is multiplied by this factor, gradually reducing the velocity
+    /// mixing as the system approaches the minimum.
+    ///
+    /// **Default:** `0.99`
     #[serde(default = "default_f_alpha")]
     pub f_alpha: f64,
-    /// Number of positive-power steps before increasing dt.
+
+    /// Number of consecutive positive-power steps required before the
+    /// timestep is allowed to grow.
+    ///
+    /// This delay prevents premature acceleration when the system is still
+    /// oscillating. Larger values are more conservative.
+    ///
+    /// **Default:** `5`
     #[serde(default = "default_n_delay")]
     pub n_delay: usize,
-    /// Whether to advance to next stage on convergence.
+
+    /// Whether to automatically advance to the next `[[run]]` stage when
+    /// convergence is reached.
+    ///
+    /// Set to `false` if you want FIRE to continue running (as a no-op) after
+    /// convergence rather than triggering a stage transition.
+    ///
+    /// **Default:** `true`
     #[serde(default = "default_true")]
     pub stop_on_converge: bool,
 }
@@ -68,25 +164,47 @@ impl Default for FireConfig {
 
 // ── Runtime state ───────────────────────────────────────────────────────────
 
-/// FIRE algorithm runtime state.
+/// Mutable runtime state for the FIRE minimizer.
+///
+/// Created automatically by [`FireMinPlugin::build`] from the base timestep
+/// `dt` and [`FireConfig`]. Users typically inspect this (e.g. via
+/// `Res<FireState>`) to check [`converged`](Self::converged) or read the
+/// current [`iteration`](Self::iteration) count.
 pub struct FireState {
-    /// Current mixing parameter alpha.
+    /// Current velocity-mixing parameter α (dimensionless, 0–1).
+    ///
+    /// Starts at [`FireConfig::alpha_start`] and decays by [`FireConfig::f_alpha`]
+    /// each time the timestep grows. Reset to `alpha_start` on negative-power steps.
     pub alpha: f64,
-    /// Current FIRE timestep.
+
+    /// Current adaptive timestep used by FIRE integration (time units).
+    ///
+    /// Grows by [`FireConfig::f_inc`] after enough positive-power steps and
+    /// shrinks by [`FireConfig::f_dec`] on negative-power steps.
     pub dt_fire: f64,
-    /// Maximum allowed FIRE timestep.
+
+    /// Upper bound on `dt_fire` (time units), equal to `dt × dt_max_factor`.
     pub dt_max: f64,
-    /// Consecutive positive-power steps.
+
+    /// Number of consecutive steps with positive power (`P = F · V > 0`).
+    ///
+    /// Once this exceeds [`FireConfig::n_delay`], the timestep is allowed to
+    /// grow and α decays. Reset to zero whenever `P ≤ 0`.
     pub steps_since_negative: usize,
-    /// Whether minimization has converged.
+
+    /// `true` once the maximum per-atom force magnitude drops below
+    /// [`FireConfig::ftol`]. After convergence, FIRE integration becomes a no-op.
     pub converged: bool,
-    /// Iteration counter.
+
+    /// Total number of FIRE iterations (final-integration calls) completed.
     pub iteration: usize,
 }
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
 
-/// FIRE minimization plugin.
+/// Plugin providing FIRE energy minimization.
+///
+/// Implements the algorithm from Bitzek *et al.*, Phys. Rev. Lett. **97**, 170201 (2006).
 ///
 /// When used alone (no `stage`), replaces Velocity Verlet entirely.
 /// When `stage` is set, the FIRE systems only run during that `[[run]]` stage,
@@ -179,7 +297,11 @@ impl Plugin for FireMinPlugin {
 
 // ── Systems ─────────────────────────────────────────────────────────────────
 
-/// FIRE initial integration: half-step velocity kick + position update.
+/// FIRE initial integration (Velocity Verlet first half-step).
+///
+/// Applies a half-step velocity kick (`v += 0.5 × dt × F/m`) followed by a
+/// full-step position update (`x += v × dt`) using the adaptive FIRE timestep.
+/// Skipped entirely once [`FireState::converged`] is `true`.
 pub fn fire_initial_integration(
     mut atoms: ResMut<Atom>,
     fire: Res<FireState>,
@@ -212,7 +334,17 @@ pub fn fire_initial_integration(
     }
 }
 
-/// FIRE final integration: half-step velocity kick + FIRE mixing + adaptive dt.
+/// FIRE final integration (Velocity Verlet second half-step + FIRE logic).
+///
+/// This system performs three steps after forces have been computed:
+///
+/// 1. **Second half-step velocity kick** — `v += 0.5 × dt × F/m`.
+/// 2. **Convergence check** — if max per-atom `|F|` < `ftol`, mark converged.
+/// 3. **FIRE velocity mixing and adaptive timestep** — steer velocities toward
+///    the force direction and adjust `dt` based on whether the system is moving
+///    downhill (positive power) or uphill (negative power).
+///
+/// Skipped entirely once [`FireState::converged`] is `true`.
 pub fn fire_final_integration(
     mut atoms: ResMut<Atom>,
     mut fire: ResMut<FireState>,
@@ -277,7 +409,11 @@ pub fn fire_final_integration(
         return;
     }
 
-    // FIRE velocity mixing: V = (1-α)*V + α*|V|*(F/|F|)
+    // ── FIRE velocity mixing ────────────────────────────────────────────
+    // Steer velocities toward the force direction while preserving speed:
+    //   V ← (1 − α) V  +  α |V| (F / |F|)
+    // The first term retains most of the current velocity; the second term
+    // adds a component along the net force, weighted by α.
     let f_mag_total = f_sq_sum.sqrt();
     let v_mag_total = v_sq_sum.sqrt();
 
@@ -292,19 +428,24 @@ pub fn fire_final_integration(
         }
     }
 
-    // FIRE adaptive timestep
+    // ── FIRE adaptive timestep (state machine) ───────────────────────────
     if power > 0.0 {
+        // System is moving downhill — accumulate positive-power steps.
         fire.steps_since_negative += 1;
         if fire.steps_since_negative > fire_config.n_delay {
+            // Enough consecutive downhill steps: accelerate by growing dt
+            // and reducing the mixing parameter α toward zero.
             fire.dt_fire = (fire.dt_fire * fire_config.f_inc).min(fire.dt_max);
             fire.alpha *= fire_config.f_alpha;
         }
     } else {
-        // Power is negative: reset
+        // System is moving uphill (P ≤ 0) — emergency brake:
+        //   • shrink the timestep to reduce overshoot,
+        //   • reset α to its initial (aggressive) value,
+        //   • zero all velocities so the system restarts from rest.
         fire.dt_fire *= fire_config.f_dec;
         fire.alpha = fire_config.alpha_start;
         fire.steps_since_negative = 0;
-        // Zero velocities
         for i in 0..nlocal {
             atoms.vel[i] = [0.0; 3];
         }
@@ -355,7 +496,7 @@ mod tests {
         let k = 100.0;
         for _ in 0..1000 {
             {
-                let mut atom = app.get_resource_ref::<Atom>().unwrap();
+                let atom = app.get_resource_ref::<Atom>().unwrap();
                 // Already converged?
                 let fire = app.get_resource_ref::<FireState>().unwrap();
                 if fire.converged {
