@@ -3,11 +3,13 @@
 pub mod granular_temp;
 pub mod normal;
 pub mod rotational;
+pub mod rotational_viscous;
 pub mod tangential;
 
 pub use granular_temp::GranularTempPlugin;
 pub use normal::HertzNormalForcePlugin;
 pub use rotational::RotationalDynamicsPlugin;
+pub use rotational_viscous::RotationalViscousPlugin;
 pub use tangential::MindlinTangentialForcePlugin;
 
 pub mod contact;

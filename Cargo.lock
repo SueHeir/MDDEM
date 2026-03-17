@@ -166,6 +166,7 @@ dependencies = [
  "mddem_scheduler",
  "mddem_test_utils",
  "mddem_verlet",
+ "serde",
 ]
 
 [[package]]
@@ -530,7 +531,6 @@ dependencies = [
 name = "mddem_fixes"
 version = "0.1.3"
 dependencies = [
- "dem_atom",
  "mddem_app",
  "mddem_core",
  "mddem_scheduler",

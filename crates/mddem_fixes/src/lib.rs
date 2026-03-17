@@ -4,7 +4,7 @@ use mddem_app::prelude::*;
 use mddem_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, GroupRegistry};
+use mddem_core::{Atom, CommResource, Config, GroupRegistry};
 
 // ── Config structs ─────────────────────────────────────────────────────────
 
@@ -61,13 +61,6 @@ pub struct ViscousDef {
     pub gamma: f64,
 }
 
-#[derive(Deserialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct RotationalViscousDef {
-    pub group: String,
-    pub gamma: f64,
-}
-
 // ── Registry ───────────────────────────────────────────────────────────────
 
 pub struct FixesRegistry {
@@ -76,7 +69,6 @@ pub struct FixesRegistry {
     pub move_linears: Vec<MoveLinearDef>,
     pub freezes: Vec<FreezeDef>,
     pub viscous: Vec<ViscousDef>,
-    pub rotational_viscous: Vec<RotationalViscousDef>,
 }
 
 // ── Plugin ─────────────────────────────────────────────────────────────────
@@ -110,10 +102,7 @@ impl Plugin for FixesPlugin {
 # [[viscous]]
 # group = "all"
 # gamma = 0.1  # translational damping coefficient (force = -gamma * velocity)
-
-# [[rotational_viscous]]
-# group = "all"
-# gamma = 0.001  # angular damping coefficient (torque = -gamma * omega)"#,
+"#,
         )
     }
 
@@ -128,7 +117,6 @@ impl Plugin for FixesPlugin {
             move_linears: config.parse_array::<MoveLinearDef>("move_linear"),
             freezes: config.parse_array::<FreezeDef>("freeze"),
             viscous: config.parse_array::<ViscousDef>("viscous"),
-            rotational_viscous: config.parse_array::<RotationalViscousDef>("rotational_viscous"),
         };
 
         drop(config);
@@ -137,8 +125,7 @@ impl Plugin for FixesPlugin {
             || !registry.set_forces.is_empty()
             || !registry.move_linears.is_empty()
             || !registry.freezes.is_empty()
-            || !registry.viscous.is_empty()
-            || !registry.rotational_viscous.is_empty();
+            || !registry.viscous.is_empty();
 
         if !has_any {
             app.add_resource(registry);
@@ -150,7 +137,6 @@ impl Plugin for FixesPlugin {
         let has_set = !registry.set_forces.is_empty();
         let has_freeze = !registry.freezes.is_empty();
         let has_viscous = !registry.viscous.is_empty();
-        let has_rotational_viscous = !registry.rotational_viscous.is_empty();
 
         app.add_resource(registry)
             .add_setup_system(setup_fixes, ScheduleSetupSet::PostSetup);
@@ -170,9 +156,6 @@ impl Plugin for FixesPlugin {
         }
         if has_viscous {
             app.add_update_system(apply_viscous, ScheduleSet::PostForce);
-        }
-        if has_rotational_viscous {
-            app.add_update_system(apply_rotational_viscous, ScheduleSet::PostForce);
         }
     }
 }
@@ -196,10 +179,6 @@ fn setup_fixes(registry: Res<FixesRegistry>, comm: Res<CommResource>, groups: Re
     for f in &registry.viscous {
         groups.validate_name(&f.group, "fix viscous");
     }
-    for f in &registry.rotational_viscous {
-        groups.validate_name(&f.group, "fix rotational_viscous");
-    }
-
     if comm.rank() != 0 {
         return;
     }
@@ -226,12 +205,6 @@ fn setup_fixes(registry: Res<FixesRegistry>, comm: Res<CommResource>, groups: Re
     }
     for f in &registry.viscous {
         println!("Fix viscous: group='{}', gamma={}", f.group, f.gamma);
-    }
-    for f in &registry.rotational_viscous {
-        println!(
-            "Fix rotational_viscous: group='{}', gamma={}",
-            f.group, f.gamma
-        );
     }
 }
 
@@ -353,28 +326,6 @@ fn apply_viscous(
     }
 }
 
-/// Apply angular-velocity-proportional damping: τ = -gamma * ω.
-fn apply_rotational_viscous(
-    atoms: Res<Atom>,
-    atom_data: Res<AtomDataRegistry>,
-    registry: Res<FixesRegistry>,
-    groups: Res<GroupRegistry>,
-) {
-    let mut dem = atom_data.expect_mut::<dem_atom::DemAtom>("apply_rotational_viscous");
-    let nlocal = atoms.nlocal as usize;
-    for def in &registry.rotational_viscous {
-        let group = groups.expect(&def.group);
-        let gamma = def.gamma;
-        for i in 0..nlocal {
-            if group.mask[i] {
-                dem.torque[i][0] -= gamma * dem.omega[i][0];
-                dem.torque[i][1] -= gamma * dem.omega[i][1];
-                dem.torque[i][2] -= gamma * dem.omega[i][2];
-            }
-        }
-    }
-}
-
 // ── Gravity ─────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Clone)]
@@ -456,7 +407,6 @@ mod tests {
             move_linears: vec![],
             freezes: vec![],
             viscous: vec![],
-            rotational_viscous: vec![],
         };
 
         // Set some initial force
@@ -498,7 +448,6 @@ mod tests {
             move_linears: vec![],
             freezes: vec![],
             viscous: vec![],
-            rotational_viscous: vec![],
         };
 
         let mut app = App::new();
@@ -534,7 +483,6 @@ mod tests {
                 group: "frozen".to_string(),
             }],
             viscous: vec![],
-            rotational_viscous: vec![],
         };
 
         let mut app = App::new();
@@ -569,7 +517,6 @@ mod tests {
             }],
             freezes: vec![],
             viscous: vec![],
-            rotational_viscous: vec![],
         };
 
         // Pre step: sets velocity
@@ -608,7 +555,6 @@ mod tests {
                 group: "all".to_string(),
                 gamma: 0.1,
             }],
-            rotational_viscous: vec![],
         };
 
         let mut app = App::new();
@@ -638,7 +584,6 @@ mod tests {
                 group: "all".to_string(),
                 gamma: 0.1,
             }],
-            rotational_viscous: vec![],
         };
 
         let mut app = App::new();
@@ -653,133 +598,6 @@ mod tests {
         assert!((a.force[0][0]).abs() < 1e-15);
         assert!((a.force[0][1]).abs() < 1e-15);
         assert!((a.force[0][2]).abs() < 1e-15);
-    }
-
-    // ── Rotational viscous tests ───────────────────────────────────────────
-
-    fn make_rotational_viscous_app(
-        n: usize,
-        group_name: &str,
-        mask: Vec<bool>,
-        gamma: f64,
-        omegas: Vec<[f64; 3]>,
-    ) -> App {
-        let atoms = make_atoms(n);
-        let groups = make_group_registry(group_name, mask);
-
-        let mut dem = dem_atom::DemAtom::new();
-        for omega in &omegas {
-            dem.radius.push(0.5);
-            dem.density.push(2500.0);
-            dem.inv_inertia.push(1.0);
-            dem.quaternion.push([1.0, 0.0, 0.0, 0.0]);
-            dem.omega.push(*omega);
-            dem.ang_mom.push([0.0; 3]);
-            dem.torque.push([0.0; 3]);
-        }
-
-        let mut registry = AtomDataRegistry::new();
-        registry.register(dem);
-
-        let fixes = FixesRegistry {
-            add_forces: vec![],
-            set_forces: vec![],
-            move_linears: vec![],
-            freezes: vec![],
-            viscous: vec![],
-            rotational_viscous: vec![RotationalViscousDef {
-                group: group_name.to_string(),
-                gamma,
-            }],
-        };
-
-        let mut app = App::new();
-        app.add_resource(atoms);
-        app.add_resource(groups);
-        app.add_resource(registry);
-        app.add_resource(fixes);
-        app.add_update_system(apply_rotational_viscous, ScheduleSet::PostForce);
-        app.organize_systems();
-        app.run();
-        app
-    }
-
-    #[test]
-    fn test_rotational_viscous_opposes_angular_velocity() {
-        let app = make_rotational_viscous_app(
-            2,
-            "all",
-            vec![true, true],
-            0.1,
-            vec![[1.0, -2.0, 0.5], [0.0; 3]],
-        );
-
-        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
-        let dem = registry.expect::<dem_atom::DemAtom>("test");
-        // torque = -gamma * omega
-        assert!((dem.torque[0][0] - (-0.1)).abs() < 1e-12, "tx = -gamma*wx");
-        assert!((dem.torque[0][1] - 0.2).abs() < 1e-12, "ty = -gamma*wy");
-        assert!(
-            (dem.torque[0][2] - (-0.05)).abs() < 1e-12,
-            "tz = -gamma*wz"
-        );
-    }
-
-    #[test]
-    fn test_rotational_viscous_zero_at_rest() {
-        let app = make_rotational_viscous_app(
-            2,
-            "all",
-            vec![true, true],
-            0.1,
-            vec![[0.0; 3], [0.0; 3]],
-        );
-
-        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
-        let dem = registry.expect::<dem_atom::DemAtom>("test");
-        assert!((dem.torque[0][0]).abs() < 1e-15);
-        assert!((dem.torque[0][1]).abs() < 1e-15);
-        assert!((dem.torque[0][2]).abs() < 1e-15);
-    }
-
-    #[test]
-    fn test_rotational_viscous_group_filtering() {
-        let app = make_rotational_viscous_app(
-            3,
-            "subset",
-            vec![true, false, true],
-            0.5,
-            vec![[2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
-        );
-
-        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
-        let dem = registry.expect::<dem_atom::DemAtom>("test");
-        // Atom 0 in group: torque = -0.5 * 2.0 = -1.0
-        assert!((dem.torque[0][0] - (-1.0)).abs() < 1e-12);
-        // Atom 1 NOT in group: torque unchanged (0)
-        assert!((dem.torque[1][0]).abs() < 1e-15);
-        // Atom 2 in group: torque = -0.5 * 4.0 = -2.0
-        assert!((dem.torque[2][0] - (-2.0)).abs() < 1e-12);
-    }
-
-    #[test]
-    fn test_rotational_viscous_scales_with_gamma_and_omega() {
-        // gamma=0.2, omega=[3.0, 0.0, 0.0] -> torque = -0.6
-        let app = make_rotational_viscous_app(
-            1,
-            "all",
-            vec![true],
-            0.2,
-            vec![[3.0, 0.0, 0.0]],
-        );
-
-        let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
-        let dem = registry.expect::<dem_atom::DemAtom>("test");
-        assert!(
-            (dem.torque[0][0] - (-0.6)).abs() < 1e-12,
-            "torque should scale linearly: -0.2*3.0 = -0.6, got {}",
-            dem.torque[0][0]
-        );
     }
 
     // ── Gravity tests ──────────────────────────────────────────────────────
