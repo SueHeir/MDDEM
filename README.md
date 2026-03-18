@@ -224,8 +224,8 @@ MDDEM achieves 2.2–3.5× speedup over single-core at scale, with the LAMMPS ra
 | Crate | Description |
 |---|---|
 | [`mddem`](crates/mddem/) | Umbrella crate: `CorePlugins`, `LJDefaultPlugins`, `GranularDefaultPlugins`, prelude |
-| [`mddem_scheduler`](crates/mddem_scheduler/) | Dependency-injection scheduler with resources, schedule sets, ordering, and run conditions |
-| [`mddem_app`](crates/mddem_app/) | App, SubApp, Plugin, PluginGroup, StatesPlugin |
+| [`sim_scheduler`](crates/sim_scheduler/) | Dependency-injection scheduler with resources, schedule sets, ordering, and run conditions |
+| [`sim_app`](crates/sim_app/) | App, SubApp, Plugin, PluginGroup, StatesPlugin |
 | [`mddem_core`](crates/mddem_core/) | Config, domain decomposition, communication, atom data, regions, groups |
 | [`mddem_neighbor`](crates/mddem_neighbor/) | Neighbor lists: brute force, sweep-and-prune, bin-based |
 | [`mddem_verlet`](crates/mddem_verlet/) | Velocity Verlet translational integration |

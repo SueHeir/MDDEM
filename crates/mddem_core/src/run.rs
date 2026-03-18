@@ -4,12 +4,12 @@
 //! Each stage has its own step count, thermo interval, and optional config
 //! overrides (e.g. change thermostat temperature between stages).
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{CommResource, Config};
-use mddem_app::StageNames;
+use crate::{CommResource, Config, ScheduleSet, ScheduleSetupSet};
+use sim_app::StageNames;
 
 fn default_steps() -> u32 {
     1000

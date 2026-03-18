@@ -69,11 +69,11 @@ use std::f64::consts::PI;
 use std::fs;
 use std::io::Write;
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState};
+use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState, ScheduleSet};
 use mddem_neighbor::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────

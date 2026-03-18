@@ -61,11 +61,11 @@
 
 use std::f64::consts::PI;
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, CommResource, Config, Domain, MixingRule, PairCoeffTable, VirialStressPlugin};
+use mddem_core::{Atom, CommResource, Config, Domain, MixingRule, PairCoeffTable, ScheduleSet, ScheduleSetupSet, VirialStressPlugin};
 use mddem_neighbor::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────

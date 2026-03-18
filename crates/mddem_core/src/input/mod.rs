@@ -8,7 +8,7 @@
 
 use std::env;
 
-use mddem_app::prelude::*;
+use sim_app::prelude::*;
 
 mod toml_input;
 pub use toml_input::Config;

@@ -12,8 +12,8 @@ categories = ["simulation", "science"]
 [dependencies]
 mddem_core = { path = "../mddem_core", version = "0.1.3", default-features = false }
 mddem_neighbor = { path = "../mddem_neighbor", version = "0.1.3" }
-mddem_app = { path = "../mddem_app", version = "0.1.3" }
-mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.3" }
+sim_app = { path = "../sim_app", version = "0.1.3" }
+sim_scheduler = { path = "../sim_scheduler", version = "0.1.3" }
 dem_atom = { path = "../dem_atom", version = "0.1.3" }
 dem_clump = { path = "../dem_clump", version = "0.1.3" }
 mddem_verlet = { path = "../mddem_verlet", version = "0.1.3" }

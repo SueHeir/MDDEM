@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Velocity distribution analysis for particle simulations — bins particle speeds and compares against Maxwell-Boltzmann"
 
 [dependencies]
-mddem_app = { path = "../mddem_app" }
-mddem_scheduler = { path = "../mddem_scheduler" }
+sim_app = { path = "../sim_app" }
+sim_scheduler = { path = "../sim_scheduler" }
 mddem_core = { path = "../mddem_core", default-features = false }
 serde = { version = "1", features = ["derive"] }

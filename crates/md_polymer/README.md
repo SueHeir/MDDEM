@@ -54,7 +54,7 @@ equilibration_steps = 0
 ## Usage Example
 
 ```rust
-use mddem_app::prelude::*;
+use sim_app::prelude::*;
 use md_polymer::PolymerPlugin;
 
 let mut app = App::new();

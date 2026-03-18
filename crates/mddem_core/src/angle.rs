@@ -2,7 +2,7 @@
 
 use std::any::Any;
 
-use mddem_app::prelude::*;
+use sim_app::prelude::*;
 
 use crate::AtomData;
 

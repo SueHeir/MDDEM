@@ -37,7 +37,7 @@ skin = 1.25             # Neighbor-list skin distance
 ## Usage example
 
 ```rust
-use mddem_app::prelude::*;
+use sim_app::prelude::*;
 
 let mut app = App::new();
 app.add_plugins(md_lattice::LatticePlugin);

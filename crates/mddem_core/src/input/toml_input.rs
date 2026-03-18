@@ -5,7 +5,7 @@
 
 use std::any::TypeId;
 
-use mddem_app::prelude::App;
+use sim_app::prelude::App;
 use serde::Deserialize;
 
 /// Wraps a parsed TOML table. Use [`Config::load::<T>(app, key)`] to extract and register a section.

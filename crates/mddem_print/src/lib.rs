@@ -63,11 +63,11 @@ use std::{
     time::Instant,
 };
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use mddem_core::{compute_ke, Atom, AtomDataRegistry, CommResource, Config, GroupRegistry, Input, RunConfig, RunState, VirialStress};
+use mddem_core::{compute_ke, Atom, AtomDataRegistry, CommResource, Config, GroupRegistry, Input, RunConfig, RunState, ScheduleSet, ScheduleSetupSet, VirialStress};
 use mddem_neighbor::Neighbor;
 
 // ── Thermo config ───────────────────────────────────────────────────────────

@@ -78,7 +78,7 @@ pub use tangential::MindlinTangentialForcePlugin;
 
 pub mod contact;
 
-use mddem_app::prelude::*;
+use sim_app::prelude::*;
 
 use dem_atom::DemAtomPlugin;
 use dem_atom::DemAtomInsertPlugin;

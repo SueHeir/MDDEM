@@ -1,10 +1,10 @@
-# mddem_app
+# sim_app
 
-Plugin-based application framework for MDDEM simulations.
+Plugin-based application framework for scientific simulations.
 
 ## Overview
 
-`mddem_app` provides the core abstractions for building modular MDDEM simulations:
+`sim_app` provides the core abstractions for building modular simulation applications:
 
 - **`App`** — Central container holding resources, systems, and plugins
 - **`Plugin`** — Trait for self-contained modules that register resources and systems
@@ -14,14 +14,23 @@ Plugin-based application framework for MDDEM simulations.
 ## Quick Start
 
 ```rust
-use mddem_app::prelude::*;
-use mddem_scheduler::ScheduleSet;
+use sim_app::prelude::*;
+use sim_scheduler::SchedulePhase;
+
+// Define a custom schedule phase
+#[derive(Clone, Copy, Debug)]
+enum MySchedule { Update }
+
+impl SchedulePhase for MySchedule {
+    fn to_index(&self) -> u32 { 0 }
+    fn name(&self) -> &'static str { "Update" }
+}
 
 // Define a plugin
 struct MyPlugin;
 impl Plugin for MyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_update_system(my_system, ScheduleSet::Update);
+        app.add_update_system(my_system, MySchedule::Update);
     }
 }
 

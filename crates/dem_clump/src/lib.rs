@@ -28,12 +28,12 @@
 
 use std::f64::consts::PI;
 
-use mddem_app::prelude::*;
+use sim_app::prelude::*;
 use mddem_derive::AtomData;
-use mddem_scheduler::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, Config};
+use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, Config, ScheduleSet};
 
 use dem_atom::DemAtom;
 

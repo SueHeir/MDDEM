@@ -14,6 +14,7 @@ pub mod input;
 pub mod pair_coeff;
 pub mod region;
 pub mod run;
+pub mod schedule;
 pub mod virial;
 
 // Re-export all public types at crate root for convenience.
@@ -27,6 +28,7 @@ pub use input::{load_toml, print_banner, Config, Input, InputPlugin};
 pub use pair_coeff::{MixingRule, PairCoeffTable};
 pub use region::{Axis, Region, SurfaceResult};
 pub use run::*;
+pub use schedule::*;
 pub use virial::*;
 
 // Re-export toml so downstream users can build Config tables programmatically.

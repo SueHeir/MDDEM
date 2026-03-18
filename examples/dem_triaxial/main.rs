@@ -27,10 +27,8 @@ fn main() {
         .add_plugins(GravityPlugin)
         .add_plugins(WallPlugin)
         .add_plugins(DeformPlugin)
-        .add_plugins(StatesPlugin {
-            initial: Phase::Insert,
-        })
-        .add_plugins(StageAdvancePlugin::<Phase>::new());
+        .add_plugins(StatesPlugin::new(Phase::Insert, ScheduleSet::PostFinalIntegration))
+        .add_plugins(StageAdvancePlugin::<Phase>::new(ScheduleSet::PostFinalIntegration));
 
     app.add_update_system(
         check_insert_settled.run_if(in_state(Phase::Insert)),

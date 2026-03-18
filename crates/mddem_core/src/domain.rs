@@ -7,11 +7,11 @@
 //!   across MPI ranks
 //! - [`DomainPlugin`]: registers setup, PBC wrapping, and shrink-wrap systems
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{Atom, AtomDataRegistry, CommBackend, CommResource, Config};
+use crate::{Atom, AtomDataRegistry, CommBackend, CommResource, Config, ScheduleSet, ScheduleSetupSet};
 
 fn default_one_f64() -> f64 {
     1.0

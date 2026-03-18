@@ -1,10 +1,10 @@
 //! Atom groups: named subsets selected by type and/or spatial region.
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
-use crate::{Atom, Config, Region, StageOverrides};
+use crate::{Atom, Config, Region, ScheduleSet, ScheduleSetupSet, StageOverrides};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 

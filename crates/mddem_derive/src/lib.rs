@@ -43,7 +43,7 @@
 //!
 //! # `StageEnum` derive
 //!
-//! Generates an implementation of `mddem_scheduler::StageName` for enums where
+//! Generates an implementation of `sim_scheduler::StageName` for enums where
 //! each variant is annotated with `#[stage("name")]`.
 //!
 //! ```rust,ignore
@@ -479,7 +479,7 @@ fn build_zero_method(fields: &[FieldInfo]) -> proc_macro2::TokenStream {
     }
 }
 
-/// Derive macro that implements `mddem_scheduler::StageName` for an enum.
+/// Derive macro that implements `sim_scheduler::StageName` for an enum.
 ///
 /// Every variant must carry a `#[stage("name")]` attribute with a unique string
 /// literal identifying the stage in TOML configuration.
@@ -592,7 +592,7 @@ pub fn derive_stage_enum(input: TokenStream) -> TokenStream {
     let indices: Vec<_> = (0..variant_idents.len()).collect();
 
     let expanded = quote! {
-        impl mddem_scheduler::StageName for #name {
+        impl sim_scheduler::StageName for #name {
             fn stage_name(&self) -> &'static str {
                 match self {
                     #(#match_arms)*
@@ -611,6 +611,134 @@ pub fn derive_stage_enum(input: TokenStream) -> TokenStream {
                 match i {
                     #(#indices => Some(#name::#variant_idents),)*
                     _ => None,
+                }
+            }
+        }
+    };
+
+    expanded.into()
+}
+
+/// Derive macro that implements `sim_scheduler::SchedulePhase` for an enum.
+///
+/// Every variant must carry a `#[phase(N)]` attribute with a numeric literal
+/// specifying the execution order index.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[derive(Clone, Copy, Debug, PartialEq, SchedulePhase)]
+/// enum CfdSchedule {
+///     #[phase(0)]
+///     Setup,
+///     #[phase(1)]
+///     AssembleFluxes,
+///     #[phase(2)]
+///     SolvePressure,
+/// }
+/// ```
+///
+/// # Panics
+///
+/// Produces a compile-time error if:
+/// - Applied to a struct or union (must be an enum)
+/// - Any variant is missing the `#[phase(N)]` attribute
+/// - Two variants share the same phase index
+#[proc_macro_derive(SchedulePhase, attributes(phase))]
+pub fn derive_schedule_phase(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    let variants = match &input.data {
+        Data::Enum(data) => &data.variants,
+        _ => {
+            return syn::Error::new_spanned(
+                &input,
+                "SchedulePhase can only be derived for enums, not structs or unions",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    let mut match_index_arms = Vec::new();
+    let mut match_name_arms = Vec::new();
+    let mut phase_indices = Vec::new();
+
+    for variant in variants {
+        let ident = &variant.ident;
+
+        // Find #[phase(N)] attribute
+        let phase_attr = variant.attrs.iter().find(|a| a.path().is_ident("phase"));
+        let Some(attr) = phase_attr else {
+            return syn::Error::new_spanned(
+                variant,
+                format!(
+                    "SchedulePhase: variant `{ident}` is missing a #[phase(N)] attribute. \
+                     Every variant must specify its ordering index, e.g.:\n\n    \
+                     #[phase(0)]\n    {ident},"
+                ),
+            )
+            .to_compile_error()
+            .into();
+        };
+
+        // Parse the integer literal from #[phase(N)]
+        let phase_index: syn::LitInt = match attr.parse_args() {
+            Ok(lit) => lit,
+            Err(_) => {
+                return syn::Error::new_spanned(
+                    attr,
+                    "SchedulePhase: #[phase(...)] expects an integer literal, \
+                     e.g. #[phase(0)]",
+                )
+                .to_compile_error()
+                .into();
+            }
+        };
+
+        let index_val: u32 = match phase_index.base10_parse() {
+            Ok(v) => v,
+            Err(_) => {
+                return syn::Error::new_spanned(
+                    &phase_index,
+                    "SchedulePhase: #[phase(...)] must be a valid u32 integer",
+                )
+                .to_compile_error()
+                .into();
+            }
+        };
+
+        // Check for duplicates
+        if phase_indices.contains(&index_val) {
+            return syn::Error::new_spanned(
+                &phase_index,
+                format!(
+                    "SchedulePhase: duplicate phase index {index_val}. \
+                     Each variant must have a unique phase index."
+                ),
+            )
+            .to_compile_error()
+            .into();
+        }
+        phase_indices.push(index_val);
+
+        let variant_name = ident.to_string();
+        match_index_arms.push(quote! { #name::#ident => #index_val, });
+        match_name_arms.push(quote! { #name::#ident => #variant_name, });
+    }
+
+    let expanded = quote! {
+        impl sim_scheduler::SchedulePhase for #name {
+            fn to_index(&self) -> u32 {
+                match self {
+                    #(#match_index_arms)*
+                }
+            }
+
+            fn name(&self) -> &'static str {
+                match self {
+                    #(#match_name_arms)*
                 }
             }
         }

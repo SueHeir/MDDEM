@@ -30,10 +30,8 @@ fn main() {
         .add_plugins(GranularDefaultPlugins)
         .add_plugins(GravityPlugin)
         .add_plugins(WallPlugin)
-        .add_plugins(StatesPlugin {
-            initial: Phase::Settle,
-        })
-        .add_plugins(StageAdvancePlugin::<Phase>::new());
+        .add_plugins(StatesPlugin::new(Phase::Settle, ScheduleSet::PostFinalIntegration))
+        .add_plugins(StageAdvancePlugin::<Phase>::new(ScheduleSet::PostFinalIntegration));
 
     // During settle: check KE and advance early if settled
     app.add_update_system(

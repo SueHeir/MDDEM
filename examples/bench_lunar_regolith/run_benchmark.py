@@ -55,12 +55,12 @@ processors_y = 1
 processors_z = 1
 
 [domain]
-x_low = -0.05
+x_low = -0.04
 x_high = 0.12
 y_low = 0.0
 y_high = 0.010
 z_low = 0.0
-z_high = 0.20
+z_high = 0.15
 periodic_x = false
 periodic_y = true
 periodic_z = false
@@ -89,14 +89,14 @@ friction = 0.5
 rolling_friction = 1.0
 surface_energy = {surface_energy}
 
-# Count-based insertion in a tall narrow column
+# Count-based insertion in a narrow column (20mm wide, ~105mm tall packed)
 [[particles.insert]]
 material = "regolith"
 radius = 0.001
 density = 1500.0
-count = 5000
+count = 3000
 velocity_z = -0.5
-region = {{ type = "block", min = [-0.035, 0.0, 0.005], max = [-0.015, 0.010, 0.195] }}
+region = {{ type = "block", min = [-0.03, 0.0, 0.005], max = [-0.01, 0.010, 0.145] }}
 
 # Floor wall
 [[wall]]
@@ -129,8 +129,8 @@ dir = "{output_dir}"
 # Stage 1: settle particles in the box
 [[run]]
 name = "settle"
-steps = 200000
-thermo = 20000
+steps = 150000
+thermo = 15000
 dt = 5e-6
 
 # Stage 2: gate removed, particles drain

@@ -28,11 +28,11 @@
 //!
 //! Configure via the `[neighbor]` TOML section (see [`NeighborConfig`]).
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, Domain};
+use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, Domain, ScheduleSet, ScheduleSetupSet};
 
 fn default_one_f64() -> f64 {
     1.0

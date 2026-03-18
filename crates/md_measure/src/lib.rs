@@ -54,12 +54,12 @@ use std::f64::consts::PI;
 use std::fs;
 use std::io::Write;
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 use md_lj::LJTailCorrections;
-use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState, VirialStress};
+use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState, ScheduleSet, ScheduleSetupSet, VirialStress};
 use mddem_neighbor::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────

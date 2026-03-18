@@ -53,13 +53,13 @@ use std::{
     io::{BufWriter, Write},
 };
 
-use mddem_app::prelude::*;
+use sim_app::prelude::*;
 use mddem_derive::AtomData;
-use mddem_scheduler::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 use dem_atom::DemAtom;
-use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, CommResource, Config, Input, RunState};
+use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, CommResource, Config, Input, RunState, ScheduleSet};
 use mddem_neighbor::Neighbor;
 use mddem_print::{DumpRegistry, Thermo};
 

@@ -27,11 +27,11 @@
 //! - `addforce`, `setforce`, `freeze`, and `viscous` all run in **PostForce**.
 //! - `gravity` runs in **Force**.
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, CommResource, Config, GroupRegistry};
+use mddem_core::{Atom, CommResource, Config, GroupRegistry, ScheduleSet, ScheduleSetupSet};
 use mddem_print::Thermo;
 
 // ── Config structs ─────────────────────────────────────────────────────────

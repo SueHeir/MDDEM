@@ -51,12 +51,12 @@
 //! app.add_plugins(LatticePlugin);
 //! ```
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use rand_distr::{Distribution, Normal};
 use serde::Deserialize;
 
-use mddem_core::{Atom, AtomPlugin, CommResource, Config, Domain};
+use mddem_core::{Atom, AtomPlugin, CommResource, Config, Domain, ScheduleSetupSet};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 

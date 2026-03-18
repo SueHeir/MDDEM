@@ -17,11 +17,11 @@
 //! `β` is the damping coefficient (derived from restitution), `S_n = 2 E* √(R* δ)`,
 //! and `m_r` is the reduced mass.
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 
 use dem_atom::{DemAtom, MaterialTable};
-use mddem_core::{Atom, AtomDataRegistry, BondStore};
+use mddem_core::{Atom, AtomDataRegistry, BondStore, ScheduleSet};
 use mddem_neighbor::Neighbor;
 
 use crate::{LARGE_OVERLAP_WARN_THRESHOLD, MAX_OVERLAP_WARNINGS, SQRT_5_3};

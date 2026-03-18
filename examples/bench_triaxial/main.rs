@@ -37,10 +37,8 @@ fn main() {
         .add_plugins(GranularDefaultPlugins)
         .add_plugins(GravityPlugin)
         .add_plugins(WallPlugin)
-        .add_plugins(StatesPlugin {
-            initial: Phase::Insert,
-        })
-        .add_plugins(StageAdvancePlugin::<Phase>::new());
+        .add_plugins(StatesPlugin::new(Phase::Insert, ScheduleSet::PostFinalIntegration))
+        .add_plugins(StageAdvancePlugin::<Phase>::new(ScheduleSet::PostFinalIntegration));
 
     // Disable servo walls during insert/relax so particles can settle under gravity.
     app.add_update_system(

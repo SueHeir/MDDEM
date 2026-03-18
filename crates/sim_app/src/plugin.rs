@@ -1,14 +1,14 @@
 //! The [`Plugin`] trait, [`PluginGroup`] builder, and state/stage management plugins.
 //!
-//! Every feature in MDDEM is implemented as a [`Plugin`]. Plugins register
+//! Every feature is implemented as a [`Plugin`]. Plugins register
 //! resources, systems, and sub-plugins with the [`App`](crate::App) during
 //! the build phase.
 //!
 //! # Implementing a plugin
 //!
 //! ```rust,ignore
-//! use mddem_app::prelude::*;
-//! use mddem_scheduler::ScheduleSet;
+//! use sim_app::prelude::*;
+//! use sim_scheduler::ScheduleSet;
 //!
 //! pub struct GravityPlugin;
 //!
@@ -20,8 +20,9 @@
 //! ```
 
 use downcast_rs::{impl_downcast, Downcast};
-use mddem_scheduler::{
-    apply_state_transitions, check_stage_advance, CurrentState, NextState, ScheduleSet, StageName,
+use sim_scheduler::{
+    apply_state_transitions, check_stage_advance, CurrentState, NextState, SchedulePhase,
+    StageName, StoredPhase,
 };
 use std::marker::PhantomData;
 
@@ -186,20 +187,31 @@ impl PluginGroupBuilder {
 // ─── StatesPlugin ─────────────────────────────────────────────────────────────
 
 /// Registers [`CurrentState<S>`] and [`NextState<S>`] resources and wires up the
-/// end-of-step transition system. Transitions are applied at
-/// [`ScheduleSet::PostFinalIntegration`].
+/// end-of-step transition system at the given schedule phase.
 ///
 /// ```rust,ignore
 /// #[derive(Clone, PartialEq, Default)]
 /// enum Phase { #[default] Settling, Production }
 ///
 /// App::new()
-///     .add_plugins(StatesPlugin { initial: Phase::Settling })
+///     .add_plugins(StatesPlugin::new(Phase::Settling, ScheduleSet::PostFinalIntegration))
 ///     ...
 /// ```
 pub struct StatesPlugin<S: Clone + PartialEq + Default + Send + Sync + 'static> {
     /// The initial state value to use at simulation start.
     pub initial: S,
+    /// The schedule phase at which state transitions are applied.
+    phase: StoredPhase,
+}
+
+impl<S: Clone + PartialEq + Default + Send + Sync + 'static> StatesPlugin<S> {
+    /// Creates a new [`StatesPlugin`] with the given initial state and schedule phase.
+    pub fn new(initial: S, phase: impl SchedulePhase) -> Self {
+        Self {
+            initial,
+            phase: StoredPhase::from(phase),
+        }
+    }
 }
 
 impl<S: Clone + PartialEq + Default + Send + Sync + 'static> Plugin for StatesPlugin<S> {
@@ -208,7 +220,7 @@ impl<S: Clone + PartialEq + Default + Send + Sync + 'static> Plugin for StatesPl
         app.add_resource(NextState::<S>(None));
         app.add_update_system(
             apply_state_transitions::<S>,
-            ScheduleSet::PostFinalIntegration,
+            self.phase,
         );
     }
 }
@@ -220,27 +232,21 @@ impl<S: Clone + PartialEq + Default + Send + Sync + 'static> Plugin for StatesPl
 /// Add alongside [`StatesPlugin`] when using `#[derive(StageEnum)]`:
 ///
 /// ```rust,ignore
-/// app.add_plugins(StatesPlugin { initial: Phase::Settle });
-/// app.add_plugins(StageAdvancePlugin::<Phase>::new());
+/// app.add_plugins(StatesPlugin::new(Phase::Settle, ScheduleSet::PostFinalIntegration));
+/// app.add_plugins(StageAdvancePlugin::<Phase>::new(ScheduleSet::PostFinalIntegration));
 /// ```
 pub struct StageAdvancePlugin<S: StageName + Clone + PartialEq + Default + Send + Sync + 'static> {
     _marker: PhantomData<S>,
+    phase: StoredPhase,
 }
 
 impl<S: StageName + Clone + PartialEq + Default + Send + Sync + 'static> StageAdvancePlugin<S> {
-    /// Creates a new [`StageAdvancePlugin`] for state type `S`.
-    pub fn new() -> Self {
+    /// Creates a new [`StageAdvancePlugin`] for state type `S` at the given schedule phase.
+    pub fn new(phase: impl SchedulePhase) -> Self {
         Self {
             _marker: PhantomData,
+            phase: StoredPhase::from(phase),
         }
-    }
-}
-
-impl<S: StageName + Clone + PartialEq + Default + Send + Sync + 'static> Default
-    for StageAdvancePlugin<S>
-{
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -253,7 +259,7 @@ impl<S: StageName + Clone + PartialEq + Default + Send + Sync + 'static> Plugin
         app.set_stage_names(S::stage_names());
         app.add_update_system(
             check_stage_advance::<S>,
-            ScheduleSet::PostFinalIntegration,
+            self.phase,
         );
     }
 }

@@ -32,10 +32,10 @@
 //! The deform system runs at [`ScheduleSet::PreInitialIntegration`], updating
 //! domain bounds and remapping atoms before the Verlet position update.
 
-use mddem_app::prelude::*;
-use mddem_core::{Atom, CommResource, Config, Domain, StageOverrides};
+use sim_app::prelude::*;
+use mddem_core::{Atom, CommResource, Config, Domain, ScheduleSet, ScheduleSetupSet, StageOverrides};
 use mddem_neighbor::Neighbor;
-use mddem_scheduler::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 // ── TOML config structs ─────────────────────────────────────────────────────

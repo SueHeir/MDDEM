@@ -15,11 +15,11 @@
 //! This mirrors the standard velocity Verlet for translational motion,
 //! applied to the rotational degrees of freedom with quaternion orientation tracking.
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 
 use dem_atom::DemAtom;
-use mddem_core::{Atom, AtomDataRegistry};
+use mddem_core::{Atom, AtomDataRegistry, ScheduleSet};
 
 /// Construct a unit quaternion `[w, x, y, z]` from a unit rotation axis and angle (radians).
 #[inline]

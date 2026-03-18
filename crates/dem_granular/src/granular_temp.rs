@@ -20,10 +20,10 @@ use std::{
     io::Write,
 };
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 
-use mddem_core::{Atom, CommResource, Input, RunConfig, RunState};
+use mddem_core::{Atom, CommResource, Input, RunConfig, RunState, ScheduleSet};
 
 /// Plugin that outputs granular temperature to `data/GranularTemp.txt`.
 ///

@@ -2,7 +2,7 @@
 //!
 //! # Overview
 //!
-//! This crate provides a lightweight, Bevy-inspired scheduler for MDDEM simulations.
+//! This crate provides a lightweight, Bevy-inspired scheduler for scientific simulations.
 //! Systems are plain functions whose parameters implement [`SystemParam`]. The scheduler
 //! resolves resource indices at startup and executes systems in [`ScheduleSet`] order each
 //! timestep.
@@ -21,22 +21,22 @@
 //!
 //! # Execution Order
 //!
-//! Each timestep executes systems in [`ScheduleSet`] order:
-//!
-//! 1. `Setup` — one-time per-step bookkeeping
-//! 2. `PreInitialIntegration` → `InitialIntegration` → `PostInitialIntegration`
-//! 3. `PreExchange` → `Exchange`
-//! 4. `PreNeighbor` → `Neighbor`
-//! 5. `PreForce` → `Force` → `PostForce`
-//! 6. `PreFinalIntegration` → `FinalIntegration` → `PostFinalIntegration`
-//!
+//! Each timestep executes systems in [`SchedulePhase`] order (sorted by `to_index()`).
 //! Within each phase, systems are topologically sorted by `.before()` / `.after()` constraints.
 //! Systems with no ordering constraints run in registration order.
 //!
 //! # Example
 //!
 //! ```rust
-//! use mddem_scheduler::prelude::*;
+//! use sim_scheduler::prelude::*;
+//!
+//! #[derive(Debug, Clone, Copy)]
+//! enum MySchedule { Force }
+//!
+//! impl SchedulePhase for MySchedule {
+//!     fn to_index(&self) -> u32 { 0 }
+//!     fn name(&self) -> &'static str { "Force" }
+//! }
 //!
 //! struct Temperature(f64);
 //!
@@ -47,7 +47,7 @@
 //!
 //! let mut scheduler = Scheduler::default();
 //! scheduler.add_resource(Temperature(300.0));
-//! scheduler.add_update_system(compute_forces, ScheduleSet::Force);
+//! scheduler.add_update_system(compute_forces, MySchedule::Force);
 //! ```
 
 #![allow(clippy::too_many_arguments)]
@@ -835,95 +835,52 @@ pub struct StoredSystemEntry {
     pub condition_name: Option<String>,
 }
 
-// ─── Schedule sets ────────────────────────────────────────────────────────────
+// ─── Schedule phases ──────────────────────────────────────────────────────────
 
-/// Execution phase within each timestep (the run loop).
+/// Trait for user-definable schedule phases.
 ///
-/// Systems are sorted first by their `ScheduleSet` phase, then topologically within
-/// each phase using `before`/`after` constraints. The phases execute in the order
-/// listed below, mirroring a standard velocity-Verlet integration cycle:
+/// Any enum implementing this trait can be used as a schedule phase for
+/// [`Scheduler::add_update_system`] or [`Scheduler::add_setup_system`].
+/// The built-in [`ScheduleSet`] and [`ScheduleSetupSet`] implement this trait.
 ///
-/// | Index | Phase                    | Typical use                          |
-/// |-------|--------------------------|--------------------------------------|
-/// | 0     | `Setup`                  | Per-step bookkeeping                 |
-/// | 1–3   | `Pre/Initial/PostInitialIntegration` | First half-step velocity update |
-/// | 4–5   | `Pre/Exchange`           | Particle migration (MPI)             |
-/// | 6–7   | `Pre/Neighbor`           | Neighbor-list rebuild                |
-/// | 8–10  | `Pre/Force/PostForce`    | Force computation                    |
-/// | 11–13 | `Pre/Final/PostFinalIntegration` | Second half-step velocity update |
-#[derive(Debug)]
-pub enum ScheduleSet {
-    /// Per-step bookkeeping (e.g., incrementing timestep counters).
-    Setup,
-    /// Runs before the initial (first half-step) integration.
-    PreInitialIntegration,
-    /// First half-step velocity update (velocity-Verlet first kick).
-    InitialIntegration,
-    /// Runs after the initial integration (e.g., position updates).
-    PostInitialIntegration,
-    /// Runs before particle exchange / migration.
-    PreExchange,
-    /// Particle exchange across MPI ranks or periodic boundaries.
-    Exchange,
-    /// Runs before neighbor-list construction.
-    PreNeighbor,
-    /// Neighbor-list build / rebuild.
-    Neighbor,
-    /// Runs before force computation (e.g., zeroing force arrays).
-    PreForce,
-    /// Main force computation phase.
-    Force,
-    /// Runs after force computation (e.g., force modifications, diagnostics).
-    PostForce,
-    /// Runs before the final (second half-step) integration.
-    PreFinalIntegration,
-    /// Second half-step velocity update (velocity-Verlet second kick).
-    FinalIntegration,
-    /// Runs after final integration (e.g., output, end-of-step fixes).
-    PostFinalIntegration,
+/// Use `#[derive(SchedulePhase)]` from `mddem_derive` to auto-implement this
+/// for custom enums with `#[phase(N)]` attributes on each variant.
+pub trait SchedulePhase: Copy + Clone + std::fmt::Debug + 'static {
+    /// Returns the numeric ordering index for this phase.
+    fn to_index(&self) -> u32;
+    /// Returns the human-readable name of this phase (used in DOT output and tracing).
+    fn name(&self) -> &'static str;
 }
 
-/// Execution phase during one-time setup (before the run loop begins).
+/// A type-erased schedule phase, storing just the index and name.
 ///
-/// Setup systems run once per stage in order: `PreSetup` → `Setup` → `PostSetup`.
-#[derive(Debug)]
-pub enum ScheduleSetupSet {
-    /// Runs before the main setup phase (e.g., early resource initialization).
-    PreSetup,
-    /// Main setup phase (e.g., creating neighbor lists, reading restart files).
-    Setup,
-    /// Runs after setup (e.g., initial force computation, diagnostics).
-    PostSetup,
+/// Use this when you need to store a phase value without knowing the concrete enum type,
+/// e.g. in plugins that accept any schedule phase.
+#[derive(Clone, Copy, Debug)]
+pub struct StoredPhase {
+    index: u32,
+    name: &'static str,
 }
 
-/// Maps a [`ScheduleSet`] variant to its execution-order index (0–13).
-pub fn set_to_value(schedule_set: &ScheduleSet) -> u32 {
-    match schedule_set {
-        ScheduleSet::Setup => 0,
-        ScheduleSet::PreInitialIntegration => 1,
-        ScheduleSet::InitialIntegration => 2,
-        ScheduleSet::PostInitialIntegration => 3,
-        ScheduleSet::PreExchange => 4,
-        ScheduleSet::Exchange => 5,
-        ScheduleSet::PreNeighbor => 6,
-        ScheduleSet::Neighbor => 7,
-        ScheduleSet::PreForce => 8,
-        ScheduleSet::Force => 9,
-        ScheduleSet::PostForce => 10,
-        ScheduleSet::PreFinalIntegration => 11,
-        ScheduleSet::FinalIntegration => 12,
-        ScheduleSet::PostFinalIntegration => 13,
+impl StoredPhase {
+    /// Captures the index and name from any [`SchedulePhase`] implementor.
+    pub fn from(phase: impl SchedulePhase) -> Self {
+        Self {
+            index: phase.to_index(),
+            name: phase.name(),
+        }
     }
 }
 
-/// Maps a [`ScheduleSetupSet`] variant to its execution-order index (0–2).
-pub fn setup_set_to_value(schedule_set: &ScheduleSetupSet) -> u32 {
-    match schedule_set {
-        ScheduleSetupSet::PreSetup => 0,
-        ScheduleSetupSet::Setup => 1,
-        ScheduleSetupSet::PostSetup => 2,
+impl SchedulePhase for StoredPhase {
+    fn to_index(&self) -> u32 {
+        self.index
+    }
+    fn name(&self) -> &'static str {
+        self.name
     }
 }
+
 
 // ─── Simulation states ────────────────────────────────────────────────────────
 
@@ -1264,14 +1221,14 @@ pub fn check_stage_advance<S: StageName + Clone + PartialEq + 'static>(
 /// # Panics
 ///
 /// Panics if a cycle is detected in the `before`/`after` ordering constraints.
-fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, ScheduleSet)>) {
+fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, u32, &'static str)>) {
     let n = group.len();
     if n <= 1 {
         return;
     }
 
     let mut label_to_idx: HashMap<String, usize> = HashMap::new();
-    for (i, (entry, _)) in group.iter().enumerate() {
+    for (i, (entry, _, _)) in group.iter().enumerate() {
         // Index by system name (enables function-handle-based ordering)
         label_to_idx.insert(entry.name.clone(), i);
         // Explicit labels override if present
@@ -1283,7 +1240,7 @@ fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, ScheduleSet)>) {
     let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
     let mut in_degree: Vec<usize> = vec![0; n];
 
-    for (i, (entry, _)) in group.iter().enumerate() {
+    for (i, (entry, _, _)) in group.iter().enumerate() {
         for b in &entry.befores {
             if let Some(&j) = label_to_idx.get(b) {
                 adj[i].push(j);
@@ -1315,7 +1272,7 @@ fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, ScheduleSet)>) {
         panic!("Cycle detected in system ordering constraints within a ScheduleSet");
     }
 
-    let mut temp: Vec<Option<(StoredSystemEntry, ScheduleSet)>> =
+    let mut temp: Vec<Option<(StoredSystemEntry, u32, &'static str)>> =
         group.drain(..).map(Some).collect();
     for idx in order {
         group.push(
@@ -1342,13 +1299,15 @@ fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, ScheduleSet)>) {
 ///
 /// # Environment Variables
 ///
-/// - `MDDEM_TRACE` — when set, prints each system name to stderr as it executes.
-/// - `MDDEM_SUPPRESS_WARNINGS` — when set, suppresses schedule validation warnings.
+/// - `SIM_TRACE` — when set, prints each system name to stderr as it executes.
+/// - `SIM_SUPPRESS_WARNINGS` — when set, suppresses schedule validation warnings.
 pub struct Scheduler {
     /// Setup systems, run once per stage before the main loop.
-    setup_systems: Vec<(StoredSystemEntry, ScheduleSetupSet)>,
+    /// Tuple: (system entry, phase index for sorting, phase name for display).
+    setup_systems: Vec<(StoredSystemEntry, u32, &'static str)>,
     /// Update systems, run every timestep in the main loop.
-    update_systems: Vec<(StoredSystemEntry, ScheduleSet)>,
+    /// Tuple: (system entry, phase index for sorting, phase name for display).
+    update_systems: Vec<(StoredSystemEntry, u32, &'static str)>,
     /// Flat resource storage, indexed by position.
     pub resources: Vec<RefCell<Box<dyn Any>>>,
     /// Maps `TypeId` → index into `resources`.
@@ -1365,6 +1324,9 @@ pub struct Scheduler {
     suppress_warnings: bool,
     /// Stage names from `[[run]]` config sections (for multi-stage simulations).
     stage_names: Vec<String>,
+    /// Optional callback that produces domain-specific schedule warnings.
+    /// Receives the list of phase names from registered update systems.
+    warning_fn: Option<Box<dyn Fn(&[&str]) -> Vec<String>>>,
 }
 // ANCHOR_END: Scheduler
 
@@ -1380,9 +1342,10 @@ impl Default for Scheduler {
             print_schedule: false,
             system_timings: Vec::new(),
             timing_steps: 0,
-            trace: std::env::var("MDDEM_TRACE").is_ok(),
-            suppress_warnings: std::env::var("MDDEM_SUPPRESS_WARNINGS").is_ok(),
+            trace: std::env::var("SIM_TRACE").is_ok(),
+            suppress_warnings: std::env::var("SIM_SUPPRESS_WARNINGS").is_ok(),
             stage_names: Vec::new(),
+            warning_fn: None,
         }
     }
 }
@@ -1399,15 +1362,15 @@ impl Scheduler {
     /// - If a cycle is detected in `before`/`after` ordering constraints.
     pub fn organize_systems(&mut self) {
         self.setup_systems
-            .sort_by_key(|(_, f)| setup_set_to_value(f));
-        self.update_systems.sort_by_key(|(_, f)| set_to_value(f));
+            .sort_by_key(|(_, idx, _)| *idx);
+        self.update_systems.sort_by_key(|(_, idx, _)| *idx);
 
         // Topo sort within each ScheduleSet group
         let all = std::mem::take(&mut self.update_systems);
         if all.is_empty() {
             // Still prepare setup systems
             let mut errors: Vec<String> = Vec::new();
-            for (entry, _) in &mut self.setup_systems {
+            for (entry, _, _) in &mut self.setup_systems {
                 for missing in entry.system.prepare(&self.resource_index) {
                     errors.push(format!("  System \"{}\" requires `{}`", entry.name, missing));
                 }
@@ -1418,11 +1381,11 @@ impl Scheduler {
             return;
         }
 
-        let mut groups: Vec<Vec<(StoredSystemEntry, ScheduleSet)>> = Vec::new();
+        let mut groups: Vec<Vec<(StoredSystemEntry, u32, &'static str)>> = Vec::new();
         for entry in all {
-            let val = set_to_value(&entry.1);
+            let val = entry.1;
             if let Some(last) = groups.last_mut() {
-                if set_to_value(&last[0].1) == val {
+                if last[0].1 == val {
                     last.push(entry);
                     continue;
                 }
@@ -1436,18 +1399,18 @@ impl Scheduler {
 
             // Validate requires_label: every required label/name must exist in this group
             let mut known_labels: Vec<&str> = Vec::new();
-            for (entry, _) in &group {
+            for (entry, _, _) in &group {
                 known_labels.push(&entry.name);
                 if let Some(lbl) = &entry.label {
                     known_labels.push(lbl);
                 }
             }
-            for (entry, set) in &group {
+            for (entry, _, phase_name) in &group {
                 for req in &entry.requires {
                     if !known_labels.contains(&req.as_str()) {
                         errors.push(format!(
-                            "  System \"{}\" in {:?} requires label \"{}\" which is not present in that ScheduleSet",
-                            entry.name, set, req
+                            "  System \"{}\" in {} requires label \"{}\" which is not present in that ScheduleSet",
+                            entry.name, phase_name, req
                         ));
                     }
                 }
@@ -1457,12 +1420,12 @@ impl Scheduler {
         }
 
         // Prepare all systems with cached resource indices, collecting missing resource errors
-        for (entry, _) in &mut self.setup_systems {
+        for (entry, _, _) in &mut self.setup_systems {
             for missing in entry.system.prepare(&self.resource_index) {
                 errors.push(format!("  System \"{}\" requires `{}`", entry.name, missing));
             }
         }
-        for (entry, _) in &mut self.update_systems {
+        for (entry, _, _) in &mut self.update_systems {
             for missing in entry.system.prepare(&self.resource_index) {
                 errors.push(format!("  System \"{}\" requires `{}`", entry.name, missing));
             }
@@ -1480,60 +1443,22 @@ impl Scheduler {
 
     /// Returns warning strings for suspicious schedule configurations.
     /// Called at the end of `organize_systems()` to print warnings to stderr.
-    fn schedule_warnings(&self) -> Vec<String> {
-        let mut warnings = Vec::new();
+    ///
+    /// Delegates to the registered `warning_fn` callback if one has been set
+    /// via [`set_warning_fn`](Self::set_warning_fn). Returns an empty list if
+    /// no callback is registered.
+    pub fn schedule_warnings(&self) -> Vec<String> {
         if self.update_systems.is_empty() {
-            return warnings;
+            return Vec::new();
         }
-
-        // Build a bool array: which ScheduleSets have at least one system?
-        let mut has_systems = [false; 14];
-        for (_, set) in &self.update_systems {
-            has_systems[set_to_value(set) as usize] = true;
+        match &self.warning_fn {
+            Some(f) => {
+                let phase_names: Vec<&str> =
+                    self.update_systems.iter().map(|(_, _, name)| *name).collect();
+                f(&phase_names)
+            }
+            None => Vec::new(),
         }
-
-        // Count total update systems (excluding Setup slot 0)
-        let update_count: usize = has_systems[1..].iter().filter(|&&b| b).count();
-
-        // 1. No Force systems — warn if schedule is non-empty but Force set is empty
-        if update_count > 0 && !has_systems[set_to_value(&ScheduleSet::Force) as usize] {
-            warnings.push(
-                "[MDDEM Warning] No systems registered in the Force schedule set. \
-                 Forces will not be computed. Did you forget a force plugin?"
-                    .to_string(),
-            );
-        }
-
-        // 2. Asymmetric Verlet — InitialIntegration without FinalIntegration or vice versa
-        let has_initial = has_systems[set_to_value(&ScheduleSet::InitialIntegration) as usize]
-            || has_systems[set_to_value(&ScheduleSet::PreInitialIntegration) as usize];
-        let has_final = has_systems[set_to_value(&ScheduleSet::FinalIntegration) as usize]
-            || has_systems[set_to_value(&ScheduleSet::PostFinalIntegration) as usize];
-        if has_initial && !has_final {
-            warnings.push(
-                "[MDDEM Warning] InitialIntegration has systems but FinalIntegration is empty. \
-                 This produces an asymmetric Verlet integration."
-                    .to_string(),
-            );
-        } else if !has_initial && has_final {
-            warnings.push(
-                "[MDDEM Warning] FinalIntegration has systems but InitialIntegration is empty. \
-                 This produces an asymmetric Verlet integration."
-                    .to_string(),
-            );
-        }
-
-        // 3. No integrator — many update systems but no integration at all
-        if update_count > 2 && !has_initial && !has_final {
-            warnings.push(
-                "[MDDEM Warning] Schedule has update systems but no integrator \
-                 (neither InitialIntegration nor FinalIntegration has systems). \
-                 Particles will not move."
-                    .to_string(),
-            );
-        }
-
-        warnings
     }
 
     fn validate_schedule(&self) {
@@ -1547,16 +1472,16 @@ impl Scheduler {
 
     /// Runs all setup systems in order. Called once per stage before the run loop.
     pub fn setup(&mut self) {
-        for (entry, _set) in self.setup_systems.iter_mut() {
+        for (entry, _, _) in self.setup_systems.iter_mut() {
             entry.system.run(&self.resources);
         }
     }
 
     /// Executes one timestep: runs all update systems in order, recording per-system timing.
     pub fn run(&mut self) {
-        for (idx, (entry, set)) in self.update_systems.iter_mut().enumerate() {
+        for (idx, (entry, _, phase_name)) in self.update_systems.iter_mut().enumerate() {
             if self.trace {
-                eprintln!("[step {}] {:?}: {}", self.timing_steps, set, entry.name);
+                eprintln!("[step {}] {}: {}", self.timing_steps, phase_name, entry.name);
             }
             let t0 = std::time::Instant::now();
             entry.system.run(&self.resources);
@@ -1605,7 +1530,7 @@ impl Scheduler {
             let total: f64 = self.system_timings.iter().sum();
             let mut sorted: Vec<_> = self.update_systems.iter()
                 .zip(self.system_timings.iter())
-                .map(|((entry, _), &time)| (&entry.name, time))
+                .map(|((entry, _, _), &time)| (&entry.name, time))
                 .collect::<Vec<_>>();
             sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             println!("\n--- Per-system timing ({} steps) ---", self.timing_steps);
@@ -1624,20 +1549,20 @@ impl Scheduler {
     pub fn add_setup_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
-        schedule_set: ScheduleSetupSet,
+        schedule_set: impl SchedulePhase,
     ) {
         self.setup_systems
-            .push((system.into_stored(), schedule_set));
+            .push((system.into_stored(), schedule_set.to_index(), schedule_set.name()));
     }
 
     /// Registers a system to run every timestep in the given [`ScheduleSet`] phase.
     pub fn add_update_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
-        schedule_set: ScheduleSet,
+        schedule_set: impl SchedulePhase,
     ) {
         self.update_systems
-            .push((system.into_stored(), schedule_set));
+            .push((system.into_stored(), schedule_set.to_index(), schedule_set.name()));
     }
 
     /// Removes an update system by its function handle (matching on `type_name`).
@@ -1648,13 +1573,13 @@ impl Scheduler {
         let sys = system.into_system();
         let name = sys.name();
         self.update_systems
-            .retain(|(entry, _)| entry.name != name);
+            .retain(|(entry, _, _)| entry.name != name);
     }
 
     /// Removes all update systems whose explicit label matches `label`.
     pub fn remove_update_system_by_label(&mut self, label: &str) {
         self.update_systems
-            .retain(|(entry, _)| entry.label.as_deref() != Some(label));
+            .retain(|(entry, _, _)| entry.label.as_deref() != Some(label));
     }
 
     /// Registers a default [`SchedulerManager`] resource (called automatically by [`start`](Self::start)).
@@ -1710,6 +1635,16 @@ impl Scheduler {
         self.stage_names = names.iter().map(|s| s.to_string()).collect();
     }
 
+    /// Registers a callback that produces domain-specific schedule warnings.
+    ///
+    /// The callback receives a slice of phase names (one per registered update system)
+    /// and should return a `Vec<String>` of warning messages. These are printed to
+    /// stderr at the end of [`organize_systems`](Self::organize_systems) unless
+    /// warnings are suppressed.
+    pub fn set_warning_fn(&mut self, f: impl Fn(&[&str]) -> Vec<String> + 'static) {
+        self.warning_fn = Some(Box::new(f));
+    }
+
     fn short_name(full: &str) -> String {
         let parts: Vec<&str> = full.rsplitn(3, "::").collect();
         match parts.len() {
@@ -1720,11 +1655,11 @@ impl Scheduler {
     }
 
     fn condition_short_name(full: &str) -> String {
-        // in_state closure: "mddem_scheduler::in_state::{{closure}}" → "in_state(..)"
+        // in_state closure: "sim_scheduler::in_state::{{closure}}" → "in_state(..)"
         if full.contains("in_state") && full.contains("{{closure}}") {
             return "in_state(..)".to_string();
         }
-        // first_stage_only closure: "mddem_scheduler::first_stage_only::{{closure}}" → "first_stage_only()"
+        // first_stage_only closure: "sim_scheduler::first_stage_only::{{closure}}" → "first_stage_only()"
         if full.contains("first_stage_only") && full.contains("{{closure}}") {
             return "first_stage_only()".to_string();
         }
@@ -1750,11 +1685,10 @@ impl Scheduler {
     pub fn print_schedule(&self) {
         println!("\n═══ Setup Systems ═══");
         let mut last_set: Option<u32> = None;
-        for (entry, set) in &self.setup_systems {
-            let val = setup_set_to_value(set);
-            if last_set != Some(val) {
-                println!("  [{:?}]", set);
-                last_set = Some(val);
+        for (entry, idx, phase_name) in &self.setup_systems {
+            if last_set != Some(*idx) {
+                println!("  [{}]", phase_name);
+                last_set = Some(*idx);
             }
             let short = Self::short_name(&entry.name);
             if let Some(lbl) = &entry.label {
@@ -1776,11 +1710,10 @@ impl Scheduler {
 
         println!("\n═══ Update Systems (per-step) ═══");
         let mut last_set: Option<u32> = None;
-        for (entry, set) in &self.update_systems {
-            let val = set_to_value(set);
-            if last_set != Some(val) {
-                println!("  [{:?}]", set);
-                last_set = Some(val);
+        for (entry, idx, phase_name) in &self.update_systems {
+            if last_set != Some(*idx) {
+                println!("  [{}]", phase_name);
+                last_set = Some(*idx);
             }
             let short = Self::short_name(&entry.name);
             if let Some(lbl) = &entry.label {
@@ -1904,8 +1837,8 @@ impl Scheduler {
 
         // Build setup groups once
         let mut setup_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
-        for (i, (entry, set)) in self.setup_systems.iter().enumerate() {
-            let set_name = format!("{:?}", set);
+        for (i, (entry, _, phase_name)) in self.setup_systems.iter().enumerate() {
+            let set_name = phase_name.to_string();
             if let Some(last) = setup_groups.last_mut() {
                 if last.0 == set_name {
                     last.1.push((i, entry));
@@ -1984,8 +1917,8 @@ impl Scheduler {
 
         // Update systems
         let mut update_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
-        for (i, (entry, set)) in self.update_systems.iter().enumerate() {
-            let set_name = format!("{:?}", set);
+        for (i, (entry, _, phase_name)) in self.update_systems.iter().enumerate() {
+            let set_name = phase_name.to_string();
             if let Some(last) = update_groups.last_mut() {
                 if last.0 == set_name {
                     last.1.push((i, entry));
@@ -2019,12 +1952,12 @@ impl Scheduler {
 
         // Before/after constraint edges
         let mut label_to_node: HashMap<String, String> = HashMap::new();
-        for (i, (entry, _)) in self.update_systems.iter().enumerate() {
+        for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
             if let Some(lbl) = &entry.label {
                 label_to_node.insert(lbl.clone(), node_id("update", i));
             }
         }
-        for (i, (entry, _)) in self.update_systems.iter().enumerate() {
+        for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
             let from = node_id("update", i);
             for b in &entry.befores {
                 if let Some(target) = label_to_node.get(b) {
@@ -2041,7 +1974,7 @@ impl Scheduler {
                 }
             }
         }
-        for (i, (entry, _)) in self.update_systems.iter().enumerate() {
+        for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
             let from = node_id("update", i);
             for req in &entry.requires {
                 if let Some(target) = label_to_node.get(req) {
@@ -2104,11 +2037,11 @@ impl Scheduler {
 
             // ── Setup systems within this stage ──────────────────────────
             let mut stage_setup_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
-            for (i, (entry, set)) in self.setup_systems.iter().enumerate() {
+            for (i, (entry, _, phase_name)) in self.setup_systems.iter().enumerate() {
                 if !self.setup_visible_in_stage(entry, si) {
                     continue;
                 }
-                let set_name = format!("{:?}", set);
+                let set_name = phase_name.to_string();
                 if let Some(last) = stage_setup_groups.last_mut() {
                     if last.0 == set_name {
                         last.1.push((i, entry));
@@ -2134,11 +2067,11 @@ impl Scheduler {
 
             // ── Update systems within this stage ─────────────────────────
             let mut stage_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
-            for (i, (entry, set)) in self.update_systems.iter().enumerate() {
+            for (i, (entry, _, phase_name)) in self.update_systems.iter().enumerate() {
                 if !self.system_visible_in_stage(entry, si) {
                     continue;
                 }
-                let set_name = format!("{:?}", set);
+                let set_name = phase_name.to_string();
                 if let Some(last) = stage_groups.last_mut() {
                     if last.0 == set_name {
                         last.1.push((i, entry));
@@ -2219,13 +2152,13 @@ impl Scheduler {
 
             // Before/after constraint edges
             let mut label_to_node: HashMap<String, String> = HashMap::new();
-            for (i, (entry, _)) in self.update_systems.iter().enumerate() {
+            for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
                 if !self.system_visible_in_stage(entry, si) { continue; }
                 if let Some(lbl) = &entry.label {
                     label_to_node.insert(lbl.clone(), node_id(&prefix, i));
                 }
             }
-            for (i, (entry, _)) in self.update_systems.iter().enumerate() {
+            for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
                 if !self.system_visible_in_stage(entry, si) { continue; }
                 let from = node_id(&prefix, i);
                 for b in &entry.befores {
@@ -2243,7 +2176,7 @@ impl Scheduler {
                     }
                 }
             }
-            for (i, (entry, _)) in self.update_systems.iter().enumerate() {
+            for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
                 if !self.system_visible_in_stage(entry, si) { continue; }
                 let from = node_id(&prefix, i);
                 for req in &entry.requires {
@@ -2279,15 +2212,15 @@ impl Scheduler {
 
             // Find last update node of current stage
             let last_node = self.update_systems.iter().enumerate().rev()
-                .find(|(_, (entry, _))| self.system_visible_in_stage(entry, si))
+                .find(|(_, (entry, _, _))| self.system_visible_in_stage(entry, si))
                 .map(|(i, _)| node_id(&this_prefix, i));
 
             // Find first node of next stage (setup first, then update)
             let first_node = self.setup_systems.iter().enumerate()
-                .find(|(_, (entry, _))| self.setup_visible_in_stage(entry, si + 1))
+                .find(|(_, (entry, _, _))| self.setup_visible_in_stage(entry, si + 1))
                 .map(|(i, _)| node_id(&next_setup_prefix, i))
                 .or_else(|| self.update_systems.iter().enumerate()
-                    .find(|(_, (entry, _))| self.system_visible_in_stage(entry, si + 1))
+                    .find(|(_, (entry, _, _))| self.system_visible_in_stage(entry, si + 1))
                     .map(|(i, _)| node_id(&next_prefix, i)));
 
             if let (Some(from), Some(to)) = (last_node, first_node) {
@@ -2373,15 +2306,15 @@ pub mod prelude {
         NextState,
         Res,
         ResMut,
-        // System scheduling
-        ScheduleSet,
-        ScheduleSetupSet,
         // Core DI
         Scheduler,
         SchedulerManager,
         SchedulerState,
         // Stage enum trait
         StageName,
+        // Schedule phase trait (for user-definable schedule phases)
+        SchedulePhase,
+        StoredPhase,
         // System ordering
         SystemDescriptor,
         // Run conditions
@@ -2393,6 +2326,40 @@ pub mod prelude {
 mod tests {
     use super::*;
 
+    // Test schedule that mirrors the standard Verlet phase names (for warning tests)
+    #[derive(Clone, Copy, Debug)]
+    enum TestSchedule {
+        InitialIntegration,
+        Exchange,
+        Force,
+        PostForce,
+        FinalIntegration,
+        PostFinalIntegration,
+    }
+
+    impl SchedulePhase for TestSchedule {
+        fn to_index(&self) -> u32 {
+            match self {
+                TestSchedule::InitialIntegration => 2,
+                TestSchedule::Exchange => 5,
+                TestSchedule::Force => 9,
+                TestSchedule::PostForce => 10,
+                TestSchedule::FinalIntegration => 12,
+                TestSchedule::PostFinalIntegration => 13,
+            }
+        }
+        fn name(&self) -> &'static str {
+            match self {
+                TestSchedule::InitialIntegration => "InitialIntegration",
+                TestSchedule::Exchange => "Exchange",
+                TestSchedule::Force => "Force",
+                TestSchedule::PostForce => "PostForce",
+                TestSchedule::FinalIntegration => "FinalIntegration",
+                TestSchedule::PostFinalIntegration => "PostFinalIntegration",
+            }
+        }
+    }
+
     struct MyResource(i32);
 
     fn system_requiring_resource(_res: Res<MyResource>) {}
@@ -2401,7 +2368,7 @@ mod tests {
     #[should_panic(expected = "Schedule validation errors")]
     fn missing_resource_panics_at_organize() {
         let mut scheduler = Scheduler::default();
-        scheduler.add_update_system(system_requiring_resource, ScheduleSet::Force);
+        scheduler.add_update_system(system_requiring_resource, TestSchedule::Force);
         scheduler.organize_systems();
     }
 
@@ -2412,7 +2379,7 @@ mod tests {
     #[test]
     fn optional_resource_works_when_missing() {
         let mut scheduler = Scheduler::default();
-        scheduler.add_update_system(system_with_optional_resource, ScheduleSet::Force);
+        scheduler.add_update_system(system_with_optional_resource, TestSchedule::Force);
         scheduler.organize_systems();
         scheduler.add_scheduler_manager();
         scheduler.organize_systems();
@@ -2428,7 +2395,7 @@ mod tests {
     fn optional_resource_works_when_present() {
         let mut scheduler = Scheduler::default();
         scheduler.add_resource(MyResource(42));
-        scheduler.add_update_system(system_with_optional_present, ScheduleSet::Force);
+        scheduler.add_update_system(system_with_optional_present, TestSchedule::Force);
         scheduler.add_scheduler_manager();
         scheduler.organize_systems();
         scheduler.run();
@@ -2439,7 +2406,7 @@ mod tests {
         let mut scheduler = Scheduler::default();
         scheduler.add_update_system(
             system_requiring_resource.label("my_system"),
-            ScheduleSet::Force,
+            TestSchedule::Force,
         );
         assert_eq!(scheduler.update_systems.len(), 1);
         scheduler.remove_update_system_by_label("my_system");
@@ -2451,7 +2418,7 @@ mod tests {
     #[test]
     fn remove_update_system_by_function() {
         let mut scheduler = Scheduler::default();
-        scheduler.add_update_system(dummy_system, ScheduleSet::Force);
+        scheduler.add_update_system(dummy_system, TestSchedule::Force);
         assert_eq!(scheduler.update_systems.len(), 1);
         scheduler.remove_update_system(dummy_system);
         assert_eq!(scheduler.update_systems.len(), 0);
@@ -2469,7 +2436,7 @@ mod tests {
         scheduler.suppress_warnings = true;
         scheduler.add_update_system(
             force_b.label("force_b").requires_label("force_a"),
-            ScheduleSet::Force,
+            TestSchedule::Force,
         );
         scheduler.organize_systems();
     }
@@ -2478,10 +2445,10 @@ mod tests {
     fn requires_label_passes_when_present() {
         let mut scheduler = Scheduler::default();
         scheduler.suppress_warnings = true;
-        scheduler.add_update_system(force_a.label("force_a"), ScheduleSet::Force);
+        scheduler.add_update_system(force_a.label("force_a"), TestSchedule::Force);
         scheduler.add_update_system(
             force_b.label("force_b").requires_label("force_a"),
-            ScheduleSet::Force,
+            TestSchedule::Force,
         );
         scheduler.organize_systems();
     }
@@ -2500,7 +2467,7 @@ mod tests {
                 .label("force_b")
                 .requires_label("force_a")
                 .run_if(always_true),
-            ScheduleSet::Force,
+            TestSchedule::Force,
         );
         scheduler.organize_systems();
     }
@@ -2509,82 +2476,42 @@ mod tests {
     fn requires_label_passes_with_run_if() {
         let mut scheduler = Scheduler::default();
         scheduler.suppress_warnings = true;
-        scheduler.add_update_system(force_a.label("force_a"), ScheduleSet::Force);
+        scheduler.add_update_system(force_a.label("force_a"), TestSchedule::Force);
         scheduler.add_update_system(
             force_b
                 .label("force_b")
                 .requires_label("force_a")
                 .run_if(always_true),
-            ScheduleSet::Force,
+            TestSchedule::Force,
         );
         scheduler.organize_systems();
     }
 
-    // ─── validate_schedule warning tests ─────────────────────────────────────
+    // ─── warning callback tests ─────────────────────────────────────
 
     #[test]
-    fn validate_warns_no_force_systems() {
+    fn no_warnings_without_callback() {
         let mut scheduler = Scheduler::default();
-        scheduler.suppress_warnings = true;
-        scheduler.add_update_system(force_a, ScheduleSet::InitialIntegration);
-        scheduler.add_update_system(force_b, ScheduleSet::FinalIntegration);
+        scheduler.add_update_system(force_a, TestSchedule::InitialIntegration);
         scheduler.organize_systems();
         let warnings = scheduler.schedule_warnings();
-        assert!(
-            warnings.iter().any(|w| w.contains("Force")),
-            "Expected warning about missing Force systems, got: {:?}",
-            warnings
-        );
+        assert!(warnings.is_empty(), "Expected no warnings without callback, got: {:?}", warnings);
     }
 
     #[test]
-    fn validate_warns_asymmetric_verlet() {
+    fn warning_callback_receives_phase_names() {
         let mut scheduler = Scheduler::default();
-        scheduler.suppress_warnings = true;
-        scheduler.add_update_system(force_a, ScheduleSet::InitialIntegration);
-        scheduler.add_update_system(force_b, ScheduleSet::Force);
+        scheduler.set_warning_fn(|phases: &[&str]| {
+            if phases.iter().any(|p| *p == "Force") {
+                vec!["found Force".to_string()]
+            } else {
+                vec!["no Force".to_string()]
+            }
+        });
+        scheduler.add_update_system(force_a, TestSchedule::Force);
         scheduler.organize_systems();
         let warnings = scheduler.schedule_warnings();
-        assert!(
-            warnings.iter().any(|w| w.contains("asymmetric")),
-            "Expected warning about asymmetric Verlet, got: {:?}",
-            warnings
-        );
-    }
-
-    #[test]
-    fn validate_warns_no_integrator() {
-        let mut scheduler = Scheduler::default();
-        scheduler.suppress_warnings = true;
-        fn sys_a() {}
-        fn sys_b() {}
-        fn sys_c() {}
-        scheduler.add_update_system(sys_a, ScheduleSet::Force);
-        scheduler.add_update_system(sys_b, ScheduleSet::PostForce);
-        scheduler.add_update_system(sys_c, ScheduleSet::Exchange);
-        scheduler.organize_systems();
-        let warnings = scheduler.schedule_warnings();
-        assert!(
-            warnings.iter().any(|w| w.contains("no integrator")),
-            "Expected warning about no integrator, got: {:?}",
-            warnings
-        );
-    }
-
-    #[test]
-    fn validate_no_warnings_for_normal_schedule() {
-        let mut scheduler = Scheduler::default();
-        scheduler.suppress_warnings = true;
-        scheduler.add_update_system(force_a, ScheduleSet::InitialIntegration);
-        scheduler.add_update_system(force_b, ScheduleSet::Force);
-        scheduler.add_update_system(force_a, ScheduleSet::FinalIntegration);
-        scheduler.organize_systems();
-        let warnings = scheduler.schedule_warnings();
-        assert!(
-            warnings.is_empty(),
-            "Expected no warnings, got: {:?}",
-            warnings
-        );
+        assert_eq!(warnings, vec!["found Force"]);
     }
 
     // ─── function-handle-based ordering tests ─────────────────────────────────
@@ -2606,9 +2533,8 @@ mod tests {
         let mut scheduler = Scheduler::default();
         scheduler.suppress_warnings = true;
         scheduler.add_resource(Counter(0));
-        // Register in reverse order — .after() should fix it
-        scheduler.add_update_system(sys_second.after(sys_first), ScheduleSet::Force);
-        scheduler.add_update_system(sys_first, ScheduleSet::Force);
+        scheduler.add_update_system(sys_second.after(sys_first), TestSchedule::Force);
+        scheduler.add_update_system(sys_first, TestSchedule::Force);
         scheduler.add_scheduler_manager();
         scheduler.organize_systems();
         scheduler.run();
@@ -2621,9 +2547,8 @@ mod tests {
         let mut scheduler = Scheduler::default();
         scheduler.suppress_warnings = true;
         scheduler.add_resource(Counter(0));
-        // Register in reverse order — .before() should fix it
-        scheduler.add_update_system(sys_second, ScheduleSet::Force);
-        scheduler.add_update_system(sys_first.before(sys_second), ScheduleSet::Force);
+        scheduler.add_update_system(sys_second, TestSchedule::Force);
+        scheduler.add_update_system(sys_first.before(sys_second), TestSchedule::Force);
         scheduler.add_scheduler_manager();
         scheduler.organize_systems();
         scheduler.run();
@@ -2635,10 +2560,10 @@ mod tests {
     fn fn_handle_requires_label_passes() {
         let mut scheduler = Scheduler::default();
         scheduler.suppress_warnings = true;
-        scheduler.add_update_system(force_a, ScheduleSet::Force);
+        scheduler.add_update_system(force_a, TestSchedule::Force);
         scheduler.add_update_system(
             force_b.requires_label(force_a),
-            ScheduleSet::Force,
+            TestSchedule::Force,
         );
         scheduler.organize_systems();
     }
@@ -2650,7 +2575,7 @@ mod tests {
         scheduler.suppress_warnings = true;
         scheduler.add_update_system(
             force_b.requires_label(force_a),
-            ScheduleSet::Force,
+            TestSchedule::Force,
         );
         scheduler.organize_systems();
     }
@@ -2660,12 +2585,79 @@ mod tests {
         let mut scheduler = Scheduler::default();
         scheduler.suppress_warnings = true;
         scheduler.add_resource(Counter(0));
-        scheduler.add_update_system(sys_second.after("first"), ScheduleSet::Force);
-        scheduler.add_update_system(sys_first.label("first"), ScheduleSet::Force);
+        scheduler.add_update_system(sys_second.after("first"), TestSchedule::Force);
+        scheduler.add_update_system(sys_first.label("first"), TestSchedule::Force);
         scheduler.add_scheduler_manager();
         scheduler.organize_systems();
         scheduler.run();
         let c = scheduler.get_resource_ref::<Counter>().unwrap();
         assert_eq!(c.0, 2);
+    }
+
+    // ─── Custom SchedulePhase tests ─────────────────────────────────────────
+
+    #[derive(Clone, Copy, Debug)]
+    enum CustomSchedule {
+        PhaseA,
+        PhaseB,
+        PhaseC,
+    }
+
+    impl SchedulePhase for CustomSchedule {
+        fn to_index(&self) -> u32 {
+            match self {
+                CustomSchedule::PhaseA => 0,
+                CustomSchedule::PhaseB => 1,
+                CustomSchedule::PhaseC => 2,
+            }
+        }
+        fn name(&self) -> &'static str {
+            match self {
+                CustomSchedule::PhaseA => "PhaseA",
+                CustomSchedule::PhaseB => "PhaseB",
+                CustomSchedule::PhaseC => "PhaseC",
+            }
+        }
+    }
+
+    struct ExecutionLog(Vec<&'static str>);
+
+    fn custom_phase_a(mut log: ResMut<ExecutionLog>) {
+        log.0.push("A");
+    }
+
+    fn custom_phase_b(mut log: ResMut<ExecutionLog>) {
+        log.0.push("B");
+    }
+
+    fn custom_phase_c(mut log: ResMut<ExecutionLog>) {
+        log.0.push("C");
+    }
+
+    #[test]
+    fn custom_schedule_phase_ordering() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_resource(ExecutionLog(Vec::new()));
+        // Register in reverse order to verify sorting
+        scheduler.add_update_system(custom_phase_c, CustomSchedule::PhaseC);
+        scheduler.add_update_system(custom_phase_a, CustomSchedule::PhaseA);
+        scheduler.add_update_system(custom_phase_b, CustomSchedule::PhaseB);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+        let log = scheduler.get_resource_ref::<ExecutionLog>().unwrap();
+        assert_eq!(log.0, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn custom_schedule_no_warnings_without_callback() {
+        let mut scheduler = Scheduler::default();
+        scheduler.add_resource(ExecutionLog(Vec::new()));
+        scheduler.add_update_system(custom_phase_a, CustomSchedule::PhaseA);
+        scheduler.add_update_system(custom_phase_b, CustomSchedule::PhaseB);
+        // No warnings should fire — no warning callback registered
+        let warnings = scheduler.schedule_warnings();
+        assert!(warnings.is_empty(), "Expected no warnings without callback, got: {:?}", warnings);
     }
 }

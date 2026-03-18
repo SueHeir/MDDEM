@@ -22,11 +22,11 @@
 
 use std::any::Any;
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 
 use dem_atom::{DemAtom, MaterialTable};
-use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry};
+use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, ScheduleSet};
 use mddem_neighbor::Neighbor;
 
 use crate::{SQRT_5_3, TANGENTIAL_EPSILON};

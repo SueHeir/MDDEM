@@ -37,10 +37,10 @@
 
 use std::collections::HashMap;
 
-use mddem_app::prelude::*;
-use mddem_core::{Atom, CommResource, Config, RunState};
+use sim_app::prelude::*;
+use mddem_core::{Atom, CommResource, Config, RunState, ScheduleSet};
 use mddem_print::Thermo;
-use mddem_scheduler::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 // ── Configuration ───────────────────────────────────────────────────────────

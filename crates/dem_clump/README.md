@@ -49,7 +49,7 @@ region = { type = "block", min = [0, 0, 0.01], max = [0.01, 0.01, 0.02] }
 
 ```rust
 use dem_clump::{ClumpPlugin, ClumpRegistry};
-use mddem_app::App;
+use sim_app::App;
 
 let mut app = App::new();
 app.add_plugin(ClumpPlugin);

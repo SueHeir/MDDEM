@@ -1,21 +1,21 @@
-# mddem_scheduler
+# sim_scheduler
 
-A lightweight, Bevy-inspired dependency-injection scheduler for MDDEM simulations.
+A lightweight, Bevy-inspired dependency-injection scheduler for scientific simulations.
 
 ## What It Does
 
-Systems are plain functions that declare the resources they need as parameters. The scheduler automatically injects typed resources, manages execution order across well-defined lifecycle phases (`ScheduleSet`), and supports conditional execution and simulation states.
+Systems are plain functions that declare the resources they need as parameters. The scheduler automatically injects typed resources, manages execution order across user-defined lifecycle phases (`SchedulePhase`), and supports conditional execution and simulation states.
 
 ## Key Types
 
-- **`ScheduleSet`** — Execution phases in order: `PreInitialIntegration`, `InitialIntegration`, `PostInitialIntegration`, `PreExchange`, `Exchange`, `PreNeighbor`, `Neighbor`, `PreForce`, `Force`, `PostForce`, `PreFinalIntegration`, `FinalIntegration`, `PostFinalIntegration`.
+- **`SchedulePhase`** — Trait for defining custom execution phases. Implement on your own enum or use `#[derive(SchedulePhase)]`.
 - **`Res<T>` / `ResMut<T>`** — Resource access (read-only / mutable). The scheduler validates that all required resources are registered before execution starts.
 - **`Local<T>`** — Per-system persistent state, unshared with other systems.
 - **`Option<Res<T>>`** — Optional resources; systems are not skipped if missing.
 
 ## Ordering & Conditions
 
-Within a `ScheduleSet`, systems are topologically sorted using `.before()` / `.after()` constraints. Run conditions gate execution:
+Within a schedule phase, systems are topologically sorted using `.before()` / `.after()` constraints. Run conditions gate execution:
 
 ```rust
 fn every_n_steps(n: u64) -> impl Fn(Res<RunState>) -> bool {
@@ -31,7 +31,7 @@ app.add_update_system(
 ## Quick Example
 
 ```rust
-use mddem_scheduler::prelude::*;
+use sim_scheduler::prelude::*;
 
 struct Temperature(f64);
 
@@ -41,7 +41,8 @@ fn compute_forces(temp: Res<Temperature>) {
 
 let mut scheduler = Scheduler::default();
 scheduler.add_resource(Temperature(300.0));
-scheduler.add_update_system(compute_forces, ScheduleSet::Force);
+// Use any type implementing SchedulePhase as the phase argument
+scheduler.add_update_system(compute_forces, MySchedule::Force);
 ```
 
 See inline crate documentation for full details on system states, labels, and run conditions.

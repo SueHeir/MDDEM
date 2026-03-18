@@ -75,9 +75,9 @@
 //! k_angle = 25.0
 //! ```
 
-use mddem_app::prelude::*;
-use mddem_core::{AnglePlugin, AngleStore, Atom, AtomDataRegistry, BondStore, Config, Domain, VirialStress};
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use mddem_core::{AnglePlugin, AngleStore, Atom, AtomDataRegistry, BondStore, Config, Domain, ScheduleSet, VirialStress};
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 // ── Config defaults ─────────────────────────────────────────────────────────

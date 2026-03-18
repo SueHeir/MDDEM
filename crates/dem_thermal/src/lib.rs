@@ -55,14 +55,14 @@
 //! [`ThermalPlugin`] requires `DemAtomPlugin` (for particle radii) and
 //! `NeighborPlugin` (for contact pair iteration).
 
-use mddem_app::prelude::*;
+use sim_app::prelude::*;
 use mddem_derive::AtomData;
-use mddem_scheduler::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 use dem_atom::DemAtom;
 use dem_wall::Walls;
-use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, Config};
+use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, Config, ScheduleSet, ScheduleSetupSet};
 use mddem_neighbor::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────

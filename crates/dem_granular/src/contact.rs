@@ -33,12 +33,12 @@
 //!
 //! See the [crate-level documentation](crate) for the full material parameter list.
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 
 use dem_atom::{DemAtom, MaterialTable};
 use dem_clump::ClumpAtom;
-use mddem_core::{register_atom_data, Atom, AtomDataRegistry, BondStore, VirialStress, VirialStressPlugin};
+use mddem_core::{register_atom_data, Atom, AtomDataRegistry, BondStore, ScheduleSet, VirialStress, VirialStressPlugin};
 use mddem_neighbor::Neighbor;
 
 use crate::tangential::ContactHistoryStore;

@@ -10,8 +10,8 @@ categories = ["simulation", "science"]
 
 [dependencies]
 mddem_core = { path = "../mddem_core", version = "0.1.3", default-features = false }
-mddem_app = { path = "../mddem_app", version = "0.1.3" }
-mddem_scheduler = { path = "../mddem_scheduler", version = "0.1.3" }
+sim_app = { path = "../sim_app", version = "0.1.3" }
+sim_scheduler = { path = "../sim_scheduler", version = "0.1.3" }
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

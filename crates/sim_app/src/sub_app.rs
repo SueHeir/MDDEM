@@ -10,8 +10,8 @@ use std::{
     collections::HashSet,
 };
 
-use mddem_scheduler::{
-    IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetupSet, Scheduler,
+use sim_scheduler::{
+    IntoScheduledSystem, IntoSystem, SchedulePhase, Scheduler,
 };
 
 /// A self-contained simulation world: one [`Scheduler`] with its resource store
@@ -54,20 +54,20 @@ impl SubApp {
         self.scheduler.run();
     }
 
-    /// Registers a system to run during the setup phase at the given [`ScheduleSetupSet`].
+    /// Registers a system to run during the setup phase at the given schedule phase.
     pub fn add_setup_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
-        schedule_set: ScheduleSetupSet,
+        schedule_set: impl SchedulePhase,
     ) {
         self.scheduler.add_setup_system(system, schedule_set);
     }
 
-    /// Registers a system to run every timestep at the given [`ScheduleSet`].
+    /// Registers a system to run every timestep at the given schedule phase.
     pub fn add_update_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
-        schedule_set: ScheduleSet,
+        schedule_set: impl SchedulePhase,
     ) {
         self.scheduler.add_update_system(system, schedule_set);
     }
@@ -88,7 +88,7 @@ impl SubApp {
     }
 
     /// Removes an update system by its concrete type.
-    pub fn remove_update_system<I, S: mddem_scheduler::System + 'static>(
+    pub fn remove_update_system<I, S: sim_scheduler::System + 'static>(
         &mut self,
         system: impl IntoSystem<I, System = S>,
     ) {
@@ -108,6 +108,11 @@ impl SubApp {
     /// Sets human-readable stage names for multi-stage simulations.
     pub fn set_stage_names(&mut self, names: &[&str]) {
         self.scheduler.set_stage_names(names);
+    }
+
+    /// Registers a callback that produces domain-specific schedule warnings.
+    pub fn set_warning_fn(&mut self, f: impl Fn(&[&str]) -> Vec<String> + 'static) {
+        self.scheduler.set_warning_fn(f);
     }
 }
 

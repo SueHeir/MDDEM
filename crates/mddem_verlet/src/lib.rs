@@ -21,10 +21,10 @@
 //! second-order accurate in Δt. It exactly integrates constant-force motion
 //! and conserves energy to O(Δt²) per step for Hamiltonian systems.
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 
-use mddem_core::Atom;
+use mddem_core::{Atom, ScheduleSet};
 
 /// Registers initial and final integration systems for translational Velocity Verlet.
 ///

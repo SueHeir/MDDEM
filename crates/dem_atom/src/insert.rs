@@ -5,14 +5,14 @@ use std::f64::consts::PI;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use rand_distr::{Distribution, Normal};
 use serde::Deserialize;
 
 use mddem_core::{
     Atom, AtomDataRegistry, CommResource, Config, Domain, Region, RunConfig, RunState,
-    StageOverrides,
+    ScheduleSet, ScheduleSetupSet, StageOverrides,
 };
 
 use crate::{DemAtom, MaterialTable, RadiusSpec};

@@ -34,11 +34,11 @@
 //! dt_max_factor = 10.0 # maximum dt = dt_max_factor × base dt
 //! ```
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, Config};
+use mddem_core::{Atom, Config, ScheduleSet};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 

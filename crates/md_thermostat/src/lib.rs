@@ -46,14 +46,14 @@
 //! # group = "mobile"   # Optional: only thermostat atoms in this group
 //! ```
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use serde::Deserialize;
 
-use mddem_core::{compute_ke, group_includes, Atom, CommResource, Config, GroupRegistry, StageOverrides};
+use mddem_core::{compute_ke, group_includes, Atom, CommResource, Config, GroupRegistry, ScheduleSet, ScheduleSetupSet, StageOverrides};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 

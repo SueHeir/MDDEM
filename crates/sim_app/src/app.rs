@@ -1,13 +1,13 @@
 //! The central [`App`] container and its supporting types.
 //!
-//! [`App`] is the entry point for every MDDEM simulation. It owns the main
+//! [`App`] is the entry point for every simulation. It owns the main
 //! [`SubApp`], coordinates plugin registration, and drives the simulation
 //! lifecycle (setup → run → cleanup).
 //!
 //! # Typical usage
 //!
 //! ```rust,ignore
-//! use mddem_app::prelude::*;
+//! use sim_app::prelude::*;
 //!
 //! App::new()
 //!     .add_plugins(MyPlugins)
@@ -19,7 +19,7 @@ use std::{
     cell::RefCell,
 };
 
-use mddem_scheduler::{IntoScheduledSystem, IntoSystem, ScheduleSet, ScheduleSetupSet};
+use sim_scheduler::{IntoScheduledSystem, IntoSystem, SchedulePhase};
 
 use crate::{Plugin, Plugins, SubApp, SubApps};
 
@@ -167,7 +167,7 @@ impl App {
             let mut borrow = cell.borrow_mut();
             let snippets = borrow
                 .downcast_mut::<ConfigSnippets>()
-                .expect("ConfigSnippets resource has wrong type — this is a bug in MDDEM");
+                .expect("ConfigSnippets resource has wrong type — this is a framework bug");
             snippets.snippets.push(snippet);
         } else {
             self.add_resource(ConfigSnippets {
@@ -210,21 +210,21 @@ impl App {
         self
     }
 
-    /// Registers a system to run during the setup phase at the given [`ScheduleSetupSet`].
+    /// Registers a system to run during the setup phase at the given schedule phase.
     pub fn add_setup_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
-        schedule_set: ScheduleSetupSet,
+        schedule_set: impl SchedulePhase,
     ) -> &mut Self {
         self.sub_apps.main.add_setup_system(system, schedule_set);
         self
     }
 
-    /// Registers a system to run every timestep at the given [`ScheduleSet`].
+    /// Registers a system to run every timestep at the given schedule phase.
     pub fn add_update_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
-        schedule_set: ScheduleSet,
+        schedule_set: impl SchedulePhase,
     ) -> &mut Self {
         self.sub_apps.main.add_update_system(system, schedule_set);
         self
@@ -277,7 +277,7 @@ impl App {
         let Some(snippets) = self.get_resource_ref::<ConfigSnippets>() else {
             return;
         };
-        println!("# MDDEM generated configuration");
+        println!("# Generated configuration");
         println!("# Default values for all registered plugins\n");
         for snippet in &snippets.snippets {
             println!("{}", snippet.trim());
@@ -293,7 +293,7 @@ impl App {
     }
 
     /// Removes an update system by its concrete type.
-    pub fn remove_update_system<I, S: mddem_scheduler::System + 'static>(
+    pub fn remove_update_system<I, S: sim_scheduler::System + 'static>(
         &mut self,
         system: impl IntoSystem<I, System = S>,
     ) -> &mut Self {
@@ -317,6 +317,12 @@ impl App {
     /// Sets human-readable stage names for multi-stage simulations.
     pub fn set_stage_names(&mut self, names: &[&str]) -> &mut Self {
         self.sub_apps.main.set_stage_names(names);
+        self
+    }
+
+    /// Registers a callback that produces domain-specific schedule warnings.
+    pub fn set_warning_fn(&mut self, f: impl Fn(&[&str]) -> Vec<String> + 'static) -> &mut Self {
+        self.sub_apps.main.set_warning_fn(f);
         self
     }
 }

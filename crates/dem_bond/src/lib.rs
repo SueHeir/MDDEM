@@ -82,12 +82,12 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 use dem_atom::DemAtom;
-use mddem_core::{Atom, AtomData, AtomDataRegistry, BondEntry, BondStore, CommResource, Config, VirialStress, VirialStressPlugin};
+use mddem_core::{Atom, AtomData, AtomDataRegistry, BondEntry, BondStore, CommResource, Config, ScheduleSet, ScheduleSetupSet, VirialStress, VirialStressPlugin};
 use mddem_print::Thermo;
 
 // ── BondConfig ──────────────────────────────────────────────────────────────

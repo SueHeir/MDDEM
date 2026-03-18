@@ -103,13 +103,13 @@
 //! | [`wall_zero_force_accumulators`] | `PreForce` | Zeros per-wall force accumulators |
 //! | [`wall_contact_force`] | `Force` | Computes Hertz contact + damping + adhesion |
 
-use mddem_app::prelude::*;
-use mddem_scheduler::prelude::*;
+use sim_app::prelude::*;
+use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 use dem_atom::{DemAtom, MaterialTable, SQRT_5_3};
 use mddem_core::region::Region;
-use mddem_core::{Atom, AtomDataRegistry, Config};
+use mddem_core::{Atom, AtomDataRegistry, Config, ScheduleSet};
 
 fn default_neg_inf() -> f64 {
     f64::NEG_INFINITY

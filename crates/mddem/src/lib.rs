@@ -41,7 +41,7 @@
 //!
 //! # Architecture
 //!
-//! Every feature is implemented as a [`Plugin`](mddem_app::Plugin) that
+//! Every feature is implemented as a [`Plugin`](sim_app::Plugin) that
 //! registers systems into a schedule. Plugins are grouped into **plugin groups**
 //! for convenience:
 //!
@@ -59,9 +59,9 @@
 //!
 //! | Crate | Description |
 //! |---|---|
-//! | [`mddem_app`] | Application framework: [`App`](mddem_app::App), [`Plugin`](mddem_app::Plugin) trait, ECS-style resources |
+//! | [`sim_app`] | Application framework: [`App`](sim_app::App), [`Plugin`](sim_app::Plugin) trait, ECS-style resources |
 //! | [`mddem_core`] | Core simulation types: [`Atom`](mddem_core::Atom), [`Config`](mddem_core::Config), domain, communication, regions |
-//! | [`mddem_scheduler`] | System scheduler with [`ScheduleSet`](mddem_scheduler::ScheduleSet) ordering |
+//! | [`sim_scheduler`] | System scheduler with [`ScheduleSet`](sim_scheduler::ScheduleSet) ordering |
 //! | [`mddem_neighbor`] | Sweep-and-prune neighbor list construction |
 //! | [`mddem_verlet`] | Velocity Verlet time integration |
 //! | [`mddem_print`] | Thermo output, dump files (CSV/binary/VTP), restart files |
@@ -185,7 +185,7 @@ pub use mddem_verlet;
 /// Initial velocity distributions (Gaussian, uniform) for particle initialization.
 pub use mddem_velocity_distribution;
 
-use mddem_app::prelude::*;
+use sim_app::prelude::*;
 
 /// Core simulation infrastructure plugin group.
 ///
@@ -207,7 +207,7 @@ use mddem_app::prelude::*;
 /// includes Velocity Verlet automatically.
 ///
 /// MPI finalization is registered as a cleanup callback and runs automatically
-/// at the end of [`App::start()`](mddem_app::App::start).
+/// at the end of [`App::start()`](sim_app::App::start).
 ///
 /// # Usage
 /// ```rust,ignore
@@ -221,7 +221,11 @@ pub struct CorePlugins;
 
 impl PluginGroup for CorePlugins {
     fn build(self) -> PluginGroupBuilder {
-        let builder = PluginGroupBuilder::start::<Self>().add(mddem_core::InputPlugin);
+        let builder = PluginGroupBuilder::start::<Self>()
+            .add(|app: &mut App| {
+                app.set_warning_fn(mddem_core::verlet_schedule_warnings);
+            })
+            .add(mddem_core::InputPlugin);
 
         builder
             .add(mddem_core::CommunicationPlugin)
@@ -309,12 +313,12 @@ impl PluginGroup for LJDefaultPlugins {
 /// - [`StageEnum`] — derive macro for multi-stage runs
 ///
 /// ## Core framework (via glob re-exports)
-/// - [`App`](mddem_app::App), [`Plugin`](mddem_app::Plugin),
-///   [`PluginGroup`](mddem_app::PluginGroup) — application framework
+/// - [`App`](sim_app::App), [`Plugin`](sim_app::Plugin),
+///   [`PluginGroup`](sim_app::PluginGroup) — application framework
 /// - [`Atom`](mddem_core::Atom), [`Config`](mddem_core::Config),
 ///   [`RunState`](mddem_core::RunState) — core simulation types
-/// - [`Res`](mddem_scheduler::Res), [`ResMut`](mddem_scheduler::ResMut) — resource accessors
-/// - [`ScheduleSet`](mddem_scheduler::ScheduleSet) — system ordering
+/// - [`Res`](sim_scheduler::Res), [`ResMut`](sim_scheduler::ResMut) — resource accessors
+/// - [`ScheduleSet`](sim_scheduler::ScheduleSet) — system ordering
 pub mod prelude {
     // Plugin groups defined in this crate
     pub use crate::{CorePlugins, LJDefaultPlugins};
@@ -346,13 +350,13 @@ pub mod prelude {
     pub use mddem_velocity_distribution::VelocityDistributionPlugin;
 
     // Derive macros
-    pub use mddem_derive::StageEnum;
+    pub use mddem_derive::{SchedulePhase, StageEnum};
 
     // Core framework re-exports (glob)
-    pub use mddem_app::prelude::*;
+    pub use sim_app::prelude::*;
     pub use mddem_core::*;
     pub use mddem_neighbor::*;
     pub use mddem_print::*;
-    pub use mddem_scheduler::prelude::*;
+    pub use sim_scheduler::prelude::*;
     pub use mddem_verlet::*;
 }
