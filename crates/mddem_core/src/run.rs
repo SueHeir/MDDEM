@@ -27,6 +27,10 @@ pub struct StageConfig {
     /// Number of timesteps to run in this stage.
     #[serde(default = "default_steps")]
     pub steps: u32,
+    /// Timestep size. If set to 0.0 (default), DEM auto-computes from Rayleigh time.
+    /// Set explicitly for rate-based insertion or when you want a specific dt.
+    #[serde(default)]
+    pub dt: f64,
     /// Print thermo output every N steps.
     #[serde(default = "default_thermo")]
     pub thermo: usize,
@@ -56,6 +60,7 @@ impl Default for StageConfig {
         StageConfig {
             name: None,
             steps: 1000,
+            dt: 0.0,
             thermo: 100,
             dump_interval: None,
             restart_interval: None,

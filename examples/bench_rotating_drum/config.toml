@@ -1,0 +1,85 @@
+# ============================================================================
+# Rotating Drum Angle of Repose Benchmark
+# ============================================================================
+#
+# 2D (quasi-3D) rotating drum with monodisperse particles.
+# The drum wall is a ring of frozen particles rotated kinematically.
+# Full Hertz-Mindlin contact (with tangential friction) between wall and mobile
+# particles drives the cascading flow.
+#
+# Froude number: Fr = omega^2 * R / g = 1.5^2 * 0.05 / 9.81 = 0.011
+# This is well within the rolling regime (Fr < 0.1).
+
+# ── Domain ────────────────────────────────────────────────────────────────────
+[domain]
+x_low = -0.01
+x_high = 0.11         # drum fits in [0, 0.10]
+y_low = 0.0
+y_high = 0.005        # thin slab (~1.25 particle diameters)
+z_low = -0.01
+z_high = 0.11
+periodic_x = false
+periodic_y = true     # quasi-2D: periodic in y
+periodic_z = false
+
+# ── Neighbor list ─────────────────────────────────────────────────────────────
+[neighbor]
+skin_fraction = 1.5
+bin_size = 0.005      # ~1.25 particle diameters (m)
+every = 10
+check = true
+
+# ── DEM materials ─────────────────────────────────────────────────────────────
+[dem]
+contact_model = "hertz"
+
+# Type 0: mobile particles
+[[dem.materials]]
+name = "particles"
+youngs_mod = 5.0e6    # Pa — soft particles for fast simulation
+poisson_ratio = 0.3
+restitution = 0.5     # moderate damping for fast settling
+friction = 0.5        # sliding friction coefficient
+rolling_friction = 0.1
+
+# Type 1: wall particles (same properties; friction between wall & mobile
+# particles is the mixed value from the material table)
+[[dem.materials]]
+name = "wall"
+youngs_mod = 5.0e6
+poisson_ratio = 0.3
+restitution = 0.5
+friction = 0.5
+rolling_friction = 0.1
+
+# ── Particle insertion ────────────────────────────────────────────────────────
+# Insert mobile particles in a cylinder region inside the drum.
+# Wall particles are created programmatically by WallParticlePlugin.
+[[particles.insert]]
+material = "particles"
+count = 200           # ~40% fill of drum cross-section
+radius = 0.002        # 2 mm radius (4 mm diameter)
+density = 2500.0      # kg/m³ (glass-like)
+velocity = 0.0
+region = { type = "cylinder", center = [0.05, 0.05], radius = 0.042, axis = "y", lo = 0.0, hi = 0.005 }
+
+# ── Gravity ───────────────────────────────────────────────────────────────────
+[gravity]
+gx = 0.0
+gy = 0.0
+gz = -9.81            # m/s²
+
+# ── Run settings ──────────────────────────────────────────────────────────────
+[run]
+steps = 300000        # total steps (15.0 s at dt=5e-5)
+thermo = 5000
+dt = 5.0e-5           # s
+dump_interval = 10000
+
+# ── Dump output ───────────────────────────────────────────────────────────────
+[dump]
+format = "text"
+
+# ── Output directory ──────────────────────────────────────────────────────────
+[output]
+directory = "examples/bench_rotating_drum/output"

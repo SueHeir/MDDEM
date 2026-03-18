@@ -1,0 +1,107 @@
+# Multisphere Segregation Benchmark
+# ==================================
+# A mixture of single spheres and dimer clumps in a vertically shaken box.
+# Under vibration at Gamma ≈ 3.6, dimers (larger effective size) segregate
+# upward due to the Brazil nut effect.
+#
+# Run with:
+#   cargo run --release --example bench_multisphere_segregation --no-default-features \
+#       -- examples/bench_multisphere_segregation/config.toml
+
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[domain]
+# Box: 20mm x 20mm x 60mm (tall to allow segregation)
+x_low = 0.0
+x_high = 0.02           # [m]
+y_low = 0.0
+y_high = 0.02           # [m]
+z_low = 0.0
+z_high = 0.06           # [m]
+periodic_x = true       # Periodic lateral boundaries
+periodic_y = true
+periodic_z = false
+
+[neighbor]
+skin_fraction = 1.1     # [dimensionless]
+bin_size = 0.004        # [m] — slightly larger than 2x particle diameter
+rebuild_on_pbc_wrap = true
+
+[gravity]
+gz = -9.81              # Gravitational acceleration [m/s²]
+
+# --- Material properties: glass-like ---
+[dem]
+contact_model = "hertz"
+
+[[dem.materials]]
+name = "glass"
+youngs_mod = 5.0e7      # [Pa] — softened for faster timestep
+poisson_ratio = 0.3     # [dimensionless]
+restitution = 0.5       # [dimensionless] — moderate dissipation
+friction = 0.5          # Sliding friction [dimensionless]
+rolling_friction = 0.1  # Rolling friction [dimensionless]
+
+# --- Dimer clump definition ---
+# Two overlapping spheres offset along x, each with radius 1.0 mm.
+# Center-to-center distance 1.0 mm → aspect ratio ≈ 1.5
+# Note: clump definitions live under [clump], not [dem], because DemConfig
+# uses deny_unknown_fields.
+[[clump.definitions]]
+name = "dimer"
+spheres = [
+    { offset = [-0.0005, 0.0, 0.0], radius = 0.001 },
+    { offset = [ 0.0005, 0.0, 0.0], radius = 0.001 },
+]
+
+# --- Particle insertion ---
+# Type 0: single spheres (75 particles, r = 1.0 mm)
+[[particles.insert]]
+material = "glass"
+count = 75
+radius = 0.001          # [m]
+density = 2500.0        # [kg/m³]
+region = { type = "block", min = [0.0, 0.0, 0.005], max = [0.02, 0.02, 0.04] }
+
+# Type 1: dimer clumps (75 dimers)
+[[particles.insert]]
+material = "glass"
+clump = "dimer"
+count = 75
+density = 2500.0        # [kg/m³]
+region = { type = "block", min = [0.0, 0.0, 0.005], max = [0.02, 0.02, 0.04] }
+
+# --- Walls ---
+# Floor wall — oscillates sinusoidally along z
+# Oscillation: A = 0.002 m, f = 15 Hz → ω = 2π·15 ≈ 94.25 rad/s
+# Γ = A·ω²/g = 0.002 × 94.25² / 9.81 ≈ 3.6
+[[wall]]
+type = "plane"
+point_z = 0.0
+normal_z = 1.0
+material = "glass"
+name = "floor"
+oscillate = { amplitude = 0.002, frequency = 15.0 }
+
+# Ceiling wall — static, high above particles
+[[wall]]
+type = "plane"
+point_z = 0.06
+normal_z = -1.0
+material = "glass"
+
+[output]
+dir = "examples/bench_multisphere_segregation/data"
+
+[vtp]
+interval = 10000        # Write VTP files every 10000 steps for visualization
+
+# Single run: particles settle under gravity while floor oscillates.
+# The initial transient includes both settling and the onset of segregation.
+# Total runtime at ~1e-6 s timestep: ~0.5 s of physical time.
+[run]
+steps = 500000
+thermo = 2000

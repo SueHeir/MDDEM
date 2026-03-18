@@ -328,7 +328,7 @@ pub mod prelude {
     pub use dem_thermal::{ThermalConfig, ThermalPlugin};
     pub use dem_contact_analysis::{ContactAnalysisConfig, ContactAnalysisPlugin};
     pub use dem_measure_plane::{MeasurePlaneDef, MeasurePlanePlugin, MeasurePlanes};
-    pub use dem_wall::{WallDef, WallPlane, WallPlugin, Walls};
+    pub use dem_wall::{WallDef, WallMotion, WallPlane, WallPlugin, Walls};
 
     // MD plugins and config types
     pub use md_lattice::{LatticeConfig, LatticePlugin};

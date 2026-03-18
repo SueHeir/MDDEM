@@ -1,0 +1,110 @@
+# ============================================================================
+# Packed Bed Thermal Conductivity Benchmark
+# ============================================================================
+# Validates DEM heat conduction through a packed bed against expected physics.
+#
+# Stage 1 (settling): Particles fall under gravity onto the bottom wall.
+# Stage 2 (thermal):  Top wall moved to bed surface, temperatures set,
+#                      heat conducts to steady state.
+# ============================================================================
+
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+# Domain: periodic in x,y; fixed walls in z
+[domain]
+x_low  = 0.0
+x_high = 0.012         # 12 mm [m]
+y_low  = 0.0
+y_high = 0.012         # 12 mm [m]
+z_low  = -0.001        # Below bottom wall [m]
+z_high = 0.040         # Well above settling region [m]
+periodic_x = true
+periodic_y = true
+periodic_z = false
+
+[neighbor]
+skin_fraction = 1.1    # Neighbor list skin multiplier [dimensionless]
+bin_size = 0.005       # Bin width [m]
+
+# Gravity for settling
+[gravity]
+gz = -9.81             # [m/s²]
+
+# Material properties
+[dem]
+contact_model = "hertz"
+
+[[dem.materials]]
+name = "steel"
+youngs_mod = 2e8       # Young's modulus [Pa]
+poisson_ratio = 0.3    # Poisson's ratio [dimensionless]
+restitution = 0.2      # Low COR for fast energy dissipation
+friction = 0.5         # Sliding friction [dimensionless]
+rolling_friction = 0.1 # Rolling friction [dimensionless]
+
+# 100 spheres inserted in a tall region — they settle under gravity
+[[particles.insert]]
+material = "steel"
+count = 100
+radius = 0.001         # Particle radius [m] (d = 2 mm)
+density = 7800.0       # Steel density [kg/m³]
+region = { type = "block", min = [0.001, 0.001, 0.002], max = [0.011, 0.011, 0.014] }
+
+# Thermal properties — high k and low cp for fast equilibration in benchmark
+[thermal]
+conductivity = 500.0      # Thermal conductivity [W/(m·K)] — enhanced for fast SS
+specific_heat = 50.0      # Specific heat capacity [J/(kg·K)] — reduced for speed
+initial_temperature = 350.0  # Initial temperature [K]
+
+# ── Walls ──────────────────────────────────────────────────────────────────
+# Bottom wall at z=0 (normal up)
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.0
+normal_x = 0.0
+normal_y = 0.0
+normal_z = 1.0
+material = "steel"
+name = "bottom"
+
+# Top wall — placed very high during settling, moved down at thermal stage start
+[[wall]]
+point_x = 0.0
+point_y = 0.0
+point_z = 0.035
+normal_x = 0.0
+normal_y = 0.0
+normal_z = -1.0
+material = "steel"
+name = "top"
+
+# Output
+[output]
+dir = "examples/bench_thermal_bed"
+
+[thermo]
+columns = ["step", "atoms", "ke", "walltime"]
+
+[dump]
+interval = 200000      # Write dump every 200k steps
+format = "text"
+
+# ── Stage 1: Gravity settling ─────────────────────────────────────────────
+[[run]]
+name = "settling"
+steps = 500000         # 0.25 s at dt=5e-7 — enough for 100 particles to settle
+dt = 5e-7              # Timestep [s]
+thermo = 50000
+
+# ── Stage 2: Thermal conduction ───────────────────────────────────────────
+# Top wall moved to bed surface, temperatures set, gravity disabled
+[[run]]
+name = "thermal"
+steps = 4000000        # 2.0 s for thermal equilibration
+dt = 5e-7              # Timestep [s]
+thermo = 20000         # Output every 0.01 s
+gravity.gz = 0.0       # No gravity during thermal stage

@@ -505,12 +505,17 @@ fn unpack_ghost_atoms(atoms: &mut Atom, registry: &AtomDataRegistry, buf: &[f64]
 /// Per-atom stride in forward_comm: pos(3) + vel(3) = 6 f64s (base fields only).
 const FORWARD_PACK_SIZE: usize = 6;
 
-/// For self-sends (single-process periodic), recompute the periodic offset for
-/// an atom based on its current position. After PBC wrapping, an atom originally
-/// near one boundary may now be near the other, making the stored offset stale.
+/// For self-sends (single-process periodic), compute the periodic offset for
+/// an atom's ghost. Uses the stored swap direction to determine which periodic
+/// image to create.
 ///
-/// For each dimension with a non-zero stored offset, determine the correct sign
-/// by checking the atom's position relative to the domain midpoint.
+/// The stored_offset sign indicates the swap direction:
+///   +size → ghost should be above (atom was near low boundary, swap=0)
+///   -size → ghost should be below (atom was near high boundary, swap=1)
+///
+/// After PBC wrapping, the atom may have moved to the other side of the box.
+/// We use the stored direction sign and the atom's current position to ensure
+/// the ghost always ends up on the opposite side from the atom.
 #[inline]
 fn compute_per_atom_offset(
     pos: &[f64; 3],
@@ -522,10 +527,28 @@ fn compute_per_atom_offset(
     let mut offset = [0.0; 3];
     for dim in 0..3 {
         if stored_offset[dim] != 0.0 {
-            let mid = (boundaries_low[dim] + boundaries_high[dim]) * 0.5;
-            // Atom below midpoint → ghost should be above → offset = +size
-            // Atom above midpoint → ghost should be below → offset = -size
-            offset[dim] = if pos[dim] < mid { size[dim] } else { -size[dim] };
+            // Use the stored direction from the original swap.
+            // The swap direction tells us which periodic image to create:
+            //   swap=0 (stored > 0): ghost should be at pos + size
+            //   swap=1 (stored < 0): ghost should be at pos - size
+            //
+            // After PBC wrapping, the atom may now be on the opposite side.
+            // If the atom crossed the boundary, the stored direction may now
+            // point the ghost to the same side as the atom. Detect this by
+            // checking if the resulting ghost would land inside the domain
+            // (meaning the atom moved and we need to flip the sign).
+            let sign = stored_offset[dim].signum();
+            let ghost_pos = pos[dim] + sign * size[dim];
+
+            // If the ghost would be well inside the domain, the atom has PBC-wrapped
+            // and the original direction is stale — flip it.
+            let lo = boundaries_low[dim];
+            let hi = boundaries_high[dim];
+            if ghost_pos > lo && ghost_pos < hi {
+                offset[dim] = -sign * size[dim];
+            } else {
+                offset[dim] = sign * size[dim];
+            }
         }
     }
     offset
@@ -981,31 +1004,76 @@ mod tests {
     }
 
     #[test]
-    fn compute_per_atom_offset_lower_half() {
+    fn compute_per_atom_offset_follows_stored_direction() {
         let boundaries_low = [0.0, 0.0, 0.0];
         let boundaries_high = [10.0, 10.0, 10.0];
         let size = [10.0, 10.0, 10.0];
-        let stored = [1.0, 0.0, -1.0]; // periodic in x and z
-        let pos = [2.0, 5.0, 3.0]; // x below mid, z below mid
 
+        // stored > 0 means swap=0 (low boundary ghost, shift +size)
+        // stored < 0 means swap=1 (high boundary ghost, shift -size)
+        let stored = [10.0, 0.0, -10.0];
+
+        // Atom in lower half: stored direction produces ghost outside box
+        let pos = [2.0, 5.0, 3.0];
         let offset = compute_per_atom_offset(&pos, &stored, &boundaries_low, &boundaries_high, &size);
-        assert_eq!(offset[0], 10.0);  // below mid → +size
-        assert_eq!(offset[1], 0.0);   // no periodic
-        assert_eq!(offset[2], 10.0);  // below mid → +size
+        assert_eq!(offset[0], 10.0);   // stored +, ghost at 12 (outside) → keep +size
+        assert_eq!(offset[1], 0.0);    // no periodic
+        assert_eq!(offset[2], -10.0);  // stored -, ghost at -7 (outside) → keep -size
+
+        // Atom in upper half
+        let pos = [8.0, 5.0, 8.0];
+        let offset = compute_per_atom_offset(&pos, &stored, &boundaries_low, &boundaries_high, &size);
+        assert_eq!(offset[0], 10.0);   // stored +, ghost at 18 (outside) → keep +size
+        assert_eq!(offset[1], 0.0);
+        assert_eq!(offset[2], -10.0);  // stored -, ghost at -2 (outside) → keep -size
     }
 
     #[test]
-    fn compute_per_atom_offset_upper_half() {
+    fn compute_per_atom_offset_pbc_wrapped_atom() {
         let boundaries_low = [0.0, 0.0, 0.0];
         let boundaries_high = [10.0, 10.0, 10.0];
         let size = [10.0, 10.0, 10.0];
-        let stored = [1.0, 0.0, -1.0];
-        let pos = [8.0, 5.0, 8.0]; // x above mid, z above mid
 
+        // Atom was originally near high boundary (z=9), stored=-10 (swap=1).
+        // After PBC wrapping, atom is now at z=1. The ghost should flip to +size.
+        let stored = [0.0, 0.0, -10.0];
+        let pos = [5.0, 5.0, 1.0];
         let offset = compute_per_atom_offset(&pos, &stored, &boundaries_low, &boundaries_high, &size);
-        assert_eq!(offset[0], -10.0); // above mid → -size
-        assert_eq!(offset[1], 0.0);
-        assert_eq!(offset[2], -10.0); // above mid → -size
+        // ghost at 1-10=-9 → outside → keep -size
+        assert_eq!(offset[2], -10.0);
+
+        // Atom was originally near low boundary (x=1), stored=+10 (swap=0).
+        // After PBC wrapping, atom is now at x=9. Ghost at 9+10=19 → outside → keep +size
+        let stored = [10.0, 0.0, 0.0];
+        let pos = [9.0, 5.0, 5.0];
+        let offset = compute_per_atom_offset(&pos, &stored, &boundaries_low, &boundaries_high, &size);
+        assert_eq!(offset[0], 10.0);
+    }
+
+    #[test]
+    fn compute_per_atom_offset_overlap_zone() {
+        // Critical test: atom in the overlap zone (near midpoint) with
+        // different stored directions must produce DIFFERENT ghost positions.
+        let boundaries_low = [0.0, 0.0, 0.0];
+        let boundaries_high = [0.006, 0.006, 0.1];
+        let size = [0.006, 0.006, 0.1];
+
+        let pos = [0.003, 0.003, 0.05]; // at midpoint of y
+
+        // swap=0 direction: stored_offset positive
+        let stored_swap0 = [0.0, 0.006, 0.0];
+        let offset0 = compute_per_atom_offset(&pos, &stored_swap0, &boundaries_low, &boundaries_high, &size);
+
+        // swap=1 direction: stored_offset negative
+        let stored_swap1 = [0.0, -0.006, 0.0];
+        let offset1 = compute_per_atom_offset(&pos, &stored_swap1, &boundaries_low, &boundaries_high, &size);
+
+        // The two ghosts MUST be at different positions
+        assert_ne!(offset0[1], offset1[1], "Ghosts from different swaps must have different offsets");
+        // swap=0: ghost above → +0.006
+        assert_eq!(offset0[1], 0.006);
+        // swap=1: ghost below → -0.006
+        assert_eq!(offset1[1], -0.006);
     }
 
     #[test]

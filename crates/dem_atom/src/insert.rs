@@ -153,6 +153,39 @@ impl Default for RateInsertState {
 /// Divides space into cubic cells of size `cell_size` (typically ~2× max particle diameter).
 /// Overlap queries check the 3×3×3 neighborhood of the candidate cell, ensuring all
 /// potential overlaps are found without a full O(N²) scan.
+/// Periodic boundary info for minimum-image overlap checks during insertion.
+struct PeriodicBox {
+    is_periodic: [bool; 3],
+    box_size: [f64; 3],
+}
+
+impl PeriodicBox {
+    fn from_domain(domain: &Domain) -> Self {
+        PeriodicBox {
+            is_periodic: domain.is_periodic,
+            box_size: domain.size,
+        }
+    }
+
+    /// Compute minimum-image squared distance between two positions.
+    fn min_image_dist_sq(&self, a: &[f64; 3], b: &[f64; 3]) -> f64 {
+        let mut dist_sq = 0.0;
+        for d in 0..3 {
+            let mut delta = a[d] - b[d];
+            if self.is_periodic[d] {
+                let half = 0.5 * self.box_size[d];
+                if delta > half {
+                    delta -= self.box_size[d];
+                } else if delta < -half {
+                    delta += self.box_size[d];
+                }
+            }
+            dist_sq += delta * delta;
+        }
+        dist_sq
+    }
+}
+
 struct SpatialHash {
     cell_size: f64,
     cells: HashMap<(i64, i64, i64), Vec<usize>>,
@@ -185,18 +218,19 @@ impl SpatialHash {
         radius: f64,
         positions: &[[f64; 3]],
         radii: &[f64],
+        pbc: &PeriodicBox,
     ) -> bool {
+        // Collect all cell keys to check: 3x3x3 neighborhood plus periodic images
         let key = self.cell_key(pos);
+        let min_dist_check = radius * 2.2; // conservative check radius
+
         for di in -1..=1 {
             for dj in -1..=1 {
                 for dk in -1..=1 {
                     let neighbor_key = (key.0 + di, key.1 + dj, key.2 + dk);
                     if let Some(indices) = self.cells.get(&neighbor_key) {
                         for &idx in indices {
-                            let dx = pos[0] - positions[idx][0];
-                            let dy = pos[1] - positions[idx][1];
-                            let dz = pos[2] - positions[idx][2];
-                            let dist_sq = dx * dx + dy * dy + dz * dz;
+                            let dist_sq = pbc.min_image_dist_sq(pos, &positions[idx]);
                             let min_dist = (radius + radii[idx]) * 1.1;
                             if dist_sq <= min_dist * min_dist {
                                 return true;
@@ -206,6 +240,23 @@ impl SpatialHash {
                 }
             }
         }
+
+        // For periodic axes where the box is small (< 3 cell sizes), the standard
+        // 3x3x3 neighborhood may miss periodic images. Do a brute-force check
+        // against all atoms using minimum-image distances.
+        let needs_pbc_check = (0..3).any(|d| {
+            pbc.is_periodic[d] && pbc.box_size[d] < 3.0 * self.cell_size + min_dist_check
+        });
+        if needs_pbc_check {
+            for idx in 0..positions.len() {
+                let dist_sq = pbc.min_image_dist_sq(pos, &positions[idx]);
+                let min_dist = (radius + radii[idx]) * 1.1;
+                if dist_sq <= min_dist * min_dist {
+                    return true;
+                }
+            }
+        }
+
         false
     }
 }
@@ -479,19 +530,22 @@ pub fn dem_insert_atoms(
                         ],
                     });
 
+                    let pbc = PeriodicBox::from_domain(&domain);
                     let start_idx = atom.len();
                     let mut inserted = 0u32;
-                    while inserted < count {
+                    let mut attempts = 0u64;
+                    let max_attempts = count as u64 * 1_000_000;
+                    while inserted < count && attempts < max_attempts {
+                        attempts += 1;
                         let [x, y, z] = region.random_point_inside(&mut rng);
                         let radius = radius_spec.sample(&mut rng);
 
                         let mut no_overlap = true;
+                        let candidate = [x, y, z];
                         for i in 0..atom.len() {
-                            let dx = x - atom.pos[i][0];
-                            let dy = y - atom.pos[i][1];
-                            let dz = z - atom.pos[i][2];
-                            let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-                            if distance <= (radius + dem_data.radius[i]) * 1.1 {
+                            let dist_sq = pbc.min_image_dist_sq(&candidate, &atom.pos[i]);
+                            let min_dist = (radius + dem_data.radius[i]) * 1.1;
+                            if dist_sq <= min_dist * min_dist {
                                 no_overlap = false;
                                 break;
                             }
@@ -511,6 +565,13 @@ pub fn dem_insert_atoms(
                             max_tag += 1;
                             inserted += 1;
                         }
+                    }
+                    if inserted < count {
+                        eprintln!(
+                            "WARNING: Could only insert {}/{} particles after {} attempts. \
+                             Increase domain size or reduce particle count.",
+                            inserted, count, max_attempts
+                        );
                     }
 
                     // Apply per-insert velocity to this batch
@@ -1120,6 +1181,8 @@ pub fn dem_rate_insert(
     let step = run_state.total_cycle;
     let mut any_to_insert = false;
 
+    // Quick check if any entry needs insertion this step (before stripping ghosts)
+
     // Quick check if any entry needs insertion this step
     for entry in rate_state.entries.iter() {
         let interval = entry.config.rate_interval.unwrap_or(1);
@@ -1146,6 +1209,15 @@ pub fn dem_rate_insert(
 
     if !any_to_insert {
         return;
+    }
+
+    // Strip ghost atoms before inserting new local atoms.
+    // New atoms are appended at atom.len(), which must equal nlocal so that
+    // the subsequent borders() truncate_to_nlocal() doesn't discard them.
+    if atom.nghost > 0 {
+        atom.truncate_to_nlocal();
+        registry.truncate_all(atom.nlocal as usize);
+        atom.nghost = 0;
     }
 
     let mut dem_data = registry.expect_mut::<DemAtom>("dem_rate_insert");
@@ -1226,6 +1298,7 @@ pub fn dem_rate_insert(
 
         // Build spatial hash from all existing atoms
         let cell_size = (2.0 * max_r * 1.1).max(1e-10);
+        let pbc = PeriodicBox::from_domain(&domain);
         let mut spatial_hash = SpatialHash::new(cell_size);
         for i in 0..atom.len() {
             spatial_hash.insert(i, &atom.pos[i]);
@@ -1246,6 +1319,7 @@ pub fn dem_rate_insert(
                 radius,
                 &atom.pos,
                 &dem_data.radius,
+                &pbc,
             ) {
                 let new_idx = atom.len();
                 insert_single_particle(
@@ -1291,6 +1365,10 @@ pub fn dem_rate_insert(
             }
         }
 
+        if inserted > 0 {
+            // Force full ghost rebuild since atom count changed
+            atom.communicate_only = false;
+        }
         if inserted > 0 && attempts >= max_attempts {
             eprintln!(
                 "WARNING: Rate insertion at step {} only placed {}/{} particles (max attempts reached)",
@@ -1312,7 +1390,21 @@ fn calculate_delta_time(
     mut atoms: ResMut<Atom>,
     registry: Res<AtomDataRegistry>,
     material_table: Res<MaterialTable>,
+    run_config: Res<RunConfig>,
+    scheduler_manager: Res<SchedulerManager>,
 ) {
+    // If the current stage specifies an explicit dt, use it directly.
+    let index = scheduler_manager.index;
+    let config_dt = run_config.current_stage(index).dt;
+    if config_dt > 0.0 {
+        atoms.dt = config_dt;
+        if comm.rank() == 0 {
+            println!("Using {} for delta time (from config)", config_dt);
+        }
+        return;
+    }
+
+    // Auto-compute from Rayleigh wave speed criterion.
     let dem = registry.expect::<DemAtom>("calculate_delta_time");
     let mut dt: f64 = 0.001;
 
@@ -1344,6 +1436,13 @@ mod tests {
 
     // ── SpatialHash tests ───────────────────────────────────────────────────
 
+    fn no_pbc() -> PeriodicBox {
+        PeriodicBox {
+            is_periodic: [false; 3],
+            box_size: [1.0; 3],
+        }
+    }
+
     #[test]
     fn spatial_hash_no_overlap() {
         let mut hash = SpatialHash::new(0.1);
@@ -1353,7 +1452,7 @@ mod tests {
             hash.insert(i, pos);
         }
         // Far away — no overlap
-        assert!(!hash.has_overlap(&[1.0, 1.0, 1.0], 0.01, &positions, &radii));
+        assert!(!hash.has_overlap(&[1.0, 1.0, 1.0], 0.01, &positions, &radii, &no_pbc()));
     }
 
     #[test]
@@ -1363,7 +1462,7 @@ mod tests {
         let radii = vec![0.05];
         hash.insert(0, &positions[0]);
         // Close enough to overlap
-        assert!(hash.has_overlap(&[0.05, 0.0, 0.0], 0.05, &positions, &radii));
+        assert!(hash.has_overlap(&[0.05, 0.0, 0.0], 0.05, &positions, &radii, &no_pbc()));
     }
 
     #[test]
@@ -1373,7 +1472,22 @@ mod tests {
         let radii = vec![0.04];
         hash.insert(0, &positions[0]);
         // Just across cell boundary — should still detect overlap
-        assert!(hash.has_overlap(&[0.11, 0.0, 0.0], 0.04, &positions, &radii));
+        assert!(hash.has_overlap(&[0.11, 0.0, 0.0], 0.04, &positions, &radii, &no_pbc()));
+    }
+
+    #[test]
+    fn spatial_hash_periodic_overlap() {
+        // Particles near opposite edges of a periodic box should overlap
+        let pbc = PeriodicBox {
+            is_periodic: [false, true, false],
+            box_size: [1.0, 0.1, 1.0],
+        };
+        let mut hash = SpatialHash::new(0.05);
+        let positions = vec![[0.0, 0.005, 0.0]]; // near y=0 edge
+        let radii = vec![0.02];
+        hash.insert(0, &positions[0]);
+        // Near y=0.095 edge — through PBC, distance is 0.01 < 2*0.02
+        assert!(hash.has_overlap(&[0.0, 0.095, 0.0], 0.02, &positions, &radii, &pbc));
     }
 
     // ── InsertConfig deserialization tests ───────────────────────────────────

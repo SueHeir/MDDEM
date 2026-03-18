@@ -587,6 +587,10 @@ pub fn derive_stage_enum(input: TokenStream) -> TokenStream {
 
     let num_stages = stage_names.len();
 
+    // Build from_index match arms: 0 => Some(Name::Variant0), 1 => ...
+    let variant_idents: Vec<_> = variants.iter().map(|v| &v.ident).collect();
+    let indices: Vec<_> = (0..variant_idents.len()).collect();
+
     let expanded = quote! {
         impl mddem_scheduler::StageName for #name {
             fn stage_name(&self) -> &'static str {
@@ -601,6 +605,13 @@ pub fn derive_stage_enum(input: TokenStream) -> TokenStream {
 
             fn num_stages() -> usize {
                 #num_stages
+            }
+
+            fn from_index(i: usize) -> Option<Self> {
+                match i {
+                    #(#indices => Some(#name::#variant_idents),)*
+                    _ => None,
+                }
             }
         }
     };

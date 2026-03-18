@@ -190,7 +190,9 @@ pub fn hertz_mindlin_contact_force(
         }
 
         // delta > 0 means geometric overlap, delta < 0 means gap
-        let delta = sum_r - distance;
+        // Cap at half the smaller radius to keep the Hertz model numerically valid.
+        let r_min = r1.min(r2);
+        let delta = (sum_r - distance).min(0.5 * r_min);
 
         if delta > 0.0 && distance / sum_r < LARGE_OVERLAP_WARN_THRESHOLD {
             overlap_warnings += 1;
@@ -208,7 +210,9 @@ pub fn hertz_mindlin_contact_force(
                     MAX_OVERLAP_WARNINGS
                 );
             }
-            continue;
+            // Cap overlap at half the smaller radius to keep Hertz model valid,
+            // but still compute the repulsive force (skipping would remove all
+            // repulsion and cause runaway penetration).
         }
 
         // For non-JKR, skip if no geometric overlap
@@ -654,7 +658,8 @@ pub fn hooke_contact_force(
             continue;
         }
 
-        let delta = sum_r - distance;
+        let r_min = r1.min(r2);
+        let delta = (sum_r - distance).min(0.5 * r_min);
         if delta <= 0.0 {
             continue;
         }
@@ -664,7 +669,7 @@ pub fn hooke_contact_force(
             if overlap_warnings > MAX_OVERLAP_WARNINGS {
                 panic!("Over {} excessive overlaps this step — aborting.", MAX_OVERLAP_WARNINGS);
             }
-            continue;
+            // Still compute force (don't skip) — removing repulsion causes runaway.
         }
 
         let inv_dist = 1.0 / distance;

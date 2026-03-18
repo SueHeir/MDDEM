@@ -604,6 +604,7 @@ pub fn bond_force(
         return;
     }
 
+
     let has_tangential = k_t > 0.0 || gamma_t > 0.0;
     let has_bending = k_bend > 0.0 || gamma_bend > 0.0;
     let has_history = has_tangential || has_bending;
@@ -663,7 +664,8 @@ pub fn bond_force(
 
             // Check normal breaking
             if let Some(break_stretch) = bond_config.break_normal_stretch {
-                if (delta / bond.r0).abs() > break_stretch {
+                let strain = (delta / bond.r0).abs();
+                if strain > break_stretch {
                     bonds_to_break.push((atoms.tag[i], bond.partner_tag));
                     continue;
                 }
@@ -739,6 +741,7 @@ pub fn bond_force(
 
                 // Check shear breaking
                 let shear_mag = (dt_x * dt_x + dt_y * dt_y + dt_z * dt_z).sqrt();
+
                 if let Some(break_shear) = bond_config.break_shear {
                     if shear_mag > break_shear {
                         bonds_to_break.push((atoms.tag[i], bond.partner_tag));

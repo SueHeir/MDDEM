@@ -991,6 +991,68 @@ pub fn in_state<S: Clone + PartialEq + std::fmt::Debug + 'static>(
     InStateCondition { target, cond_name, index: usize::MAX }
 }
 
+/// Named condition struct for `on_enter_state()`.
+///
+/// Returns `true` only on the first timestep after transitioning into the target state.
+/// Works regardless of whether the transition was triggered by user code (`next_state.set()`)
+/// or by stage step exhaustion.
+pub struct OnEnterStateCondition<S: Clone + PartialEq + 'static> {
+    target: S,
+    cond_name: String,
+    index: usize,
+    was_active: bool,
+}
+
+pub struct OnEnterStateMarker;
+
+impl<S: Clone + PartialEq + 'static> Condition for OnEnterStateCondition<S> {
+    fn evaluate(&mut self, resources: &[RefCell<Box<dyn Any>>]) -> bool {
+        let borrow = resources[self.index].borrow();
+        let current = borrow
+            .downcast_ref::<CurrentState<S>>()
+            .expect("on_enter_state: CurrentState<S> resource type mismatch");
+        let is_active = current.0 == self.target;
+        let just_entered = is_active && !self.was_active;
+        self.was_active = is_active;
+        just_entered
+    }
+    fn prepare(&mut self, index: &HashMap<TypeId, usize>) -> Vec<String> {
+        let tid = TypeId::of::<CurrentState<S>>();
+        match index.get(&tid) {
+            Some(&idx) => { self.index = idx; vec![] }
+            None => vec![std::any::type_name::<CurrentState<S>>().to_string()]
+        }
+    }
+    fn name(&self) -> &str {
+        &self.cond_name
+    }
+}
+
+impl<S: Clone + PartialEq + 'static> IntoCondition<OnEnterStateMarker> for OnEnterStateCondition<S> {
+    type Condition = Self;
+    fn into_condition(self) -> Self { self }
+}
+
+/// Run condition: returns true only on the **first timestep** after entering the target state.
+///
+/// Works for both code-triggered transitions (`next_state.set()`) and automatic
+/// transitions when a stage runs out of steps. Use this for one-shot actions like
+/// deactivating walls, printing messages, or changing parameters at stage boundaries.
+///
+/// # Example
+/// ```rust,ignore
+/// app.add_update_system(
+///     open_gate.run_if(on_enter_state(Phase::Drain)),
+///     ScheduleSet::PostFinalIntegration,
+/// );
+/// ```
+pub fn on_enter_state<S: Clone + PartialEq + std::fmt::Debug + 'static>(
+    target: S,
+) -> OnEnterStateCondition<S> {
+    let cond_name = format!("on_enter_state({:?})", target);
+    OnEnterStateCondition { target, cond_name, index: usize::MAX, was_active: false }
+}
+
 /// System that applies pending state transitions at end of step.
 /// Register via `StatesPlugin<S>` or manually at `PostFinalIntegration`.
 pub fn apply_state_transitions<S: Clone + PartialEq + 'static>(
@@ -1005,13 +1067,15 @@ pub fn apply_state_transitions<S: Clone + PartialEq + 'static>(
 /// Trait for enums that map 1:1 to named `[[run]]` stages.
 ///
 /// Derive with `#[derive(StageEnum)]` and `#[stage("name")]` attributes.
-pub trait StageName {
+pub trait StageName: Sized {
     /// Returns the stage name string for this variant.
     fn stage_name(&self) -> &'static str;
     /// Returns all stage names in variant order.
     fn stage_names() -> &'static [&'static str];
     /// Returns the number of stages.
     fn num_stages() -> usize;
+    /// Returns the variant corresponding to stage index `i`, or `None` if out of range.
+    fn from_index(i: usize) -> Option<Self>;
 }
 
 /// Named condition struct for `in_stage()`.
@@ -1054,6 +1118,63 @@ pub fn in_stage(name: &str) -> InStageCondition {
     InStageCondition { stage: name.to_string(), cond_name, index: usize::MAX }
 }
 
+/// Named condition struct for `on_enter_stage()`.
+///
+/// Returns `true` only on the first timestep after entering the named stage.
+pub struct OnEnterStageCondition {
+    stage: String,
+    cond_name: String,
+    index: usize,
+    was_active: bool,
+}
+
+pub struct OnEnterStageMarker;
+
+impl Condition for OnEnterStageCondition {
+    fn evaluate(&mut self, resources: &[RefCell<Box<dyn Any>>]) -> bool {
+        let borrow = resources[self.index].borrow();
+        let sm = borrow
+            .downcast_ref::<SchedulerManager>()
+            .expect("on_enter_stage: SchedulerManager resource type mismatch");
+        let is_active = sm.stage_name.as_deref() == Some(self.stage.as_str());
+        let just_entered = is_active && !self.was_active;
+        self.was_active = is_active;
+        just_entered
+    }
+    fn prepare(&mut self, index: &HashMap<TypeId, usize>) -> Vec<String> {
+        let tid = TypeId::of::<SchedulerManager>();
+        match index.get(&tid) {
+            Some(&idx) => { self.index = idx; vec![] }
+            None => vec![std::any::type_name::<SchedulerManager>().to_string()]
+        }
+    }
+    fn name(&self) -> &str {
+        &self.cond_name
+    }
+}
+
+impl IntoCondition<OnEnterStageMarker> for OnEnterStageCondition {
+    type Condition = Self;
+    fn into_condition(self) -> Self { self }
+}
+
+/// Run condition: returns true only on the **first timestep** after entering the named stage.
+///
+/// Works for both code-triggered transitions and automatic transitions when a
+/// stage runs out of steps.
+///
+/// # Example
+/// ```rust,ignore
+/// app.add_update_system(
+///     open_gate.run_if(on_enter_stage("drain")),
+///     ScheduleSet::PostFinalIntegration,
+/// );
+/// ```
+pub fn on_enter_stage(name: &str) -> OnEnterStageCondition {
+    let cond_name = format!("on_enter_stage({})", name);
+    OnEnterStageCondition { stage: name.to_string(), cond_name, index: usize::MAX, was_active: false }
+}
+
 /// Named condition struct for `first_stage_only()`.
 pub struct FirstStageOnlyCondition {
     index: usize,
@@ -1091,18 +1212,45 @@ pub fn first_stage_only() -> FirstStageOnlyCondition {
     FirstStageOnlyCondition { index: usize::MAX }
 }
 
-/// System that detects state transitions and requests stage advancement.
+/// System that keeps `CurrentState<S>` in sync with the scheduler stage and
+/// detects user-initiated state transitions to request early stage advancement.
 ///
-/// Watches `CurrentState<S>` for changes; when a transition occurs, sets
-/// `SchedulerManager::advance_requested = true`.
+/// Two responsibilities:
+/// 1. **User transition → advance**: When user code sets `NextState<S>` and
+///    `apply_state_transitions` updates `CurrentState`, this system detects
+///    the change and sets `advance_requested = true` so `update_cycle` skips
+///    remaining steps.
+/// 2. **Stage exhaustion → sync**: When `update_cycle` advances the stage index
+///    because steps ran out, this system sets `CurrentState` to match the new
+///    stage so `in_state()` conditions work correctly.
 pub fn check_stage_advance<S: StageName + Clone + PartialEq + 'static>(
-    current: Res<CurrentState<S>>,
+    mut current: ResMut<CurrentState<S>>,
+    mut next: ResMut<NextState<S>>,
     mut sm: ResMut<SchedulerManager>,
     mut prev: Local<Option<S>>,
+    mut prev_index: Local<Option<usize>>,
 ) {
+    // ── Detect stage-index changes (steps exhausted) and sync state ──
+    let idx = sm.index;
+    if prev_index.as_ref() != Some(&idx) {
+        if prev_index.is_some() {
+            // Stage index advanced — sync CurrentState to match
+            if let Some(target) = S::from_index(idx) {
+                if current.0 != target {
+                    current.0 = target.clone();
+                    next.clear(); // cancel any stale pending transition
+                    // Update prev so we don't misinterpret this as a user transition
+                    *prev = Some(target);
+                }
+            }
+        }
+        *prev_index = Some(idx);
+    }
+
+    // ── Detect user-initiated state transitions → request advance ──
     if prev.as_ref() != Some(&current.0) {
         if prev.is_some() {
-            // State changed — request advance to next stage
+            // State changed by user code — request advance to next stage
             sm.advance_requested = true;
         }
         *prev = Some(current.0.clone());
@@ -2213,6 +2361,8 @@ pub mod prelude {
         first_stage_only,
         in_stage,
         in_state,
+        on_enter_stage,
+        on_enter_state,
         ConditionalSystem,
         // Simulation states
         CurrentState,

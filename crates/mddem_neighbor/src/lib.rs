@@ -499,7 +499,13 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
     // Use global reduction: at PostSetup, atoms may only be on rank 0 (before exchange).
     let local_max_skin = atoms.cutoff_radius.iter().cloned().fold(0.0f64, f64::max);
     let max_skin = -comm.all_reduce_min_f64(-local_max_skin); // global max via negated min
-    let max_cutoff = 2.0 * max_skin * neighbor.skin_fraction;
+    // When no particles exist yet (e.g. rate-based insertion), fall back to bin_size
+    // so ghost_cutoff is sensible. The cutoff will be updated on first neighbor rebuild.
+    let max_cutoff = if max_skin > 0.0 {
+        2.0 * max_skin * neighbor.skin_fraction
+    } else {
+        neighbor.bin_min_size
+    };
     // Add displacement buffer to ghost_cutoff so atoms don't drift in/out of the
     // ghost zone between neighbor rebuilds. Without this padding, ghost count
     // fluctuates every step, forcing unnecessary neighbor rebuilds.
@@ -507,7 +513,12 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
     // Two atoms can each move this far, so buffer = 2 * displacement.
     let local_min_skin = atoms.cutoff_radius.iter().cloned().fold(f64::MAX, f64::min);
     let min_skin = comm.all_reduce_min_f64(local_min_skin);
-    let displacement_buffer = (neighbor.skin_fraction - 1.0) * min_skin;
+    // Guard against f64::MAX when cutoff_radius is empty (rate-based insertion)
+    let displacement_buffer = if min_skin < f64::MAX * 0.5 {
+        (neighbor.skin_fraction - 1.0) * min_skin
+    } else {
+        0.0
+    };
     let ghost_cut = max_cutoff + 2.0 * displacement_buffer;
     neighbor.ghost_cutoff = ghost_cut;
     neighbor.cached_max_cutoff = max_cutoff;

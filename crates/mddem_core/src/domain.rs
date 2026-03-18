@@ -509,6 +509,8 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
         // Slow path: non-periodic axes may require removal (local atoms only).
         // Shrink-wrap axes: atoms are always inside bounds (shrink_wrap ran first),
         // so the out-of-bounds check is a no-op — but it's harmless and correct.
+        let nlocal_before = atoms.nlocal as usize;
+        let mut removed = 0usize;
         'outer: for i in (0..atoms.nlocal as usize).rev() {
             macro_rules! handle_dim {
                 ($pos:expr, $is_periodic:expr, $lo:expr, $hi:expr, $sz:expr) => {
@@ -517,6 +519,7 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
                     } else if $pos < $lo || $pos >= $hi {
                         atoms.swap_remove(i);
                         registry.swap_remove_all(i);
+                        removed += 1;
                         continue 'outer;
                     }
                 };
@@ -524,6 +527,12 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
             handle_dim!(atoms.pos[i][0], periodic[0], low[0], high[0], size[0]);
             handle_dim!(atoms.pos[i][1], periodic[1], low[1], high[1], size[1]);
             handle_dim!(atoms.pos[i][2], periodic[2], low[2], high[2], size[2]);
+        }
+        // Update nlocal and invalidate ghost communication sendlists so that
+        // `borders` performs a full rebuild instead of using stale indices.
+        if removed > 0 {
+            atoms.nlocal = (nlocal_before - removed) as u32;
+            atoms.communicate_only = false;
         }
     }
 }

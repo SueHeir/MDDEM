@@ -96,7 +96,8 @@ pub const TANGENTIAL_EPSILON: f64 = 1e-30;
 ///
 /// A ratio near 0.0 means nearly full overlap, which indicates an unstable
 /// simulation (timestep too large or bad initial packing). Contacts with
-/// overlap exceeding this threshold are skipped and a warning is printed.
+/// overlap exceeding this threshold trigger a warning but still compute
+/// forces (capped at half the smaller radius) to prevent runaway penetration.
 pub const LARGE_OVERLAP_WARN_THRESHOLD: f64 = 0.90;
 
 /// Maximum overlap warnings per timestep before the simulation panics.
@@ -104,7 +105,7 @@ pub const LARGE_OVERLAP_WARN_THRESHOLD: f64 = 0.90;
 /// If more than this many pairs exceed [`LARGE_OVERLAP_WARN_THRESHOLD`],
 /// the simulation aborts with an actionable error message suggesting the
 /// user reduce the timestep or fix the initial configuration.
-pub const MAX_OVERLAP_WARNINGS: usize = 100;
+pub const MAX_OVERLAP_WARNINGS: usize = 500;
 
 /// Default DEM granular physics plugin group.
 ///
