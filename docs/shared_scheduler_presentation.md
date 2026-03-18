@@ -6,7 +6,7 @@ Scientific computing is entering an era where new codebases are being written fa
 
 ## Case Study: MDDEM
 
-This repository implements approximately 20% of LAMMPS's core MD feature set and 90% of its DEM feature set, all built on the proposed scheduler architecture. It was developed in two weeks of part-time work using AI-assisted coding.
+This repository implements approximately 20% of LAMMPS's core MD feature set and 90% of its DEM feature set, all built on the proposed scheduler architecture. It was developed in two weeks of free-time work using AI-assisted coding.
 
 While much of this code has not been rigorously validated — there are bugs and rough edges in the developer experience — it demonstrates how a scheduler/plugin system keeps code clean, organized, and modifiable at scale. If new codebases adopted this shared scheduler pattern, coupling between them would become trivial from a data transfer, serialization, and synchronization standpoint. The physics is still the scientist's job — the framework just makes sure we stop spending our time on plumbing.
 
@@ -16,10 +16,12 @@ Although these benchmarks have not been re-run recently, MDDEM achieved 97% of L
 
 ---
 
+The following was LLM generated where "(I would like to stress this)" marks on points I strongly agree with, and other () are my comments on the information.
+
 ## A) Why Rust
 
 ### Safety Without Sacrificing Performance
-- No segfaults, no data races, no buffer overflows — enforced at compile time (these scientific codes use unsafe code all the time for performance, but you know exeactly where the unsafe code is)
+- No segfaults, no data races, no buffer overflows — enforced at compile time (these scientific codes use unsafe code all the time for performance, but you know exactly where the unsafe code is)
 - These bugs are the #1 time sink in debugging Fortran/C++ scientific codes
 
 ### Performance Parity with C/C++
@@ -27,12 +29,7 @@ Although these benchmarks have not been re-run recently, MDDEM achieved 97% of L
 - No garbage collector, no runtime overhead
 - LLVM backend — same optimization passes as Clang
 
-### Fearless Concurrency
-- The borrow checker prevents data races at compile time
-- Critical as codes move toward GPU offloading, async I/O, and hybrid MPI+threads
-- Fortran and C++ data races are notoriously difficult to find and reproduce
-
-### Modern Tooling
+### Modern Tooling (I would like to stress this)
 - `cargo` handles builds, dependencies, testing, and benchmarking — no more CMake nightmares
 - Built-in package manager makes reusing code across projects trivial
 - `cargo test`, `cargo bench`, `cargo doc` — testing and documentation are first-class citizens
@@ -52,7 +49,7 @@ Although these benchmarks have not been re-run recently, MDDEM achieved 97% of L
 
 ### The Coupling Problem Is the Expensive Problem
 - Building a single-physics solver is relatively straightforward
-- Coupling two solvers is where projects burn years of engineering time
+- Coupling two solvers is where projects burn years of engineering time (i dont know about years but I've never done it before)
 - CFDEM, MOOSE+BISON, OpenFOAM+LIGGGHTS — all required enormous effort on integration glue code
 - A shared scheduler reduces coupling to a plugin registration problem, not an integration project
 
@@ -64,7 +61,7 @@ Although these benchmarks have not been re-run recently, MDDEM achieved 97% of L
 
 ### Explicit Data Dependencies
 - `Res<T>` (read) and `ResMut<T>` (write) make data flow visible and compiler-checked
-- No hidden global state mutations — if a system modifies mesh data, it declares so in the function signature
+- No hidden global state mutations — if a system modifies mesh data, it declares so in the function signature (very useful for debugging)
 - Makes it possible to reason about correctness of coupled physics
 
 ### Subcycling and Multi-Rate Integration Become Trivial
@@ -76,7 +73,7 @@ Although these benchmarks have not been re-run recently, MDDEM achieved 97% of L
 - Each physics capability is a self-contained plugin
 - Teams can develop independently, test independently, and compose at runtime
 - Swap Hertz contact for JKR? Change one plugin. Replace k-epsilon with LES? One plugin.
-- This is how modern software works (VS Code, game engines) — scientific computing should catch up
+- This is how modern software works (VS Code, game engines) — scientific computing should catch up (I agree here)
 
 ### Standardized Phase Ordering
 - Even when codes are not coupled, a shared phase vocabulary (setup, integrate, exchange, compute forces, finalize) reduces cognitive overhead
@@ -87,13 +84,13 @@ Although these benchmarks have not been re-run recently, MDDEM achieved 97% of L
 ## C) Reducing Boilerplate and Learning Curves
 
 ### AI Is Accelerating New Codebases — But Not Coupling
-- An LLM can generate a standalone DEM solver or CFD solver in days
+- An LLM can generate a standalone DEM solver or CFD solver in days (I remade a significant part of LAMMPS in 2 weeks)
 - But AI cannot retroactively make two independently-written codes interoperate
 - If both started from the same framework, coupling is already solved
 
 ### Scientists Should Write Physics, Not Infrastructure
-- Config file parsing, output formatting, restart files, MPI boilerplate, neighbor lists, domain decomposition — these are solved problems
-- Every new scientific code re-implements them slightly differently
+- Config file parsing, output formatting, restart files, MPI boilerplate, neighbor lists, domain decomposition — these are solved problems (we'd still have to write this idk what claude is going on about)
+- Every new scientific code re-implements them slightly differently (we shouldn't tell people how to file parse or output, or restart, etc. this should probably be per- codebase, the shared scheduler is just there to remove plumbing between codebases, make it easier for people to switch between codebases. I like the scheudler because it makes almost no assumptions about the codebase)
 - A shared framework provides these once, correctly, and tested
 
 ### One Learning Curve Instead of N (I would like to stress this)
