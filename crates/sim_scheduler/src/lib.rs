@@ -441,8 +441,27 @@ pub trait System {
     fn condition_name(&self) -> Option<&str> {
         None
     }
+
+    /// Returns group introspection info if this system is a [`SystemGroup`].
+    fn group_info(&self) -> Option<&SystemGroupInfo> {
+        None
+    }
 }
 // ANCHOR_END: System
+
+/// Introspection info for a [`SystemGroup`], exposing inner system structure and timing.
+pub struct SystemGroupInfo {
+    /// (system_name, phase_name) for each inner system, populated during `prepare()`.
+    pub inner_systems: Vec<(String, String)>,
+    /// Per-inner-system cumulative timing (seconds), accumulated across `run()` calls.
+    pub inner_timings: Vec<f64>,
+    /// Total loop iterations executed across all `run()` calls.
+    pub total_iterations: usize,
+    /// Loop condition name (if looping).
+    pub loop_condition_name: Option<String>,
+    /// Max iterations per `run()` call (if looping).
+    pub max_iterations: Option<usize>,
+}
 
 /// A type-erased wrapper around a function that implements [`System`].
 ///
@@ -619,6 +638,9 @@ impl<S: System, C: Condition> System for ConditionalSystem<S, C> {
         let n = self.condition.name();
         if n.is_empty() { None } else { Some(n) }
     }
+    fn group_info(&self) -> Option<&SystemGroupInfo> {
+        self.system.group_info()
+    }
 }
 
 // ─── SystemDescriptor ─────────────────────────────────────────────────────────
@@ -744,6 +766,170 @@ where
 }
 
 impl<I, F: IntoSystem<I>> SystemExt<I> for F where F::System: 'static {}
+
+// ─── SystemGroup ─────────────────────────────────────────────────────────────
+
+/// A composite system containing inner systems with their own phase ordering,
+/// optional looping, and nesting support.
+///
+/// Inner systems are sorted by phase index and topologically sorted within each
+/// phase group (reusing the same `topo_sort_group` logic as the main scheduler).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// app.add_update_system(
+///     SystemGroup::new("coupling_loop")
+///         .add_system(compute_coupling, CouplingPhase::Compute)
+///         .add_system(fluid_solve, CouplingPhase::Solve)
+///         .add_system(check_convergence, CouplingPhase::Check)
+///         .loop_while(coupling_not_converged, 10),
+///     ScheduleSet::Force,
+/// );
+/// ```
+pub struct SystemGroup {
+    name: String,
+    inner_systems: Vec<(StoredSystemEntry, u32, &'static str)>,
+    loop_condition: Option<Box<dyn Condition>>,
+    info: SystemGroupInfo,
+}
+
+impl SystemGroup {
+    /// Creates a new empty system group with the given name.
+    pub fn new(name: impl Into<String>) -> Self {
+        SystemGroup {
+            name: name.into(),
+            inner_systems: Vec::new(),
+            loop_condition: None,
+            info: SystemGroupInfo {
+                inner_systems: Vec::new(),
+                inner_timings: Vec::new(),
+                total_iterations: 0,
+                loop_condition_name: None,
+                max_iterations: None,
+            },
+        }
+    }
+
+    /// Adds an inner system at the given phase.
+    pub fn add_system<M>(mut self, system: impl IntoScheduledSystem<M>, phase: impl SchedulePhase) -> Self {
+        self.inner_systems.push((system.into_stored(), phase.to_index(), phase.name()));
+        self
+    }
+
+    /// Adds a nested `SystemGroup` at the given phase.
+    pub fn add_group(mut self, group: SystemGroup, phase: impl SchedulePhase) -> Self {
+        let name = group.name.clone();
+        self.inner_systems.push((
+            StoredSystemEntry {
+                system: Box::new(group),
+                name,
+                label: None,
+                befores: vec![],
+                afters: vec![],
+                requires: vec![],
+                condition_name: None,
+            },
+            phase.to_index(),
+            phase.name(),
+        ));
+        self
+    }
+
+    /// Sets a loop condition: inner systems repeat while the condition returns true,
+    /// up to `max` iterations per outer `run()` call.
+    pub fn loop_while<I, C: Condition + 'static>(mut self, condition: impl IntoCondition<I, Condition = C>, max: usize) -> Self {
+        let cond = condition.into_condition();
+        self.info.loop_condition_name = Some(cond.name().to_string());
+        self.info.max_iterations = Some(max);
+        self.loop_condition = Some(Box::new(cond));
+        self
+    }
+}
+
+impl System for SystemGroup {
+    fn prepare(&mut self, index: &HashMap<TypeId, usize>) -> Vec<String> {
+        // Sort by phase index
+        self.inner_systems.sort_by_key(|(_, idx, _)| *idx);
+
+        // Topo-sort within each phase group (same logic as Scheduler::organize_systems)
+        let all = std::mem::take(&mut self.inner_systems);
+        let mut groups: Vec<Vec<(StoredSystemEntry, u32, &'static str)>> = Vec::new();
+        for entry in all {
+            let val = entry.1;
+            if let Some(last) = groups.last_mut() {
+                if last[0].1 == val {
+                    last.push(entry);
+                    continue;
+                }
+            }
+            groups.push(vec![entry]);
+        }
+        for group in &mut groups {
+            topo_sort_group(group);
+        }
+        for group in groups {
+            self.inner_systems.extend(group);
+        }
+
+        // Populate info
+        self.info.inner_systems = self.inner_systems.iter()
+            .map(|(entry, _, phase_name)| (entry.name.clone(), phase_name.to_string()))
+            .collect();
+        self.info.inner_timings = vec![0.0; self.inner_systems.len()];
+
+        // Prepare all inner systems
+        let mut missing = Vec::new();
+        for (entry, _, _) in &mut self.inner_systems {
+            missing.extend(entry.system.prepare(index));
+        }
+
+        // Prepare loop condition
+        if let Some(cond) = &mut self.loop_condition {
+            missing.extend(cond.prepare(index));
+        }
+
+        missing
+    }
+
+    fn run(&mut self, resources: &[RefCell<Box<dyn Any>>]) {
+        let max = self.info.max_iterations.unwrap_or(1);
+        let mut iterations = 0;
+
+        loop {
+            for (idx, (entry, _, _)) in self.inner_systems.iter_mut().enumerate() {
+                let t0 = std::time::Instant::now();
+                entry.system.run(resources);
+                self.info.inner_timings[idx] += t0.elapsed().as_secs_f64();
+            }
+            iterations += 1;
+
+            if let Some(cond) = &mut self.loop_condition {
+                if !cond.evaluate(resources) || iterations >= max {
+                    break;
+                }
+            } else {
+                break; // no loop condition = single pass
+            }
+        }
+
+        self.info.total_iterations += iterations;
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn group_info(&self) -> Option<&SystemGroupInfo> {
+        Some(&self.info)
+    }
+}
+
+/// `SystemGroup` converts to itself, enabling [`SystemExt`] (`.run_if()`, `.label()`, etc.).
+impl IntoSystem<()> for SystemGroup {
+    type System = SystemGroup;
+    fn into_system(self) -> Self::System { self }
+}
 
 // ─── IntoScheduledSystem — accepts fn / ConditionalSystem / SystemDescriptor ──
 
@@ -1530,15 +1716,25 @@ impl Scheduler {
             let total: f64 = self.system_timings.iter().sum();
             let mut sorted: Vec<_> = self.update_systems.iter()
                 .zip(self.system_timings.iter())
-                .map(|((entry, _, _), &time)| (&entry.name, time))
+                .map(|((entry, _, _), &time)| (&entry.name, time, entry.system.group_info()))
                 .collect::<Vec<_>>();
             sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             println!("\n--- Per-system timing ({} steps) ---", self.timing_steps);
             println!("{:<50} {:>10} {:>8}", "System", "Time(s)", "%");
             println!("{}", "-".repeat(70));
-            for (name, time) in &sorted {
+            for (name, time, group_info) in &sorted {
                 let pct = *time / total * 100.0;
                 println!("{:<50} {:>10.4} {:>7.1}%", name, time, pct);
+                if let Some(info) = group_info {
+                    for (j, ((sys_name, phase_name), inner_time)) in
+                        info.inner_systems.iter().zip(info.inner_timings.iter()).enumerate()
+                    {
+                        let _ = j;
+                        let inner_pct = *inner_time / total * 100.0;
+                        let label = format!("  {}: {}", phase_name, sys_name);
+                        println!("{:<50} {:>10.4} {:>7.1}%", label, inner_time, inner_pct);
+                    }
+                }
             }
             println!("{}", "-".repeat(70));
             println!("{:<50} {:>10.4} {:>7.1}%", "TOTAL", total, 100.0);
@@ -1879,6 +2075,81 @@ impl Scheduler {
         println!("Schedule DOT file written to: {}", path);
     }
 
+    /// Emits a DOT subgraph cluster for a [`SystemGroup`], with inner phase sub-clusters,
+    /// execution edges, and an optional loop back-edge.
+    fn emit_group_subgraph(
+        out: &mut String,
+        info: &SystemGroupInfo,
+        entry: &StoredSystemEntry,
+        idx: usize,
+        prefix: &str,
+        current_stage: Option<usize>,
+        make_label: &dyn Fn(&StoredSystemEntry, Option<usize>) -> String,
+        indent: &str,
+    ) {
+        let _ = (current_stage, make_label);
+        let gprefix = format!("{}_{}_g", prefix, idx);
+        let group_name = &entry.name;
+
+        // Group label with loop info
+        let mut glabel = group_name.clone();
+        if let Some(cond) = &info.loop_condition_name {
+            let max = info.max_iterations.unwrap_or(0);
+            glabel.push_str(&format!("\\nloop while {} (max {})", Self::short_name(cond), max));
+        }
+
+        out.push_str(&format!("{}subgraph cluster_group_{}_{} {{\n", indent, prefix, idx));
+        out.push_str(&format!("{}    label=\"{}\";\n", indent, glabel));
+        out.push_str(&format!("{}    style=filled; fillcolor=\"#E0F7FA\";\n", indent));
+
+        // Group inner systems by phase name for sub-clusters
+        let mut phase_groups: Vec<(&str, Vec<usize>)> = Vec::new();
+        for (j, (_sys_name, phase_name)) in info.inner_systems.iter().enumerate() {
+            if let Some(last) = phase_groups.last_mut() {
+                if last.0 == phase_name.as_str() {
+                    last.1.push(j);
+                    continue;
+                }
+            }
+            phase_groups.push((phase_name.as_str(), vec![j]));
+        }
+
+        for (phase_name, indices) in &phase_groups {
+            out.push_str(&format!("{}    subgraph cluster_group_{}_{}_{} {{\n", indent, prefix, idx, phase_name));
+            out.push_str(&format!("{}        label=\"{}\";\n", indent, phase_name));
+            out.push_str(&format!("{}        style=filled; fillcolor=lightyellow;\n", indent));
+            for &j in indices {
+                let short = Self::short_name(&info.inner_systems[j].0);
+                out.push_str(&format!(
+                    "{}        {}{} [label=\"{}\", style=filled, fillcolor=lightyellow];\n",
+                    indent, gprefix, j, short
+                ));
+            }
+            out.push_str(&format!("{}    }}\n", indent));
+        }
+
+        // Execution edges between consecutive inner systems
+        for j in 0..info.inner_systems.len().saturating_sub(1) {
+            out.push_str(&format!(
+                "{}    {}{} -> {}{} [color=blue, style=bold];\n",
+                indent, gprefix, j, gprefix, j + 1
+            ));
+        }
+
+        // Loop back-edge
+        if info.loop_condition_name.is_some() && !info.inner_systems.is_empty() {
+            let last_j = info.inner_systems.len() - 1;
+            let cond_short = info.loop_condition_name.as_ref()
+                .map(|c| Self::short_name(c)).unwrap_or_default();
+            out.push_str(&format!(
+                "{}    {}{} -> {}0 [color=green, style=bold, label=\"loop while {}\"];\n",
+                indent, gprefix, last_j, gprefix, cond_short
+            ));
+        }
+
+        out.push_str(&format!("{}}}\n", indent));
+    }
+
     /// Flat single-loop DOT layout (no stages). Setup shown once, then one run loop.
     fn write_dot_flat(
         &self,
@@ -1928,15 +2199,34 @@ impl Scheduler {
             update_groups.push((set_name, vec![(i, entry)]));
         }
 
+        // Build first/last node ID maps (groups have different first/last nodes)
+        let mut first_id: HashMap<usize, String> = HashMap::new();
+        let mut last_id: HashMap<usize, String> = HashMap::new();
+
         for (set_name, entries) in &update_groups {
             out.push_str(&format!("    subgraph cluster_{} {{\n", set_name));
             out.push_str(&format!("        label=\"{}\";\n", set_name));
             out.push_str("        style=filled; fillcolor=lightyellow;\n");
             for &(i, entry) in entries {
-                out.push_str(&format!(
-                    "        {} [label=\"{}\", {}];\n",
-                    node_id("update", i), make_label(entry, None), node_style(entry, None)
-                ));
+                if let Some(info) = entry.system.group_info() {
+                    Self::emit_group_subgraph(out, info, entry, i, "update", None, make_label, "        ");
+                    if !info.inner_systems.is_empty() {
+                        first_id.insert(i, format!("update_{}_g0", i));
+                        last_id.insert(i, format!("update_{}_g{}", i, info.inner_systems.len() - 1));
+                    } else {
+                        let nid = node_id("update", i);
+                        first_id.insert(i, nid.clone());
+                        last_id.insert(i, nid);
+                    }
+                } else {
+                    let nid = node_id("update", i);
+                    out.push_str(&format!(
+                        "        {} [label=\"{}\", {}];\n",
+                        nid, make_label(entry, None), node_style(entry, None)
+                    ));
+                    first_id.insert(i, nid.clone());
+                    last_id.insert(i, nid);
+                }
             }
             out.push_str("    }\n\n");
         }
@@ -1945,29 +2235,29 @@ impl Scheduler {
             for w in entries.windows(2) {
                 out.push_str(&format!(
                     "    {} -> {} [color=blue, style=bold];\n",
-                    node_id("update", w[0].0), node_id("update", w[1].0)
+                    last_id[&w[0].0], first_id[&w[1].0]
                 ));
             }
         }
 
-        // Before/after constraint edges
-        let mut label_to_node: HashMap<String, String> = HashMap::new();
+        // Before/after constraint edges (use first_id for targets)
+        let mut label_to_first: HashMap<String, String> = HashMap::new();
         for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
             if let Some(lbl) = &entry.label {
-                label_to_node.insert(lbl.clone(), node_id("update", i));
+                label_to_first.insert(lbl.clone(), first_id[&i].clone());
             }
         }
         for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
-            let from = node_id("update", i);
+            let from = &first_id[&i];
             for b in &entry.befores {
-                if let Some(target) = label_to_node.get(b) {
+                if let Some(target) = label_to_first.get(b) {
                     out.push_str(&format!(
                         "    {} -> {} [color=red, style=dashed, label=\"before\"];\n", from, target
                     ));
                 }
             }
             for a in &entry.afters {
-                if let Some(source) = label_to_node.get(a) {
+                if let Some(source) = label_to_first.get(a) {
                     out.push_str(&format!(
                         "    {} -> {} [color=red, style=dashed, label=\"after\"];\n", source, from
                     ));
@@ -1975,9 +2265,9 @@ impl Scheduler {
             }
         }
         for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
-            let from = node_id("update", i);
+            let from = &first_id[&i];
             for req in &entry.requires {
-                if let Some(target) = label_to_node.get(req) {
+                if let Some(target) = label_to_first.get(req) {
                     out.push_str(&format!(
                         "    {} -> {} [color=purple, style=dotted, label=\"requires\", constraint=false];\n",
                         from, target
@@ -1987,10 +2277,10 @@ impl Scheduler {
         }
 
         // Cluster-to-cluster edges
-        let tails: Vec<String> = update_groups.iter()
-            .map(|(_, e)| node_id("update", e.last().unwrap().0)).collect();
-        let heads: Vec<String> = update_groups.iter()
-            .map(|(_, e)| node_id("update", e.first().unwrap().0)).collect();
+        let tails: Vec<&String> = update_groups.iter()
+            .map(|(_, e)| &last_id[&e.last().unwrap().0]).collect();
+        let heads: Vec<&String> = update_groups.iter()
+            .map(|(_, e)| &first_id[&e.first().unwrap().0]).collect();
         for i in 0..tails.len().saturating_sub(1) {
             out.push_str(&format!(
                 "    {} -> {} [color=blue, style=bold];\n", tails[i], heads[i + 1]
@@ -2081,15 +2371,34 @@ impl Scheduler {
                 stage_groups.push((set_name, vec![(i, entry)]));
             }
 
+            // Build first/last node ID maps for this stage
+            let mut stage_first_id: HashMap<usize, String> = HashMap::new();
+            let mut stage_last_id: HashMap<usize, String> = HashMap::new();
+
             for (set_name, entries) in &stage_groups {
                 out.push_str(&format!("        subgraph cluster_{}_s{} {{\n", set_name, si));
                 out.push_str(&format!("            label=\"{}\";\n", set_name));
                 out.push_str("            style=filled; fillcolor=lightyellow;\n");
                 for &(i, entry) in entries {
-                    out.push_str(&format!(
-                        "            {} [label=\"{}\", {}];\n",
-                        node_id(&prefix, i), make_label(entry, Some(si)), node_style(entry, Some(si))
-                    ));
+                    if let Some(info) = entry.system.group_info() {
+                        Self::emit_group_subgraph(out, info, entry, i, &prefix, Some(si), make_label, "            ");
+                        if !info.inner_systems.is_empty() {
+                            stage_first_id.insert(i, format!("{}_{}_g0", prefix, i));
+                            stage_last_id.insert(i, format!("{}_{}_g{}", prefix, i, info.inner_systems.len() - 1));
+                        } else {
+                            let nid = node_id(&prefix, i);
+                            stage_first_id.insert(i, nid.clone());
+                            stage_last_id.insert(i, nid);
+                        }
+                    } else {
+                        let nid = node_id(&prefix, i);
+                        out.push_str(&format!(
+                            "            {} [label=\"{}\", {}];\n",
+                            nid, make_label(entry, Some(si)), node_style(entry, Some(si))
+                        ));
+                        stage_first_id.insert(i, nid.clone());
+                        stage_last_id.insert(i, nid);
+                    }
                 }
                 out.push_str("        }\n");
             }
@@ -2101,7 +2410,7 @@ impl Scheduler {
             let first_node_id = if let Some(first_sg) = stage_setup_groups.first() {
                 node_id(&setup_prefix, first_sg.1.first().unwrap().0)
             } else if let Some(first_ug) = stage_groups.first() {
-                node_id(&prefix, first_ug.1.first().unwrap().0)
+                stage_first_id[&first_ug.1.first().unwrap().0].clone()
             } else {
                 continue; // empty stage
             };
@@ -2128,25 +2437,25 @@ impl Scheduler {
             // Setup → Run transition within this stage
             if let (Some(last_sg), Some(first_ug)) = (stage_setup_groups.last(), stage_groups.first()) {
                 let tail = node_id(&setup_prefix, last_sg.1.last().unwrap().0);
-                let head = node_id(&prefix, first_ug.1.first().unwrap().0);
+                let head = &stage_first_id[&first_ug.1.first().unwrap().0];
                 out.push_str(&format!(
                     "    {} -> {} [color=blue, style=bold, label=\"start run\"];\n", tail, head
                 ));
             }
 
-            // Update intra-group edges
+            // Update intra-group edges (using first/last IDs for groups)
             for (_set_name, entries) in &stage_groups {
                 for w in entries.windows(2) {
                     out.push_str(&format!(
                         "    {} -> {} [color=blue, style=bold];\n",
-                        node_id(&prefix, w[0].0), node_id(&prefix, w[1].0)
+                        stage_last_id[&w[0].0], stage_first_id[&w[1].0]
                     ));
                 }
             }
             // Update inter-group edges
             for g in 0..stage_groups.len().saturating_sub(1) {
-                let tail = node_id(&prefix, stage_groups[g].1.last().unwrap().0);
-                let head = node_id(&prefix, stage_groups[g + 1].1.first().unwrap().0);
+                let tail = &stage_last_id[&stage_groups[g].1.last().unwrap().0];
+                let head = &stage_first_id[&stage_groups[g + 1].1.first().unwrap().0];
                 out.push_str(&format!("    {} -> {} [color=blue, style=bold];\n", tail, head));
             }
 
@@ -2155,12 +2464,12 @@ impl Scheduler {
             for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
                 if !self.system_visible_in_stage(entry, si) { continue; }
                 if let Some(lbl) = &entry.label {
-                    label_to_node.insert(lbl.clone(), node_id(&prefix, i));
+                    label_to_node.insert(lbl.clone(), stage_first_id.get(&i).cloned().unwrap_or_else(|| node_id(&prefix, i)));
                 }
             }
             for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
                 if !self.system_visible_in_stage(entry, si) { continue; }
-                let from = node_id(&prefix, i);
+                let from = stage_first_id.get(&i).cloned().unwrap_or_else(|| node_id(&prefix, i));
                 for b in &entry.befores {
                     if let Some(target) = label_to_node.get(b) {
                         out.push_str(&format!(
@@ -2178,7 +2487,7 @@ impl Scheduler {
             }
             for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
                 if !self.system_visible_in_stage(entry, si) { continue; }
-                let from = node_id(&prefix, i);
+                let from = stage_first_id.get(&i).cloned().unwrap_or_else(|| node_id(&prefix, i));
                 for req in &entry.requires {
                     if let Some(target) = label_to_node.get(req) {
                         out.push_str(&format!(
@@ -2191,8 +2500,8 @@ impl Scheduler {
 
             // Run loop: last update → first update
             if let (Some(first_ug), Some(last_ug)) = (stage_groups.first(), stage_groups.last()) {
-                let first_run = node_id(&prefix, first_ug.1.first().unwrap().0);
-                let last_run = node_id(&prefix, last_ug.1.last().unwrap().0);
+                let first_run = &stage_first_id[&first_ug.1.first().unwrap().0];
+                let last_run = &stage_last_id[&last_ug.1.last().unwrap().0];
 
                 if stage_groups.len() >= 2 || first_ug.1.len() >= 2 {
                     out.push_str(&format!(
@@ -2210,18 +2519,32 @@ impl Scheduler {
             let next_prefix = format!("s{}", si + 1);
             let next_setup_prefix = format!("{}setup", next_prefix);
 
-            // Find last update node of current stage
+            // Find last update node of current stage (group-aware)
             let last_node = self.update_systems.iter().enumerate().rev()
                 .find(|(_, (entry, _, _))| self.system_visible_in_stage(entry, si))
-                .map(|(i, _)| node_id(&this_prefix, i));
+                .map(|(i, (entry, _, _))| {
+                    if let Some(info) = entry.system.group_info() {
+                        if !info.inner_systems.is_empty() {
+                            return format!("{}_{}_g{}", this_prefix, i, info.inner_systems.len() - 1);
+                        }
+                    }
+                    node_id(&this_prefix, i)
+                });
 
-            // Find first node of next stage (setup first, then update)
+            // Find first node of next stage (setup first, then update; group-aware)
             let first_node = self.setup_systems.iter().enumerate()
                 .find(|(_, (entry, _, _))| self.setup_visible_in_stage(entry, si + 1))
                 .map(|(i, _)| node_id(&next_setup_prefix, i))
                 .or_else(|| self.update_systems.iter().enumerate()
                     .find(|(_, (entry, _, _))| self.system_visible_in_stage(entry, si + 1))
-                    .map(|(i, _)| node_id(&next_prefix, i)));
+                    .map(|(i, (entry, _, _))| {
+                        if let Some(info) = entry.system.group_info() {
+                            if !info.inner_systems.is_empty() {
+                                return format!("{}_{}_g0", next_prefix, i);
+                            }
+                        }
+                        node_id(&next_prefix, i)
+                    }));
 
             if let (Some(from), Some(to)) = (last_node, first_node) {
                 out.push_str(&format!(
@@ -2319,6 +2642,9 @@ pub mod prelude {
         SystemDescriptor,
         // Run conditions
         SystemExt,
+        // System groups
+        SystemGroup,
+        SystemGroupInfo,
     };
 }
 
@@ -2659,5 +2985,216 @@ mod tests {
         // No warnings should fire — no warning callback registered
         let warnings = scheduler.schedule_warnings();
         assert!(warnings.is_empty(), "Expected no warnings without callback, got: {:?}", warnings);
+    }
+
+    // ─── SystemGroup tests ──────────────────────────────────────────────────
+
+    #[derive(Clone, Copy, Debug)]
+    enum GroupPhase {
+        First,
+        Second,
+        Third,
+    }
+
+    impl SchedulePhase for GroupPhase {
+        fn to_index(&self) -> u32 {
+            match self {
+                GroupPhase::First => 0,
+                GroupPhase::Second => 1,
+                GroupPhase::Third => 2,
+            }
+        }
+        fn name(&self) -> &'static str {
+            match self {
+                GroupPhase::First => "First",
+                GroupPhase::Second => "Second",
+                GroupPhase::Third => "Third",
+            }
+        }
+    }
+
+    fn group_sys_a(mut log: ResMut<ExecutionLog>) { log.0.push("A"); }
+    fn group_sys_b(mut log: ResMut<ExecutionLog>) { log.0.push("B"); }
+    fn group_sys_c(mut log: ResMut<ExecutionLog>) { log.0.push("C"); }
+
+    #[test]
+    fn system_group_basic_execution_order() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_resource(ExecutionLog(Vec::new()));
+        // Register in reverse phase order to test sorting
+        let group = SystemGroup::new("test_group")
+            .add_system(group_sys_c, GroupPhase::Third)
+            .add_system(group_sys_a, GroupPhase::First)
+            .add_system(group_sys_b, GroupPhase::Second);
+        scheduler.add_update_system(group, CustomSchedule::PhaseA);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+        let log = scheduler.get_resource_ref::<ExecutionLog>().unwrap();
+        assert_eq!(log.0, vec!["A", "B", "C"]);
+    }
+
+    struct LoopCounter(usize);
+
+    fn loop_condition(counter: Res<LoopCounter>) -> bool {
+        counter.0 < 3
+    }
+
+    fn increment_counter(mut counter: ResMut<LoopCounter>, mut log: ResMut<ExecutionLog>) {
+        counter.0 += 1;
+        log.0.push("tick");
+    }
+
+    #[test]
+    fn system_group_looping() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_resource(ExecutionLog(Vec::new()));
+        scheduler.add_resource(LoopCounter(0));
+        let group = SystemGroup::new("loop_group")
+            .add_system(increment_counter, GroupPhase::First)
+            .loop_while(loop_condition, 10);
+        scheduler.add_update_system(group, CustomSchedule::PhaseA);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+        let log = scheduler.get_resource_ref::<ExecutionLog>().unwrap();
+        // Loop runs: iter 1 (counter 0→1, cond true), iter 2 (counter 1→2, cond true),
+        // iter 3 (counter 2→3, cond false) → stops. 3 ticks total.
+        assert_eq!(log.0, vec!["tick", "tick", "tick"]);
+        let counter = scheduler.get_resource_ref::<LoopCounter>().unwrap();
+        assert_eq!(counter.0, 3);
+    }
+
+    fn always_true_condition() -> bool { true }
+
+    #[test]
+    fn system_group_max_iterations_cap() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_resource(ExecutionLog(Vec::new()));
+        let group = SystemGroup::new("capped_group")
+            .add_system(group_sys_a, GroupPhase::First)
+            .loop_while(always_true_condition, 5);
+        scheduler.add_update_system(group, CustomSchedule::PhaseA);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+        let log = scheduler.get_resource_ref::<ExecutionLog>().unwrap();
+        assert_eq!(log.0, vec!["A", "A", "A", "A", "A"]);
+    }
+
+    #[test]
+    fn system_group_no_loop_single_pass() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_resource(ExecutionLog(Vec::new()));
+        let group = SystemGroup::new("single_pass")
+            .add_system(group_sys_a, GroupPhase::First)
+            .add_system(group_sys_b, GroupPhase::Second);
+        scheduler.add_update_system(group, CustomSchedule::PhaseA);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+        let log = scheduler.get_resource_ref::<ExecutionLog>().unwrap();
+        assert_eq!(log.0, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn system_group_nested() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_resource(ExecutionLog(Vec::new()));
+        let inner = SystemGroup::new("inner")
+            .add_system(group_sys_a, GroupPhase::First)
+            .add_system(group_sys_b, GroupPhase::Second);
+        let outer = SystemGroup::new("outer")
+            .add_group(inner, GroupPhase::First)
+            .add_system(group_sys_c, GroupPhase::Second);
+        scheduler.add_update_system(outer, CustomSchedule::PhaseA);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+        let log = scheduler.get_resource_ref::<ExecutionLog>().unwrap();
+        assert_eq!(log.0, vec!["A", "B", "C"]);
+    }
+
+    fn never_run_condition() -> bool { false }
+
+    #[test]
+    fn system_group_composability_run_if() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_resource(ExecutionLog(Vec::new()));
+        let group = SystemGroup::new("conditional_group")
+            .add_system(group_sys_a, GroupPhase::First)
+            .add_system(group_sys_b, GroupPhase::Second)
+            .run_if(never_run_condition);
+        scheduler.add_update_system(group, CustomSchedule::PhaseA);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+        let log = scheduler.get_resource_ref::<ExecutionLog>().unwrap();
+        assert!(log.0.is_empty(), "Group should not run when condition is false");
+    }
+
+    #[test]
+    fn system_group_timing() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_resource(ExecutionLog(Vec::new()));
+        let group = SystemGroup::new("timed_group")
+            .add_system(group_sys_a, GroupPhase::First)
+            .add_system(group_sys_b, GroupPhase::Second);
+        scheduler.add_update_system(group, CustomSchedule::PhaseA);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+        // Access group_info through the stored system
+        let info = scheduler.update_systems[0].0.system.group_info().unwrap();
+        assert_eq!(info.inner_systems.len(), 2);
+        assert_eq!(info.inner_timings.len(), 2);
+        assert_eq!(info.total_iterations, 1);
+        assert!(info.inner_timings.iter().all(|t| *t >= 0.0));
+    }
+
+    #[test]
+    fn system_group_dot_output_contains_subgraph() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_resource(ExecutionLog(Vec::new()));
+        let group = SystemGroup::new("dot_group")
+            .add_system(group_sys_a, GroupPhase::First)
+            .add_system(group_sys_b, GroupPhase::Second)
+            .loop_while(always_true_condition, 5);
+        scheduler.add_update_system(group, CustomSchedule::PhaseA);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+
+        let path = "/tmp/test_group_schedule.dot";
+        scheduler.write_dot(path);
+        let dot_content = std::fs::read_to_string(path).unwrap();
+        assert!(dot_content.contains("subgraph cluster_group_"), "DOT should contain group subgraph");
+        assert!(dot_content.contains("loop while"), "DOT should contain loop back-edge");
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn system_group_label_and_before() {
+        let mut scheduler = Scheduler::default();
+        scheduler.suppress_warnings = true;
+        scheduler.add_resource(ExecutionLog(Vec::new()));
+        // Group with label, another system after it
+        let group = SystemGroup::new("labeled_group")
+            .add_system(group_sys_a, GroupPhase::First)
+            .label("my_group");
+        scheduler.add_update_system(group, CustomSchedule::PhaseA);
+        scheduler.add_update_system(group_sys_b.after("my_group"), CustomSchedule::PhaseA);
+        scheduler.add_scheduler_manager();
+        scheduler.organize_systems();
+        scheduler.run();
+        let log = scheduler.get_resource_ref::<ExecutionLog>().unwrap();
+        assert_eq!(log.0, vec!["A", "B"]);
     }
 }
