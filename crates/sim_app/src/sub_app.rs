@@ -72,6 +72,11 @@ impl SubApp {
         self.scheduler.add_update_system(system, schedule_set);
     }
 
+    /// Assigns a namespace to all systems registered under the given phase enum type.
+    pub fn set_phase_namespace<P: SchedulePhase + 'static>(&mut self, namespace: u32) {
+        self.scheduler.set_phase_namespace::<P>(namespace);
+    }
+
     /// Inserts a resource into this sub-app's resource store.
     pub fn add_resource<R: 'static>(&mut self, res: R) {
         self.scheduler.add_resource(res);

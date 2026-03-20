@@ -230,6 +230,14 @@ impl App {
         self
     }
 
+    /// Assigns a namespace to all systems registered under the given phase enum type.
+    ///
+    /// Systems sort by `(namespace, index)`, so this controls cross-solver ordering.
+    pub fn set_phase_namespace<P: SchedulePhase + 'static>(&mut self, namespace: u32) -> &mut Self {
+        self.sub_apps.main.set_phase_namespace::<P>(namespace);
+        self
+    }
+
     /// Inserts a resource into the app's resource store.
     ///
     /// If a resource of the same type already exists, it is replaced.

@@ -21,9 +21,12 @@
 //!
 //! # Execution Order
 //!
-//! Each timestep executes systems in [`SchedulePhase`] order (sorted by `to_index()`).
-//! Within each phase, systems are topologically sorted by `.before()` / `.after()` constraints.
-//! Systems with no ordering constraints run in registration order.
+//! Each timestep executes systems sorted by `(namespace, index)`. The namespace defaults to 0
+//! for all phase enums; use [`Scheduler::set_phase_namespace`] or [`chain_namespaces!`] to
+//! control cross-solver ordering when multiple phase enums coexist.
+//! Within each `(namespace, index)` group, systems are topologically sorted by
+//! `.before()` / `.after()` constraints. Systems with no ordering constraints run in
+//! registration order.
 //!
 //! # Example
 //!
@@ -789,7 +792,7 @@ impl<I, F: IntoSystem<I>> SystemExt<I> for F where F::System: 'static {}
 /// ```
 pub struct SystemGroup {
     name: String,
-    inner_systems: Vec<(StoredSystemEntry, u32, &'static str)>,
+    inner_systems: Vec<(StoredSystemEntry, StoredPhase)>,
     loop_condition: Option<Box<dyn Condition>>,
     info: SystemGroupInfo,
 }
@@ -813,7 +816,7 @@ impl SystemGroup {
 
     /// Adds an inner system at the given phase.
     pub fn add_system<M>(mut self, system: impl IntoScheduledSystem<M>, phase: impl SchedulePhase) -> Self {
-        self.inner_systems.push((system.into_stored(), phase.to_index(), phase.name()));
+        self.inner_systems.push((system.into_stored(), StoredPhase::from_typed(phase)));
         self
     }
 
@@ -830,8 +833,7 @@ impl SystemGroup {
                 requires: vec![],
                 condition_name: None,
             },
-            phase.to_index(),
-            phase.name(),
+            StoredPhase::from_typed(phase),
         ));
         self
     }
@@ -849,16 +851,16 @@ impl SystemGroup {
 
 impl System for SystemGroup {
     fn prepare(&mut self, index: &HashMap<TypeId, usize>) -> Vec<String> {
-        // Sort by phase index
-        self.inner_systems.sort_by_key(|(_, idx, _)| *idx);
+        // Sort by (namespace, index)
+        self.inner_systems.sort_by_key(|(_, phase)| phase.sort_key());
 
-        // Topo-sort within each phase group (same logic as Scheduler::organize_systems)
+        // Topo-sort within each phase group (same sort_key = same group)
         let all = std::mem::take(&mut self.inner_systems);
-        let mut groups: Vec<Vec<(StoredSystemEntry, u32, &'static str)>> = Vec::new();
+        let mut groups: Vec<Vec<(StoredSystemEntry, StoredPhase)>> = Vec::new();
         for entry in all {
-            let val = entry.1;
+            let key = entry.1.sort_key();
             if let Some(last) = groups.last_mut() {
-                if last[0].1 == val {
+                if last[0].1.sort_key() == key {
                     last.push(entry);
                     continue;
                 }
@@ -874,13 +876,13 @@ impl System for SystemGroup {
 
         // Populate info
         self.info.inner_systems = self.inner_systems.iter()
-            .map(|(entry, _, phase_name)| (entry.name.clone(), phase_name.to_string()))
+            .map(|(entry, phase)| (entry.name.clone(), phase.phase_name().to_string()))
             .collect();
         self.info.inner_timings = vec![0.0; self.inner_systems.len()];
 
         // Prepare all inner systems
         let mut missing = Vec::new();
-        for (entry, _, _) in &mut self.inner_systems {
+        for (entry, _) in &mut self.inner_systems {
             missing.extend(entry.system.prepare(index));
         }
 
@@ -897,7 +899,7 @@ impl System for SystemGroup {
         let mut iterations = 0;
 
         loop {
-            for (idx, (entry, _, _)) in self.inner_systems.iter_mut().enumerate() {
+            for (idx, (entry, _)) in self.inner_systems.iter_mut().enumerate() {
                 let t0 = std::time::Instant::now();
                 entry.system.run(resources);
                 self.info.inner_timings[idx] += t0.elapsed().as_secs_f64();
@@ -1038,23 +1040,52 @@ pub trait SchedulePhase: Copy + Clone + std::fmt::Debug + 'static {
     fn name(&self) -> &'static str;
 }
 
-/// A type-erased schedule phase, storing just the index and name.
+/// A type-erased schedule phase, storing the index, name, namespace, and originating type.
 ///
 /// Use this when you need to store a phase value without knowing the concrete enum type,
-/// e.g. in plugins that accept any schedule phase.
+/// e.g. in plugins that accept any schedule phase. The `namespace` field controls
+/// cross-solver ordering: systems are sorted by `(namespace, index)`.
 #[derive(Clone, Copy, Debug)]
 pub struct StoredPhase {
+    /// Which `SchedulePhase` enum this came from (for `set_phase_namespace`).
+    phase_type_id: TypeId,
+    /// Namespace for cross-solver ordering (default 0).
+    namespace: u32,
+    /// Numeric ordering index within the namespace.
     index: u32,
+    /// Human-readable name (for DOT output and tracing).
     name: &'static str,
 }
 
 impl StoredPhase {
-    /// Captures the index and name from any [`SchedulePhase`] implementor.
+    /// Captures the index, name, and type identity from any [`SchedulePhase`] implementor.
     pub fn from(phase: impl SchedulePhase) -> Self {
         Self {
+            phase_type_id: TypeId::of::<Self>(),
+            namespace: 0,
             index: phase.to_index(),
             name: phase.name(),
         }
+    }
+
+    /// Creates a `StoredPhase` that remembers the concrete phase enum type.
+    pub fn from_typed<P: SchedulePhase>(phase: P) -> Self {
+        Self {
+            phase_type_id: TypeId::of::<P>(),
+            namespace: 0,
+            index: phase.to_index(),
+            name: phase.name(),
+        }
+    }
+
+    /// Returns the `(namespace, index)` sort key used for execution ordering.
+    pub fn sort_key(&self) -> (u32, u32) {
+        (self.namespace, self.index)
+    }
+
+    /// Returns the human-readable phase name.
+    pub fn phase_name(&self) -> &'static str {
+        self.name
     }
 }
 
@@ -1067,6 +1098,30 @@ impl SchedulePhase for StoredPhase {
     }
 }
 
+
+/// Sets namespace ordering on a scheduler so that phase enums execute in the listed order.
+///
+/// Each phase enum type is assigned an incrementing namespace (0, 1, 2, …),
+/// which controls execution order across different solver phase enums.
+///
+/// ```rust,ignore
+/// chain_namespaces!(app, CouplingPrePhase, FluidPhase, MaterialPhase, CouplingPostPhase);
+/// // equivalent to:
+/// // app.set_phase_namespace::<CouplingPrePhase>(0);
+/// // app.set_phase_namespace::<FluidPhase>(1);
+/// // app.set_phase_namespace::<MaterialPhase>(2);
+/// // app.set_phase_namespace::<CouplingPostPhase>(3);
+/// ```
+#[macro_export]
+macro_rules! chain_namespaces {
+    ($scheduler:expr, $($phase:ty),+ $(,)?) => {{
+        let mut _ns: u32 = 0;
+        $(
+            $scheduler.set_phase_namespace::<$phase>(_ns);
+            _ns += 1;
+        )+
+    }};
+}
 
 // ─── Simulation states ────────────────────────────────────────────────────────
 
@@ -1407,14 +1462,14 @@ pub fn check_stage_advance<S: StageName + Clone + PartialEq + 'static>(
 /// # Panics
 ///
 /// Panics if a cycle is detected in the `before`/`after` ordering constraints.
-fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, u32, &'static str)>) {
+fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, StoredPhase)>) {
     let n = group.len();
     if n <= 1 {
         return;
     }
 
     let mut label_to_idx: HashMap<String, usize> = HashMap::new();
-    for (i, (entry, _, _)) in group.iter().enumerate() {
+    for (i, (entry, _)) in group.iter().enumerate() {
         // Index by system name (enables function-handle-based ordering)
         label_to_idx.insert(entry.name.clone(), i);
         // Explicit labels override if present
@@ -1426,7 +1481,7 @@ fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, u32, &'static str)>) {
     let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
     let mut in_degree: Vec<usize> = vec![0; n];
 
-    for (i, (entry, _, _)) in group.iter().enumerate() {
+    for (i, (entry, _)) in group.iter().enumerate() {
         for b in &entry.befores {
             if let Some(&j) = label_to_idx.get(b) {
                 adj[i].push(j);
@@ -1458,7 +1513,7 @@ fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, u32, &'static str)>) {
         panic!("Cycle detected in system ordering constraints within a ScheduleSet");
     }
 
-    let mut temp: Vec<Option<(StoredSystemEntry, u32, &'static str)>> =
+    let mut temp: Vec<Option<(StoredSystemEntry, StoredPhase)>> =
         group.drain(..).map(Some).collect();
     for idx in order {
         group.push(
@@ -1489,11 +1544,9 @@ fn topo_sort_group(group: &mut Vec<(StoredSystemEntry, u32, &'static str)>) {
 /// - `SIM_SUPPRESS_WARNINGS` — when set, suppresses schedule validation warnings.
 pub struct Scheduler {
     /// Setup systems, run once per stage before the main loop.
-    /// Tuple: (system entry, phase index for sorting, phase name for display).
-    setup_systems: Vec<(StoredSystemEntry, u32, &'static str)>,
+    setup_systems: Vec<(StoredSystemEntry, StoredPhase)>,
     /// Update systems, run every timestep in the main loop.
-    /// Tuple: (system entry, phase index for sorting, phase name for display).
-    update_systems: Vec<(StoredSystemEntry, u32, &'static str)>,
+    update_systems: Vec<(StoredSystemEntry, StoredPhase)>,
     /// Flat resource storage, indexed by position.
     pub resources: Vec<RefCell<Box<dyn Any>>>,
     /// Maps `TypeId` → index into `resources`.
@@ -1548,15 +1601,15 @@ impl Scheduler {
     /// - If a cycle is detected in `before`/`after` ordering constraints.
     pub fn organize_systems(&mut self) {
         self.setup_systems
-            .sort_by_key(|(_, idx, _)| *idx);
-        self.update_systems.sort_by_key(|(_, idx, _)| *idx);
+            .sort_by_key(|(_, phase)| phase.sort_key());
+        self.update_systems.sort_by_key(|(_, phase)| phase.sort_key());
 
-        // Topo sort within each ScheduleSet group
+        // Topo sort within each phase group (same sort_key = same group)
         let all = std::mem::take(&mut self.update_systems);
         if all.is_empty() {
             // Still prepare setup systems
             let mut errors: Vec<String> = Vec::new();
-            for (entry, _, _) in &mut self.setup_systems {
+            for (entry, _) in &mut self.setup_systems {
                 for missing in entry.system.prepare(&self.resource_index) {
                     errors.push(format!("  System \"{}\" requires `{}`", entry.name, missing));
                 }
@@ -1567,11 +1620,11 @@ impl Scheduler {
             return;
         }
 
-        let mut groups: Vec<Vec<(StoredSystemEntry, u32, &'static str)>> = Vec::new();
+        let mut groups: Vec<Vec<(StoredSystemEntry, StoredPhase)>> = Vec::new();
         for entry in all {
-            let val = entry.1;
+            let key = entry.1.sort_key();
             if let Some(last) = groups.last_mut() {
-                if last[0].1 == val {
+                if last[0].1.sort_key() == key {
                     last.push(entry);
                     continue;
                 }
@@ -1585,18 +1638,18 @@ impl Scheduler {
 
             // Validate requires_label: every required label/name must exist in this group
             let mut known_labels: Vec<&str> = Vec::new();
-            for (entry, _, _) in &group {
+            for (entry, _) in &group {
                 known_labels.push(&entry.name);
                 if let Some(lbl) = &entry.label {
                     known_labels.push(lbl);
                 }
             }
-            for (entry, _, phase_name) in &group {
+            for (entry, phase) in &group {
                 for req in &entry.requires {
                     if !known_labels.contains(&req.as_str()) {
                         errors.push(format!(
                             "  System \"{}\" in {} requires label \"{}\" which is not present in that ScheduleSet",
-                            entry.name, phase_name, req
+                            entry.name, phase.phase_name(), req
                         ));
                     }
                 }
@@ -1606,12 +1659,12 @@ impl Scheduler {
         }
 
         // Prepare all systems with cached resource indices, collecting missing resource errors
-        for (entry, _, _) in &mut self.setup_systems {
+        for (entry, _) in &mut self.setup_systems {
             for missing in entry.system.prepare(&self.resource_index) {
                 errors.push(format!("  System \"{}\" requires `{}`", entry.name, missing));
             }
         }
-        for (entry, _, _) in &mut self.update_systems {
+        for (entry, _) in &mut self.update_systems {
             for missing in entry.system.prepare(&self.resource_index) {
                 errors.push(format!("  System \"{}\" requires `{}`", entry.name, missing));
             }
@@ -1640,7 +1693,7 @@ impl Scheduler {
         match &self.warning_fn {
             Some(f) => {
                 let phase_names: Vec<&str> =
-                    self.update_systems.iter().map(|(_, _, name)| *name).collect();
+                    self.update_systems.iter().map(|(_, phase)| phase.phase_name()).collect();
                 f(&phase_names)
             }
             None => Vec::new(),
@@ -1658,16 +1711,16 @@ impl Scheduler {
 
     /// Runs all setup systems in order. Called once per stage before the run loop.
     pub fn setup(&mut self) {
-        for (entry, _, _) in self.setup_systems.iter_mut() {
+        for (entry, _) in self.setup_systems.iter_mut() {
             entry.system.run(&self.resources);
         }
     }
 
     /// Executes one timestep: runs all update systems in order, recording per-system timing.
     pub fn run(&mut self) {
-        for (idx, (entry, _, phase_name)) in self.update_systems.iter_mut().enumerate() {
+        for (idx, (entry, phase)) in self.update_systems.iter_mut().enumerate() {
             if self.trace {
-                eprintln!("[step {}] {}: {}", self.timing_steps, phase_name, entry.name);
+                eprintln!("[step {}] {}: {}", self.timing_steps, phase.phase_name(), entry.name);
             }
             let t0 = std::time::Instant::now();
             entry.system.run(&self.resources);
@@ -1716,7 +1769,7 @@ impl Scheduler {
             let total: f64 = self.system_timings.iter().sum();
             let mut sorted: Vec<_> = self.update_systems.iter()
                 .zip(self.system_timings.iter())
-                .map(|((entry, _, _), &time)| (&entry.name, time, entry.system.group_info()))
+                .map(|((entry, _), &time)| (&entry.name, time, entry.system.group_info()))
                 .collect::<Vec<_>>();
             sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             println!("\n--- Per-system timing ({} steps) ---", self.timing_steps);
@@ -1748,7 +1801,7 @@ impl Scheduler {
         schedule_set: impl SchedulePhase,
     ) {
         self.setup_systems
-            .push((system.into_stored(), schedule_set.to_index(), schedule_set.name()));
+            .push((system.into_stored(), StoredPhase::from_typed(schedule_set)));
     }
 
     /// Registers a system to run every timestep in the given [`ScheduleSet`] phase.
@@ -1758,7 +1811,32 @@ impl Scheduler {
         schedule_set: impl SchedulePhase,
     ) {
         self.update_systems
-            .push((system.into_stored(), schedule_set.to_index(), schedule_set.name()));
+            .push((system.into_stored(), StoredPhase::from_typed(schedule_set)));
+    }
+
+    /// Assigns a namespace to all systems registered under the given [`SchedulePhase`] enum type.
+    ///
+    /// Systems are sorted by `(namespace, index)` during [`organize_systems`](Self::organize_systems).
+    /// Use this to control cross-solver ordering. For example, a coupling plugin might do:
+    ///
+    /// ```rust,ignore
+    /// app.set_phase_namespace::<CouplingPrePhase>(0);
+    /// app.set_phase_namespace::<FluidPhase>(1);
+    /// app.set_phase_namespace::<MaterialPhase>(2);
+    /// app.set_phase_namespace::<CouplingPostPhase>(3);
+    /// ```
+    pub fn set_phase_namespace<P: SchedulePhase + 'static>(&mut self, namespace: u32) {
+        let target = TypeId::of::<P>();
+        for (_, phase) in &mut self.setup_systems {
+            if phase.phase_type_id == target {
+                phase.namespace = namespace;
+            }
+        }
+        for (_, phase) in &mut self.update_systems {
+            if phase.phase_type_id == target {
+                phase.namespace = namespace;
+            }
+        }
     }
 
     /// Removes an update system by its function handle (matching on `type_name`).
@@ -1769,13 +1847,13 @@ impl Scheduler {
         let sys = system.into_system();
         let name = sys.name();
         self.update_systems
-            .retain(|(entry, _, _)| entry.name != name);
+            .retain(|(entry, _)| entry.name != name);
     }
 
     /// Removes all update systems whose explicit label matches `label`.
     pub fn remove_update_system_by_label(&mut self, label: &str) {
         self.update_systems
-            .retain(|(entry, _, _)| entry.label.as_deref() != Some(label));
+            .retain(|(entry, _)| entry.label.as_deref() != Some(label));
     }
 
     /// Registers a default [`SchedulerManager`] resource (called automatically by [`start`](Self::start)).
@@ -1880,11 +1958,11 @@ impl Scheduler {
     /// Prints the full schedule to stdout, grouped by [`ScheduleSetupSet`] and [`ScheduleSet`].
     pub fn print_schedule(&self) {
         println!("\n═══ Setup Systems ═══");
-        let mut last_set: Option<u32> = None;
-        for (entry, idx, phase_name) in &self.setup_systems {
-            if last_set != Some(*idx) {
-                println!("  [{}]", phase_name);
-                last_set = Some(*idx);
+        let mut last_key: Option<(u32, u32)> = None;
+        for (entry, phase) in &self.setup_systems {
+            if last_key != Some(phase.sort_key()) {
+                println!("  [{}]", phase.phase_name());
+                last_key = Some(phase.sort_key());
             }
             let short = Self::short_name(&entry.name);
             if let Some(lbl) = &entry.label {
@@ -1905,11 +1983,11 @@ impl Scheduler {
         }
 
         println!("\n═══ Update Systems (per-step) ═══");
-        let mut last_set: Option<u32> = None;
-        for (entry, idx, phase_name) in &self.update_systems {
-            if last_set != Some(*idx) {
-                println!("  [{}]", phase_name);
-                last_set = Some(*idx);
+        let mut last_key: Option<(u32, u32)> = None;
+        for (entry, phase) in &self.update_systems {
+            if last_key != Some(phase.sort_key()) {
+                println!("  [{}]", phase.phase_name());
+                last_key = Some(phase.sort_key());
             }
             let short = Self::short_name(&entry.name);
             if let Some(lbl) = &entry.label {
@@ -2033,8 +2111,8 @@ impl Scheduler {
 
         // Build setup groups once
         let mut setup_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
-        for (i, (entry, _, phase_name)) in self.setup_systems.iter().enumerate() {
-            let set_name = phase_name.to_string();
+        for (i, (entry, phase)) in self.setup_systems.iter().enumerate() {
+            let set_name = phase.phase_name().to_string();
             if let Some(last) = setup_groups.last_mut() {
                 if last.0 == set_name {
                     last.1.push((i, entry));
@@ -2188,8 +2266,8 @@ impl Scheduler {
 
         // Update systems
         let mut update_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
-        for (i, (entry, _, phase_name)) in self.update_systems.iter().enumerate() {
-            let set_name = phase_name.to_string();
+        for (i, (entry, phase)) in self.update_systems.iter().enumerate() {
+            let set_name = phase.phase_name().to_string();
             if let Some(last) = update_groups.last_mut() {
                 if last.0 == set_name {
                     last.1.push((i, entry));
@@ -2242,12 +2320,12 @@ impl Scheduler {
 
         // Before/after constraint edges (use first_id for targets)
         let mut label_to_first: HashMap<String, String> = HashMap::new();
-        for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
+        for (i, (entry, _)) in self.update_systems.iter().enumerate() {
             if let Some(lbl) = &entry.label {
                 label_to_first.insert(lbl.clone(), first_id[&i].clone());
             }
         }
-        for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
+        for (i, (entry, _)) in self.update_systems.iter().enumerate() {
             let from = &first_id[&i];
             for b in &entry.befores {
                 if let Some(target) = label_to_first.get(b) {
@@ -2264,7 +2342,7 @@ impl Scheduler {
                 }
             }
         }
-        for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
+        for (i, (entry, _)) in self.update_systems.iter().enumerate() {
             let from = &first_id[&i];
             for req in &entry.requires {
                 if let Some(target) = label_to_first.get(req) {
@@ -2327,11 +2405,11 @@ impl Scheduler {
 
             // ── Setup systems within this stage ──────────────────────────
             let mut stage_setup_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
-            for (i, (entry, _, phase_name)) in self.setup_systems.iter().enumerate() {
+            for (i, (entry, phase)) in self.setup_systems.iter().enumerate() {
                 if !self.setup_visible_in_stage(entry, si) {
                     continue;
                 }
-                let set_name = phase_name.to_string();
+                let set_name = phase.phase_name().to_string();
                 if let Some(last) = stage_setup_groups.last_mut() {
                     if last.0 == set_name {
                         last.1.push((i, entry));
@@ -2357,11 +2435,11 @@ impl Scheduler {
 
             // ── Update systems within this stage ─────────────────────────
             let mut stage_groups: Vec<(String, Vec<(usize, &StoredSystemEntry)>)> = Vec::new();
-            for (i, (entry, _, phase_name)) in self.update_systems.iter().enumerate() {
+            for (i, (entry, phase)) in self.update_systems.iter().enumerate() {
                 if !self.system_visible_in_stage(entry, si) {
                     continue;
                 }
-                let set_name = phase_name.to_string();
+                let set_name = phase.phase_name().to_string();
                 if let Some(last) = stage_groups.last_mut() {
                     if last.0 == set_name {
                         last.1.push((i, entry));
@@ -2461,13 +2539,13 @@ impl Scheduler {
 
             // Before/after constraint edges
             let mut label_to_node: HashMap<String, String> = HashMap::new();
-            for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
+            for (i, (entry, _)) in self.update_systems.iter().enumerate() {
                 if !self.system_visible_in_stage(entry, si) { continue; }
                 if let Some(lbl) = &entry.label {
                     label_to_node.insert(lbl.clone(), stage_first_id.get(&i).cloned().unwrap_or_else(|| node_id(&prefix, i)));
                 }
             }
-            for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
+            for (i, (entry, _)) in self.update_systems.iter().enumerate() {
                 if !self.system_visible_in_stage(entry, si) { continue; }
                 let from = stage_first_id.get(&i).cloned().unwrap_or_else(|| node_id(&prefix, i));
                 for b in &entry.befores {
@@ -2485,7 +2563,7 @@ impl Scheduler {
                     }
                 }
             }
-            for (i, (entry, _, _)) in self.update_systems.iter().enumerate() {
+            for (i, (entry, _)) in self.update_systems.iter().enumerate() {
                 if !self.system_visible_in_stage(entry, si) { continue; }
                 let from = stage_first_id.get(&i).cloned().unwrap_or_else(|| node_id(&prefix, i));
                 for req in &entry.requires {
@@ -2521,8 +2599,8 @@ impl Scheduler {
 
             // Find last update node of current stage (group-aware)
             let last_node = self.update_systems.iter().enumerate().rev()
-                .find(|(_, (entry, _, _))| self.system_visible_in_stage(entry, si))
-                .map(|(i, (entry, _, _))| {
+                .find(|(_, (entry, _))| self.system_visible_in_stage(entry, si))
+                .map(|(i, (entry, _))| {
                     if let Some(info) = entry.system.group_info() {
                         if !info.inner_systems.is_empty() {
                             return format!("{}_{}_g{}", this_prefix, i, info.inner_systems.len() - 1);
@@ -2533,11 +2611,11 @@ impl Scheduler {
 
             // Find first node of next stage (setup first, then update; group-aware)
             let first_node = self.setup_systems.iter().enumerate()
-                .find(|(_, (entry, _, _))| self.setup_visible_in_stage(entry, si + 1))
+                .find(|(_, (entry, _))| self.setup_visible_in_stage(entry, si + 1))
                 .map(|(i, _)| node_id(&next_setup_prefix, i))
                 .or_else(|| self.update_systems.iter().enumerate()
-                    .find(|(_, (entry, _, _))| self.system_visible_in_stage(entry, si + 1))
-                    .map(|(i, (entry, _, _))| {
+                    .find(|(_, (entry, _))| self.system_visible_in_stage(entry, si + 1))
+                    .map(|(i, (entry, _))| {
                         if let Some(info) = entry.system.group_info() {
                             if !info.inner_systems.is_empty() {
                                 return format!("{}_{}_g0", next_prefix, i);
