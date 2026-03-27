@@ -334,6 +334,7 @@ fn insert_single_particle(
     atom.tag.push(tag);
     atom.origin_index.push(0);
     atom.cutoff_radius.push(radius);
+    atom.image.push([0, 0, 0]);
     atom.is_ghost.push(false);
     atom.pos.push(pos);
     atom.vel.push(vel);
@@ -349,6 +350,7 @@ fn insert_single_particle(
     dem_data.omega.push([0.0; 3]);
     dem_data.ang_mom.push([0.0; 3]);
     dem_data.torque.push([0.0; 3]);
+    dem_data.body_id.push(0.0);
 }
 
 // ── Helper: resolve material index ──────────────────────────────────────────

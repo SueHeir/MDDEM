@@ -25,6 +25,12 @@ pub struct SubApp {
     /// The names of plugins that have been added to this sub-app (used to track
     /// duplicates and already-registered plugins).
     pub(crate) plugin_names: HashSet<String>,
+    /// TypeIds of all registered plugins (used for TypeId-based dependency checks).
+    pub(crate) plugin_type_ids: HashSet<TypeId>,
+    /// Capability tags provided by registered plugins.
+    pub(crate) provided_capabilities: HashSet<String>,
+    /// Capability tags required by registered plugins: (capability, requiring plugin name).
+    pub(crate) required_capabilities: Vec<(String, String)>,
 }
 
 

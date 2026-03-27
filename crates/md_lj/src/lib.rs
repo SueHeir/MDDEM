@@ -290,8 +290,8 @@ impl Default for LJTailCorrections {
 pub struct LJForcePlugin;
 
 impl Plugin for LJForcePlugin {
-    fn dependencies(&self) -> Vec<&str> {
-        vec!["NeighborPlugin"]
+    fn dependencies(&self) -> Vec<std::any::TypeId> {
+        sim_app::type_ids![mddem_neighbor::NeighborPlugin]
     }
 
     fn default_config(&self) -> Option<&str> {

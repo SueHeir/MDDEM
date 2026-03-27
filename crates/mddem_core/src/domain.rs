@@ -479,15 +479,19 @@ pub fn shrink_wrap(
 }
 
 /// Wrap a position into [low, low+size) with periodic boundaries.
+/// Returns (new_pos, image_delta) where image_delta is +1/-1/0.
 #[inline]
-fn wrap_periodic(mut pos: f64, low: f64, size: f64) -> f64 {
+fn wrap_periodic(mut pos: f64, low: f64, size: f64) -> (f64, i32) {
     let high = low + size;
     if pos < low {
         pos += size;
+        (pos, -1)
     } else if pos >= high {
         pos -= size;
+        (pos, 1)
+    } else {
+        (pos, 0)
     }
-    pos
 }
 
 /// Apply periodic boundary conditions: wrap positions on periodic axes,
@@ -501,9 +505,11 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
     if periodic[0] && periodic[1] && periodic[2] {
         // Fast path: fully periodic, no removals possible (local atoms only, ghosts live outside box)
         for i in 0..atoms.nlocal as usize {
-            atoms.pos[i][0] = wrap_periodic(atoms.pos[i][0], low[0], size[0]);
-            atoms.pos[i][1] = wrap_periodic(atoms.pos[i][1], low[1], size[1]);
-            atoms.pos[i][2] = wrap_periodic(atoms.pos[i][2], low[2], size[2]);
+            for d in 0..3 {
+                let (new_pos, delta) = wrap_periodic(atoms.pos[i][d], low[d], size[d]);
+                atoms.pos[i][d] = new_pos;
+                atoms.image[i][d] += delta;
+            }
         }
     } else {
         // Slow path: non-periodic axes may require removal (local atoms only).
@@ -513,9 +519,11 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
         let mut removed = 0usize;
         'outer: for i in (0..atoms.nlocal as usize).rev() {
             macro_rules! handle_dim {
-                ($pos:expr, $is_periodic:expr, $lo:expr, $hi:expr, $sz:expr) => {
+                ($pos:expr, $img:expr, $is_periodic:expr, $lo:expr, $hi:expr, $sz:expr) => {
                     if $is_periodic {
-                        $pos = wrap_periodic($pos, $lo, $sz);
+                        let (new_pos, delta) = wrap_periodic($pos, $lo, $sz);
+                        $pos = new_pos;
+                        $img += delta;
                     } else if $pos < $lo || $pos >= $hi {
                         atoms.swap_remove(i);
                         registry.swap_remove_all(i);
@@ -524,9 +532,9 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
                     }
                 };
             }
-            handle_dim!(atoms.pos[i][0], periodic[0], low[0], high[0], size[0]);
-            handle_dim!(atoms.pos[i][1], periodic[1], low[1], high[1], size[1]);
-            handle_dim!(atoms.pos[i][2], periodic[2], low[2], high[2], size[2]);
+            handle_dim!(atoms.pos[i][0], atoms.image[i][0], periodic[0], low[0], high[0], size[0]);
+            handle_dim!(atoms.pos[i][1], atoms.image[i][1], periodic[1], low[1], high[1], size[1]);
+            handle_dim!(atoms.pos[i][2], atoms.image[i][2], periodic[2], low[2], high[2], size[2]);
         }
         // Update nlocal and invalidate ghost communication sendlists so that
         // `borders` performs a full rebuild instead of using stale indices.

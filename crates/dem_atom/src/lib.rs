@@ -550,6 +550,10 @@ pub struct DemAtom {
     #[reverse]
     #[zero]
     pub torque: Vec<[f64; 3]>,
+    /// Rigid body ID for clump/multisphere membership. 0.0 = independent particle.
+    /// Positive values indicate sub-spheres of the same rigid body (same value = same body).
+    #[forward]
+    pub body_id: Vec<f64>,
 }
 
 impl Default for DemAtom {
@@ -569,8 +573,17 @@ impl DemAtom {
             omega: Vec::new(),
             ang_mom: Vec::new(),
             torque: Vec::new(),
+            body_id: Vec::new(),
         }
     }
+}
+
+/// Returns true if atoms `i` and `j` belong to the same rigid body.
+#[inline]
+pub fn same_body(dem: &DemAtom, i: usize, j: usize) -> bool {
+    let bi = dem.body_id[i];
+    let bj = dem.body_id[j];
+    bi > 0.0 && bj > 0.0 && (bi - bj).abs() < 0.5
 }
 
 // ── Plugin ───────────────────────────────────────────────────────────────────
@@ -579,6 +592,10 @@ impl DemAtom {
 pub struct DemAtomPlugin;
 
 impl Plugin for DemAtomPlugin {
+    fn provides(&self) -> Vec<&str> {
+        vec!["dem_particles"]
+    }
+
     fn default_config(&self) -> Option<&str> {
         Some(
             r#"# Material definitions for DEM particles

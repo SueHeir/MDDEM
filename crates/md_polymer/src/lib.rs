@@ -485,6 +485,7 @@ pub fn init_polymer_chains(
             atoms.mass.push(mass);
             atoms.inv_mass.push(1.0 / mass);
             atoms.cutoff_radius.push(config.skin);
+            atoms.image.push([0, 0, 0]);
             atoms.is_ghost.push(false);
 
             chain_tag_list.push(tag);

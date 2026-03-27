@@ -14,6 +14,7 @@ mddem_derive = { path = "../mddem_derive", version = "0.1.3" }
 dem_atom = { path = "../dem_atom", version = "0.1.3" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+rand = "0.9"
 
 [dev-dependencies]
 mddem_test_utils = { path = "../mddem_test_utils", version = "0.1.3" }

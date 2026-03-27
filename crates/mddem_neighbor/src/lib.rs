@@ -414,6 +414,10 @@ pub struct NeighborPlugin {
 }
 
 impl Plugin for NeighborPlugin {
+    fn provides(&self) -> Vec<&str> {
+        vec!["neighbor_list"]
+    }
+
     fn default_config(&self) -> Option<&str> {
         Some(
             r#"[neighbor]

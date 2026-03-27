@@ -31,6 +31,20 @@ use core::any::Any;
 use std::any::TypeId;
 use std::collections::HashSet;
 
+/// Convenience macro to build a `Vec<TypeId>` from a list of types.
+///
+/// ```rust,ignore
+/// fn dependencies(&self) -> Vec<TypeId> {
+///     type_ids![DemAtomPlugin, NeighborPlugin]
+/// }
+/// ```
+#[macro_export]
+macro_rules! type_ids {
+    ($($t:ty),* $(,)?) => {
+        vec![$(std::any::TypeId::of::<$t>()),*]
+    };
+}
+
 /// A self-contained module that registers resources and systems with an [`App`].
 ///
 /// Every simulation feature — physics models, I/O, analysis — is implemented
@@ -87,18 +101,43 @@ pub trait Plugin: Downcast + Any + Send + Sync {
         None
     }
 
-    /// Returns the names of plugins that must be registered before this one.
+    /// Returns the [`TypeId`]s of plugins that must be registered before this one.
     ///
     /// The app validates that all listed plugins have been registered before
     /// this plugin's [`build`](Plugin::build) runs, and produces a clear error
     /// message if any are missing.
     ///
     /// ```rust,ignore
-    /// fn dependencies(&self) -> Vec<&str> {
-    ///     vec!["dem_wall::WallPlugin", "dem_atom::DemAtomPlugin"]
+    /// fn dependencies(&self) -> Vec<TypeId> {
+    ///     type_ids![DemAtomPlugin, NeighborPlugin]
     /// }
     /// ```
-    fn dependencies(&self) -> Vec<&str> {
+    fn dependencies(&self) -> Vec<TypeId> {
+        Vec::new()
+    }
+
+    /// Returns capability tags that this plugin provides.
+    ///
+    /// Other plugins can declare these as requirements via [`requires`](Plugin::requires).
+    /// The app validates at startup that every required capability has at least one provider.
+    ///
+    /// ```rust,ignore
+    /// fn provides(&self) -> Vec<&str> { vec!["contact_forces"] }
+    /// ```
+    fn provides(&self) -> Vec<&str> {
+        Vec::new()
+    }
+
+    /// Returns capability tags that this plugin requires from other plugins.
+    ///
+    /// The app validates at startup that every required capability is provided
+    /// by at least one registered plugin. This catches wiring errors early with
+    /// clear error messages.
+    ///
+    /// ```rust,ignore
+    /// fn requires(&self) -> Vec<&str> { vec!["dem_particles", "neighbor_list"] }
+    /// ```
+    fn requires(&self) -> Vec<&str> {
         Vec::new()
     }
 }
@@ -307,15 +346,10 @@ pub(crate) mod sealed {
                     eprintln!();
                     eprintln!("ERROR: Plugin `{}` is missing required dependencies:", plugin_name);
                     for dep in &missing {
-                        eprintln!("  - {}", dep);
+                        eprintln!("  - {:?}", dep);
                     }
                     eprintln!();
                     eprintln!("  Hint: Add the missing plugin(s) before `{}`.", plugin_name);
-                    eprintln!("  Example plugin registration order:");
-                    for dep in &missing {
-                        eprintln!("    app.add_plugins({});", dep.rsplit("::").next().unwrap_or(dep));
-                    }
-                    eprintln!("    app.add_plugins({});", plugin_name.rsplit("::").next().unwrap_or(&plugin_name));
                     panic!(
                         "Missing plugin dependencies for `{}`: {:?}",
                         plugin_name, missing

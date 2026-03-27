@@ -36,8 +36,7 @@
 use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 
-use dem_atom::{DemAtom, MaterialTable};
-use dem_clump::ClumpAtom;
+use dem_atom::{self, DemAtom, MaterialTable};
 use mddem_core::{register_atom_data, Atom, AtomDataRegistry, BondStore, ScheduleSet, VirialStress, VirialStressPlugin};
 use mddem_neighbor::Neighbor;
 
@@ -51,8 +50,16 @@ use crate::{LARGE_OVERLAP_WARN_THRESHOLD, MAX_OVERLAP_WARNINGS, SQRT_5_3, TANGEN
 pub struct HertzMindlinContactPlugin;
 
 impl Plugin for HertzMindlinContactPlugin {
-    fn dependencies(&self) -> Vec<&str> {
-        vec!["DemAtomPlugin"]
+    fn dependencies(&self) -> Vec<std::any::TypeId> {
+        sim_app::type_ids![dem_atom::DemAtomPlugin]
+    }
+
+    fn provides(&self) -> Vec<&str> {
+        vec!["contact_forces"]
+    }
+
+    fn requires(&self) -> Vec<&str> {
+        vec!["dem_particles", "neighbor_list"]
     }
 
     fn build(&self, app: &mut App) {
@@ -104,7 +111,6 @@ pub fn hertz_mindlin_contact_force(
     let mut history =
         registry.expect_mut::<ContactHistoryStore>("hertz_mindlin_contact_force");
     let bond_store = registry.get::<BondStore>();
-    let clump_store = registry.get::<ClumpAtom>();
     let dt = atoms.dt;
 
     let natoms = atoms.len();
@@ -129,20 +135,13 @@ pub fn hertz_mindlin_contact_force(
             }
         }
 
-        // Skip same-clump pairs (sub-spheres of the same rigid body don't interact)
-        if let Some(ref clump) = clump_store {
-            if dem_clump::same_clump(clump, i, j) {
-                continue;
-            }
+        // Skip same-body pairs (sub-spheres of the same rigid body don't interact)
+        if dem_atom::same_body(&dem, i, j) {
+            continue;
         }
 
         let r1 = dem.radius[i];
         let r2 = dem.radius[j];
-
-        // Skip clump parent atoms (they have radius 0 and don't participate in contacts)
-        if r1 <= 0.0 || r2 <= 0.0 {
-            continue;
-        }
 
         let dx = atoms.pos[j][0] - atoms.pos[i][0];
         let dy = atoms.pos[j][1] - atoms.pos[i][1];
@@ -230,7 +229,10 @@ pub fn hertz_mindlin_contact_force(
         let g_eff = material_table.g_eff_ij[mat_i][mat_j];
 
         // Reduced mass: m_r = 1 / (1/m1 + 1/m2)
-        let m_r = 1.0 / (atoms.inv_mass[i] + atoms.inv_mass[j]);
+        // For clump sub-spheres inv_mass is 0 (body-integrated); use real mass.
+        let inv_m_i = if atoms.inv_mass[i] > 0.0 { atoms.inv_mass[i] } else { 1.0 / atoms.mass[i] };
+        let inv_m_j = if atoms.inv_mass[j] > 0.0 { atoms.inv_mass[j] } else { 1.0 / atoms.mass[j] };
+        let m_r = 1.0 / (inv_m_i + inv_m_j);
 
         let beta = material_table.beta_ij[mat_i][mat_j];
         let mu = material_table.friction_ij[mat_i][mat_j];
@@ -605,7 +607,6 @@ pub fn hooke_contact_force(
     let mut dem = registry.expect_mut::<DemAtom>("hooke_contact_force");
     let mut history = registry.expect_mut::<ContactHistoryStore>("hooke_contact_force");
     let bond_store = registry.get::<BondStore>();
-    let clump_store = registry.get::<ClumpAtom>();
     let dt = atoms.dt;
 
     while history.contacts.len() < atoms.len() {
@@ -628,20 +629,13 @@ pub fn hooke_contact_force(
             }
         }
 
-        // Skip same-clump pairs (sub-spheres of the same rigid body don't interact)
-        if let Some(ref clump) = clump_store {
-            if dem_clump::same_clump(clump, i, j) {
-                continue;
-            }
+        // Skip same-body pairs (sub-spheres of the same rigid body don't interact)
+        if dem_atom::same_body(&dem, i, j) {
+            continue;
         }
 
         let r1 = dem.radius[i];
         let r2 = dem.radius[j];
-
-        // Skip clump parent atoms (radius 0)
-        if r1 <= 0.0 || r2 <= 0.0 {
-            continue;
-        }
 
         let dx = atoms.pos[j][0] - atoms.pos[i][0];
         let dy = atoms.pos[j][1] - atoms.pos[i][1];
@@ -680,7 +674,10 @@ pub fn hooke_contact_force(
         let mat_i = atoms.atom_type[i] as usize;
         let mat_j = atoms.atom_type[j] as usize;
         let r_eff = (r1 * r2) / sum_r;
-        let m_r = 1.0 / (atoms.inv_mass[i] + atoms.inv_mass[j]);
+        // For clump sub-spheres inv_mass is 0 (body-integrated); use real mass.
+        let inv_m_i = if atoms.inv_mass[i] > 0.0 { atoms.inv_mass[i] } else { 1.0 / atoms.mass[i] };
+        let inv_m_j = if atoms.inv_mass[j] > 0.0 { atoms.inv_mass[j] } else { 1.0 / atoms.mass[j] };
+        let m_r = 1.0 / (inv_m_i + inv_m_j);
         let beta = material_table.beta_ij[mat_i][mat_j];
         let mu = material_table.friction_ij[mat_i][mat_j];
         let mu_r = material_table.rolling_friction_ij[mat_i][mat_j];

@@ -148,6 +148,7 @@ dependencies = [
  "mddem_core",
  "mddem_derive",
  "mddem_test_utils",
+ "rand",
  "serde",
  "sim_app",
  "sim_scheduler",
@@ -174,7 +175,6 @@ name = "dem_granular"
 version = "0.1.3"
 dependencies = [
  "dem_atom",
- "dem_clump",
  "mddem_core",
  "mddem_neighbor",
  "mddem_test_utils",

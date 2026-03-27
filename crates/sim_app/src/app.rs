@@ -106,43 +106,50 @@ impl App {
 
         self.validate_dependencies(&*plugin)?;
 
+        // Record the plugin's TypeId for TypeId-based dependency checks.
+        let plugin_type_id = (*plugin).type_id();
+        self.main_mut().plugin_type_ids.insert(plugin_type_id);
+
         // Record the plugin name *before* build so that nested add_plugins calls
         // within build() can see this plugin as registered (prevents false-positive
         // dependency errors when a plugin group adds a dependency and its dependent
         // in sequence).
+        let plugin_name = plugin.name().to_string();
         self.main_mut()
             .plugin_names
-            .insert(plugin.name().to_string());
+            .insert(plugin_name.clone());
 
         plugin.build(self);
 
         self.collect_config_snippet(&*plugin);
 
+        // Collect capability contracts after build.
+        for cap in plugin.provides() {
+            self.main_mut()
+                .provided_capabilities
+                .insert(cap.to_string());
+        }
+        for cap in plugin.requires() {
+            self.main_mut()
+                .required_capabilities
+                .push((cap.to_string(), plugin_name.clone()));
+        }
+
         Ok(self)
     }
 
-    /// Checks that all plugins listed in `plugin.dependencies()` have already
-    /// been registered. Returns `Err(AppError::MissingDependencies)` if any
-    /// are missing.
+    /// Checks that all plugins listed in `plugin.dependencies()` (by [`TypeId`])
+    /// have already been registered. Returns `Err(AppError::MissingDependencies)`
+    /// if any are missing.
     fn validate_dependencies(&self, plugin: &dyn Plugin) -> Result<(), AppError> {
         let deps = plugin.dependencies();
         if deps.is_empty() {
             return Ok(());
         }
 
-        let missing: Vec<&str> = deps
-            .iter()
-            .filter(|dep| {
-                // Check if any registered plugin name contains the dependency string.
-                // This allows matching both full paths ("dem_atom::DemAtomPlugin")
-                // and short names ("DemAtomPlugin").
-                !self
-                    .main()
-                    .plugin_names
-                    .iter()
-                    .any(|name| name.contains(*dep) || dep.contains(name.as_str()))
-            })
-            .copied()
+        let missing: Vec<TypeId> = deps
+            .into_iter()
+            .filter(|dep| !self.main().plugin_type_ids.contains(dep))
             .collect();
 
         if missing.is_empty() {
@@ -150,8 +157,42 @@ impl App {
         } else {
             Err(AppError::MissingDependencies {
                 plugin_name: plugin.name().to_string(),
-                missing: missing.iter().map(|s| s.to_string()).collect(),
+                missing,
             })
+        }
+    }
+
+    /// Validates that every required capability tag has at least one provider.
+    ///
+    /// Called in [`start`](Self::start) after all plugins are registered.
+    ///
+    /// # Panics
+    ///
+    /// Panics with a clear error listing all unsatisfied capabilities.
+    fn validate_capability_contracts(&self) {
+        let provided = &self.main().provided_capabilities;
+        let required = &self.main().required_capabilities;
+
+        let missing: Vec<_> = required
+            .iter()
+            .filter(|(cap, _)| !provided.contains(cap))
+            .collect();
+
+        if !missing.is_empty() {
+            eprintln!();
+            eprintln!("ERROR: Missing capability contracts:");
+            for (cap, plugin_name) in &missing {
+                eprintln!("  - capability `{}` required by `{}`", cap, plugin_name);
+            }
+            eprintln!();
+            eprintln!("  Hint: Add a plugin that provides the missing capabilities.");
+            panic!(
+                "Missing capabilities: {:?}",
+                missing
+                    .iter()
+                    .map(|(cap, _)| cap.as_str())
+                    .collect::<Vec<_>>()
+            );
         }
     }
 
@@ -276,6 +317,7 @@ impl App {
             self.run_cleanup();
             return;
         }
+        self.validate_capability_contracts();
         self.sub_apps.main.start();
         self.run_cleanup();
     }
@@ -340,9 +382,76 @@ impl App {
 pub(crate) enum AppError {
     /// A unique plugin was registered more than once.
     DuplicatePlugin { plugin_name: String },
-    /// One or more required dependency plugins have not been registered yet.
+    /// One or more required dependency plugins (by [`TypeId`]) have not been registered yet.
     MissingDependencies {
         plugin_name: String,
-        missing: Vec<String>,
+        missing: Vec<TypeId>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{type_ids, Plugin};
+
+    struct PluginA;
+    impl Plugin for PluginA {
+        fn build(&self, _app: &mut App) {}
+        fn provides(&self) -> Vec<&str> {
+            vec!["feature_a"]
+        }
+    }
+
+    struct PluginB;
+    impl Plugin for PluginB {
+        fn build(&self, _app: &mut App) {}
+        fn dependencies(&self) -> Vec<TypeId> {
+            type_ids![PluginA]
+        }
+        fn requires(&self) -> Vec<&str> {
+            vec!["feature_a"]
+        }
+    }
+
+    struct PluginC;
+    impl Plugin for PluginC {
+        fn build(&self, _app: &mut App) {}
+        fn requires(&self) -> Vec<&str> {
+            vec!["feature_missing"]
+        }
+    }
+
+    #[test]
+    fn satisfied_dependencies_and_capabilities() {
+        let mut app = App::new();
+        app.add_plugins(PluginA);
+        app.add_plugins(PluginB);
+        // If we got here without panic, deps + capabilities are satisfied at build time.
+        // Validate capability contracts explicitly.
+        app.validate_capability_contracts(); // should not panic
+    }
+
+    #[test]
+    #[should_panic(expected = "Missing plugin dependencies")]
+    fn missing_typeid_dependency_panics() {
+        let mut app = App::new();
+        // PluginB depends on PluginA which is not registered.
+        app.add_plugins(PluginB);
+    }
+
+    #[test]
+    #[should_panic(expected = "Missing capabilities")]
+    fn missing_capability_panics() {
+        let mut app = App::new();
+        app.add_plugins(PluginC);
+        app.validate_capability_contracts();
+    }
+
+    #[test]
+    fn type_ids_macro_produces_correct_ids() {
+        let ids = type_ids![PluginA, PluginB];
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], TypeId::of::<PluginA>());
+        assert_eq!(ids[1], TypeId::of::<PluginB>());
+    }
 }

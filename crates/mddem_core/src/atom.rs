@@ -20,8 +20,8 @@ use sim_scheduler::prelude::*;
 use crate::ScheduleSet;
 
 /// Number of `f64`s packed/unpacked for one atom's base fields
-/// (tag, origin_index, cutoff_radius, atom_type, pos×3, vel×3, force×3, mass).
-pub const ATOM_PACK_SIZE: usize = 14;
+/// (tag, origin_index, cutoff_radius, atom_type, pos×3, vel×3, force×3, mass, image×3).
+pub const ATOM_PACK_SIZE: usize = 17;
 
 // ── AtomData trait ───────────────────────────────────────────────────────────
 
@@ -299,6 +299,7 @@ macro_rules! for_each_atom_vec {
             (cutoff_radius, f64),
             (mass, f64),
             (inv_mass, f64),
+            (image, [i32; 3]),
         }
     };
 }
@@ -338,6 +339,8 @@ pub struct Atom {
     pub cutoff_radius: Vec<f64>,
     pub mass: Vec<f64>,
     pub inv_mass: Vec<f64>,
+    /// PBC image flags: number of times atom has crossed each periodic boundary.
+    pub image: Vec<[i32; 3]>,
 }
 
 impl Default for Atom {
@@ -445,6 +448,9 @@ impl Atom {
         buf.push(self.force[i][1]);
         buf.push(self.force[i][2]);
         buf.push(self.mass[i]);
+        buf.push(self.image[i][0] as f64);
+        buf.push(self.image[i][1] as f64);
+        buf.push(self.image[i][2] as f64);
     }
 
     /// Pack atom `i` for MPI exchange (migration to another rank). Sets origin_index to 0.
@@ -469,6 +475,7 @@ impl Atom {
         self.force.push([buf[10], buf[11], buf[12]]);
         self.mass.push(buf[13]);
         self.inv_mass.push(1.0 / buf[13]);
+        self.image.push([buf[14] as i32, buf[15] as i32, buf[16] as i32]);
         self.is_ghost.push(is_ghost);
         ATOM_PACK_SIZE
     }
@@ -484,6 +491,7 @@ impl Atom {
         self.mass.push(mass);
         self.inv_mass.push(1.0 / mass);
         self.cutoff_radius.push(radius);
+        self.image.push([0, 0, 0]);
         self.is_ghost.push(false);
     }
 }

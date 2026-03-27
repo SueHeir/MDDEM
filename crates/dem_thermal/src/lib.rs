@@ -173,8 +173,8 @@ impl ThermalAtom {
 pub struct ThermalPlugin;
 
 impl Plugin for ThermalPlugin {
-    fn dependencies(&self) -> Vec<&str> {
-        vec!["DemAtomPlugin", "NeighborPlugin"]
+    fn dependencies(&self) -> Vec<std::any::TypeId> {
+        sim_app::type_ids![dem_atom::DemAtomPlugin, mddem_neighbor::NeighborPlugin]
     }
 
     fn default_config(&self) -> Option<&str> {

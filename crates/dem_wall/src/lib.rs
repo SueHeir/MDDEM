@@ -520,8 +520,8 @@ impl Walls {
 pub struct WallPlugin;
 
 impl Plugin for WallPlugin {
-    fn dependencies(&self) -> Vec<&str> {
-        vec!["DemAtomPlugin"]
+    fn dependencies(&self) -> Vec<std::any::TypeId> {
+        sim_app::type_ids![dem_atom::DemAtomPlugin]
     }
 
     fn default_config(&self) -> Option<&str> {

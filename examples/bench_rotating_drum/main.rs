@@ -89,6 +89,7 @@ fn create_wall_particles(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry
         atoms.tag.push(start_tag + k as u32);
         atoms.origin_index.push(0);
         atoms.cutoff_radius.push(r);
+        atoms.image.push([0, 0, 0]);
         atoms.is_ghost.push(false);
         atoms.pos.push([x, y, z]);
         atoms.vel.push([0.0; 3]); // velocity set by rotate system
@@ -103,6 +104,7 @@ fn create_wall_particles(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry
         dem.omega.push([0.0; 3]);
         dem.ang_mom.push([0.0; 3]);
         dem.torque.push([0.0; 3]);
+        dem.body_id.push(0.0);
     }
 }
 

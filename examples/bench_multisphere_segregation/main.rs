@@ -35,11 +35,12 @@ fn main() {
 
 /// Measure and write segregation data: average z of spheres vs dimers.
 ///
-/// Single spheres have type 0, clump parents (dimers) have type 1.
-/// Sub-spheres are excluded (they are not independent particles).
+/// Single spheres have type 0. Dimer bodies are identified via MultisphereBodyStore.
+/// Sub-sphere atoms (body_id > 0) are excluded from single-sphere averages.
 fn measure_segregation(
     atoms: Res<Atom>,
     registry: Res<AtomDataRegistry>,
+    bodies: Res<MultisphereBodyStore>,
     run_state: Res<RunState>,
     comm: Res<CommResource>,
     input: Res<Input>,
@@ -52,10 +53,6 @@ fn measure_segregation(
     }
 
     let clump = registry.get::<ClumpAtom>();
-    let clump = match clump {
-        Some(c) => c,
-        None => return,
-    };
 
     let nlocal = atoms.nlocal as usize;
 
@@ -65,26 +62,25 @@ fn measure_segregation(
     let mut dimer_z_sum = 0.0_f64;
     let mut dimer_mass_sum = 0.0_f64;
 
+    // Single spheres: type 0, not part of any body
     for i in 0..nlocal {
-        // Skip sub-spheres (they are part of clumps, not independent)
-        if i < clump.clump_id.len() && clump.clump_id[i] > 0.0 && clump.is_parent_flag[i] < 0.5 {
+        if atoms.atom_type[i] != 0 {
             continue;
         }
-
-        let z = atoms.pos[i][2];
-        let m = atoms.mass[i];
-
-        if atoms.atom_type[i] == 0 {
-            // Single sphere
-            sphere_z_sum += m * z;
-            sphere_mass_sum += m;
-        } else if atoms.atom_type[i] == 1 {
-            // Clump parent (dimer)
-            if i < clump.clump_id.len() && clump.is_parent_flag[i] > 0.5 {
-                dimer_z_sum += m * z;
-                dimer_mass_sum += m;
+        // Skip body sub-spheres
+        if let Some(ref c) = clump {
+            if i < c.body_id.len() && c.body_id[i] > 0.0 {
+                continue;
             }
         }
+        sphere_z_sum += atoms.mass[i] * atoms.pos[i][2];
+        sphere_mass_sum += atoms.mass[i];
+    }
+
+    // Dimer bodies: use COM z from MultisphereBodyStore
+    for body in &bodies.bodies {
+        dimer_z_sum += body.total_mass * body.com_pos[2];
+        dimer_mass_sum += body.total_mass;
     }
 
     // Global reduction
@@ -109,24 +105,20 @@ fn measure_segregation(
     };
 
     // Segregation index: S = (z_dimer - z_sphere) / (z_dimer + z_sphere)
-    // S > 0 means dimers are preferentially at the top
     let seg_index = if (z_dimer + z_sphere) > 0.0 {
         (z_dimer - z_sphere) / (z_dimer + z_sphere)
     } else {
         0.0
     };
 
-    // Compute time from step and timestep
     let time = step as f64 * atoms.dt;
 
-    // Output directory from Input resource
     let output_dir = match input.output_dir.as_deref() {
         Some(dir) => dir.to_string(),
         None => "data".to_string(),
     };
     let filepath = format!("{}/segregation.csv", output_dir);
 
-    // On first call, write header
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {

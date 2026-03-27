@@ -140,6 +140,7 @@ pub fn push_dem_test_atom(
     dem.omega.push([0.0; 3]);
     dem.ang_mom.push([0.0; 3]);
     dem.torque.push([0.0; 3]);
+    dem.body_id.push(0.0);
 }
 
 /// Create a single-material "glass" [`MaterialTable`](dem_atom::MaterialTable) for testing.

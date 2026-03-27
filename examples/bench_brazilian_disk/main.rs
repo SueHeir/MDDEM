@@ -107,6 +107,7 @@ fn setup_disk(
             dem.omega.push([0.0; 3]);
             dem.ang_mom.push([0.0; 3]);
             dem.torque.push([0.0; 3]);
+            dem.body_id.push(0.0);
 
             count += 1;
         }

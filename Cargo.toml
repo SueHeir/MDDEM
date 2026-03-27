@@ -158,6 +158,14 @@ path = "examples/bench_lunar_regolith/main.rs"
 name = "bench_multisphere_segregation"
 path = "examples/bench_multisphere_segregation/main.rs"
 
+[[example]]
+name = "bench_clump_haff_cooling"
+path = "examples/bench_clump_haff_cooling/main.rs"
+
+[[example]]
+name = "bench_sphere_haff_cooling"
+path = "examples/bench_sphere_haff_cooling/main.rs"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
