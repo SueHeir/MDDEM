@@ -163,6 +163,10 @@ name = "bench_clump_haff_cooling"
 path = "examples/bench_clump_haff_cooling/main.rs"
 
 [[example]]
+name = "bench_rod_haff_cooling"
+path = "examples/bench_rod_haff_cooling/main.rs"
+
+[[example]]
 name = "bench_sphere_haff_cooling"
 path = "examples/bench_sphere_haff_cooling/main.rs"
 

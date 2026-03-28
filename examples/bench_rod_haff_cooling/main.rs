@@ -1,16 +1,17 @@
-//! Haff's Cooling with Multisphere Clumps
+//! Haff's Cooling with Rod-Shaped Clumps
 //!
-//! Sphere-shaped clumps (7 overlapping sub-spheres approximating a sphere) in a
-//! fully periodic box with no gravity. The granular temperature decays following
-//! Haff's law: `T(t) = T(0) / (1 + t/tau)^2`.
+//! Rod clumps (4 spheres in a line) in a fully periodic box with no gravity.
+//! The granular temperature decays following Haff's law: `T(t) = T(0) / (1 + t/tau)^2`.
+//! The rod shape gives a highly asymmetric inertia tensor (Ix << Iy ≈ Iz), testing
+//! the Richardson angular momentum integration.
 //!
 //! A custom measurement system computes both translational and rotational granular
 //! temperatures from body COM velocities and angular velocities, and writes
 //! `cooling.csv` with measured values and theoretical Haff predictions.
 //!
 //! ```bash
-//! cargo run --release --example bench_clump_haff_cooling --no-default-features \
-//!     -- examples/bench_clump_haff_cooling/config.toml
+//! cargo run --release --example bench_rod_haff_cooling --no-default-features \
+//!     -- examples/bench_rod_haff_cooling/config.toml
 //! ```
 
 use std::fs;
@@ -136,7 +137,8 @@ fn measure_cooling(
     let time = step as f64 * atoms.dt;
 
     let params = HAFF.get_or_init(|| {
-        let d_eff = 2.0 * 1.1e-3;
+        // Rod bounding radius: center of outermost sphere (0.0012) + sub-sphere radius (0.0005)
+        let d_eff = 2.0 * 0.0017;
         let e = 0.9;
         let mu = 0.3;
         let v_rms = (3.0 * t_trans).sqrt().max(1e-10);
@@ -158,7 +160,7 @@ fn measure_cooling(
 
     let output_dir = match input.output_dir.as_deref() {
         Some(dir) => dir.to_string(),
-        None => "examples/bench_clump_haff_cooling/data".to_string(),
+        None => "examples/bench_rod_haff_cooling/data".to_string(),
     };
     let filepath = format!("{}/cooling.csv", output_dir);
 

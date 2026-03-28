@@ -330,10 +330,17 @@ fn compute_bin_grid(neighbor: &mut Neighbor, domain: &Domain, comm_size: i32) {
         domain.sub_length[2] / zi as f64,
     ];
 
-    // Ghost layers per side: enough bins to cover the cutoff distance.
-    let sx = (max_cutoff / actual_bin_size[0]).ceil() as i32;
-    let sy = (max_cutoff / actual_bin_size[1]).ceil() as i32;
-    let sz = (max_cutoff / actual_bin_size[2]).ceil() as i32;
+    // Ghost layers per side: enough bins to cover the ghost zone + stencil reach.
+    // When ghost_cutoff > pair cutoff (e.g., dem_clump extends it for sub-sphere
+    // offsets), local atoms can end up in ghost bins. The stencil from those bins
+    // must not exceed the grid, so we add stencil range on top of ghost layers.
+    let ghost_cut = if domain.ghost_cutoff > max_cutoff { domain.ghost_cutoff } else { max_cutoff };
+    let stencil_range_x = (max_cutoff / actual_bin_size[0]).ceil() as i32;
+    let stencil_range_y = (max_cutoff / actual_bin_size[1]).ceil() as i32;
+    let stencil_range_z = (max_cutoff / actual_bin_size[2]).ceil() as i32;
+    let sx = (ghost_cut / actual_bin_size[0]).ceil() as i32 + stencil_range_x;
+    let sy = (ghost_cut / actual_bin_size[1]).ceil() as i32 + stencil_range_y;
+    let sz = (ghost_cut / actual_bin_size[2]).ceil() as i32 + stencil_range_z;
 
     // Total bins = interior + 2 * ghost layers per axis.
     let nx = xi + 2 * sx;
@@ -439,7 +446,7 @@ sort_every = 1000"#,
 
         app.add_resource(Neighbor::new())
             .add_setup_system(neighbor_read_input, ScheduleSetupSet::Setup)
-            .add_setup_system(neighbor_setup, ScheduleSetupSet::PostSetup)
+            .add_setup_system(neighbor_setup.label("neighbor_setup"), ScheduleSetupSet::PostSetup)
             .add_update_system(
                 decide_rebuild.label("decide_rebuild").before(mddem_core::remove_ghost_atoms),
                 ScheduleSet::PostInitialIntegration,
@@ -523,7 +530,7 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
     } else {
         0.0
     };
-    let ghost_cut = max_cutoff + 2.0 * displacement_buffer;
+    let ghost_cut = (max_cutoff + 2.0 * displacement_buffer).max(domain.ghost_cutoff);
     neighbor.ghost_cutoff = ghost_cut;
     neighbor.cached_max_cutoff = max_cutoff;
     domain.ghost_cutoff = ghost_cut;

@@ -4,6 +4,10 @@
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE)
 
+## Disclaimer
+
+This codebase, although initally hand written, is now largely **LLM-generated** and most features have **not been rigorously tested or validated**, if tested at all. While unit tests exist and several benchmark examples produce physically reasonable results, the code should not be assumed correct for production or publication-quality simulations without independent verification. Use at your own risk.
+
 ## What is MDDEM?
 
 MDDEM is a particle simulation engine written in Rust, supporting both **Discrete Element Method (DEM)** for granular materials and **Molecular Dynamics (MD)** for continuous-potential systems such as Lennard-Jones fluids.
@@ -19,9 +23,9 @@ Both tiers can be mixed freely. The [hopper](examples/hopper/) example uses TOML
 
 ## Motivation
 
-MDDEM began as a Rust reimplementation of LAMMPS communication patterns, motivated by a desire to explore whether a scheduler with dependency injection could work for particle simulations. The scope has since expanded into a general-purpose DEM/MD framework that prioritizes ergonomics — composable plugins, typed configs, and a Rust-native API — as alternatives to the scripting and class-hierarchy approaches used by established codes.
+MDDEM began as a Rust reimplementation of LAMMPS communication patterns, motivated by a desire to **explore whether a scheduler with dependency injection could work for particle simulations**. The scope has since expanded into eventaully become a general-purpose DEM/MD framework that prioritizes ergonomics — composable plugins, typed configs, and a Rust-native API — as alternatives to the scripting and class-hierarchy approaches used by established codes.
 
-The framework produces reasonable physics results and performs within 2–3% of LAMMPS single-core and within 10% on MPI for LJ 12-6 benchmarks. While not yet validated to publication standards, it serves as a practical platform for prototyping simulation workflows, testing new force models, and learning particle methods in Rust.
+The framework produces reasonable physics results and performs within 2–3% of LAMMPS single-core and within 10% on MPI for LJ 12-6 benchmarks. This is not validated to publication standards, with many features probably not even running, I'll get there eventually.
 
 If you're looking for a starting point, the [hopper](examples/hopper/) example demonstrates how straightforward it is to add custom physics into the simulation loop.
 
@@ -283,6 +287,7 @@ cargo test -p dem_granular                   # Single crate
 Unit tests cover communication, domain decomposition, integration, neighbor lists, contact forces, rotational dynamics, material mixing, LJ forces, thermostats, lattice initialization, and measurement systems.
 
 Physics validation scripts (`validate.py` per example) check simulation output against analytical solutions: Haff's cooling law for granular gas, settling behavior for hopper discharge, and RDF/MSD/pressure against known liquid Argon properties.
+
 
 ## Contributing
 

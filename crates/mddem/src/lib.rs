@@ -328,7 +328,7 @@ pub mod prelude {
     pub use dem_atom::{DemAtomInsertPlugin, ParticlesConfig};
     pub use dem_bond::DemBondPlugin;
     pub use dem_clump::{ClumpPlugin, ClumpRegistry, ClumpAtom, ClumpDef, MultisphereBody, MultisphereBodyStore};
-    pub use dem_granular::GranularDefaultPlugins;
+    pub use dem_granular::{GranularDefaultPlugins, HertzMindlinContactPlugin, RotationalDynamicsPlugin, GranularTempPlugin};
     pub use dem_thermal::{ThermalConfig, ThermalPlugin};
     pub use dem_contact_analysis::{ContactAnalysisConfig, ContactAnalysisPlugin};
     pub use dem_measure_plane::{MeasurePlaneDef, MeasurePlanePlugin, MeasurePlanes};

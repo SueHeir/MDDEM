@@ -362,10 +362,10 @@ processors_z = 1"#,
         app.add_setup_system(comm_read_input.run_if(first_stage_only()), ScheduleSetupSet::PreSetup)
             .add_setup_system(comm_setup.run_if(first_stage_only()), ScheduleSetupSet::PostSetup)
             .add_update_system(borders, ScheduleSet::PreNeighbor)
-            .add_update_system(reverse_send_force, ScheduleSet::PostForce);
+            .add_update_system(reverse_send_force.label("reverse_send_force"), ScheduleSet::PostForce);
 
         #[cfg(feature = "mpi_backend")]
-        app.add_update_system(exchange, ScheduleSet::Exchange);
+        app.add_update_system(exchange.label("exchange"), ScheduleSet::Exchange);
 
         app.add_cleanup(finalize_mpi);
     }

@@ -11,7 +11,7 @@ categories = ["simulation", "science"]
 
 [features]
 default = ["mpi_backend"]
-mpi_backend = ["mddem_core/mpi_backend"]
+mpi_backend = ["mddem_core/mpi_backend", "dem_clump/mpi_backend"]
 
 [dependencies]
 sim_scheduler = { path = "../sim_scheduler", version = "0.1.3" }

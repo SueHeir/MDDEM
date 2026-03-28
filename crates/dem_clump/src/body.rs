@@ -29,6 +29,8 @@ pub struct MultisphereBody {
     pub quaternion: [f64; 4],
     /// Angular velocity in space frame (rad/s).
     pub omega: [f64; 3],
+    /// Angular momentum in space frame.
+    pub angmom: [f64; 3],
     /// Principal moments of inertia [Ix, Iy, Iz] in body frame.
     pub principal_moments: [f64; 3],
     /// Rotation from body frame to principal frame as quaternion [w, x, y, z].
@@ -65,21 +67,49 @@ impl MultisphereBody {
 }
 
 /// Resource holding all multisphere rigid bodies.
+///
+/// Uses a flat array (`map`) indexed by body ID for O(1) lookups,
+/// similar to LIGGGHTS's `mapArray_`.
 #[derive(Default)]
 pub struct MultisphereBodyStore {
     pub bodies: Vec<MultisphereBody>,
+    /// Flat lookup: `map[body_id] = index` into `bodies`, or `usize::MAX` if absent.
+    map: Vec<usize>,
 }
 
 impl MultisphereBodyStore {
     pub fn new() -> Self {
         Self {
             bodies: Vec::new(),
+            map: Vec::new(),
+        }
+    }
+
+    /// Rebuild the flat ID → index map. Call after adding/removing bodies.
+    pub fn generate_map(&mut self) {
+        let max_id = self.bodies.iter().map(|b| b.id as usize).max().unwrap_or(0);
+        self.map.clear();
+        self.map.resize(max_id + 1, usize::MAX);
+        for (idx, body) in self.bodies.iter().enumerate() {
+            self.map[body.id as usize] = idx;
+        }
+    }
+
+    /// O(1) lookup: body ID → index into `bodies`. Returns `None` if not found.
+    #[inline]
+    pub fn map(&self, id: u32) -> Option<usize> {
+        let id = id as usize;
+        if id < self.map.len() {
+            let idx = self.map[id];
+            if idx != usize::MAX { Some(idx) } else { None }
+        } else {
+            None
         }
     }
 
     /// Find body by ID. Returns index into `bodies`.
     pub fn find_by_id(&self, id: u32) -> Option<usize> {
-        self.bodies.iter().position(|b| b.id == id)
+        self.map(id)
     }
 }
 
@@ -120,12 +150,137 @@ pub fn quat_rotate_inv(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
     quat_rotate(quat_conj(q), v)
 }
 
-/// Construct a unit quaternion from axis-angle.
+// ── Angular momentum integration helpers (LIGGGHTS-style) ──────────────────
+
+/// Build rotation matrix columns from quaternion q = [w, x, y, z].
+/// Returns (ex, ey, ez) where each is a column of the rotation matrix R.
 #[inline]
-fn quat_from_axis_angle(axis: [f64; 3], angle: f64) -> [f64; 4] {
-    let half = angle * 0.5;
-    let s = half.sin();
-    [half.cos(), axis[0] * s, axis[1] * s, axis[2] * s]
+fn quat_to_rotation_columns(q: [f64; 4]) -> ([f64; 3], [f64; 3], [f64; 3]) {
+    let w = q[0];
+    let x = q[1];
+    let y = q[2];
+    let z = q[3];
+    let ex = [
+        w * w + x * x - y * y - z * z,
+        2.0 * (x * y + w * z),
+        2.0 * (x * z - w * y),
+    ];
+    let ey = [
+        2.0 * (x * y - w * z),
+        w * w - x * x + y * y - z * z,
+        2.0 * (y * z + w * x),
+    ];
+    let ez = [
+        2.0 * (x * z + w * y),
+        2.0 * (y * z - w * x),
+        w * w - x * x - y * y + z * z,
+    ];
+    (ex, ey, ez)
+}
+
+/// Convert angular momentum (space frame) to angular velocity (space frame)
+/// using the combined orientation quaternion (principal→space) and principal
+/// moments of inertia.
+///
+/// The `quat_principal_to_space` should be `body.quaternion * body.principal_axes`
+/// (composed before calling), so the rotation columns map from principal frame
+/// to space frame.
+///
+/// Matches LIGGGHTS `MathExtra::angmom_to_omega`.
+#[inline]
+pub fn angmom_to_omega(
+    angmom: [f64; 3],
+    quat_principal_to_space: [f64; 4],
+    moments: [f64; 3],
+) -> [f64; 3] {
+    let (ex, ey, ez) = quat_to_rotation_columns(quat_principal_to_space);
+
+    // Project angular momentum into principal frame: L_principal = R^T * L_space
+    let lpx = ex[0] * angmom[0] + ex[1] * angmom[1] + ex[2] * angmom[2];
+    let lpy = ey[0] * angmom[0] + ey[1] * angmom[1] + ey[2] * angmom[2];
+    let lpz = ez[0] * angmom[0] + ez[1] * angmom[1] + ez[2] * angmom[2];
+
+    // omega_principal = L_principal / I (guard against zero inertia)
+    let wpx = if moments[0] > 1e-30 { lpx / moments[0] } else { 0.0 };
+    let wpy = if moments[1] > 1e-30 { lpy / moments[1] } else { 0.0 };
+    let wpz = if moments[2] > 1e-30 { lpz / moments[2] } else { 0.0 };
+
+    // Rotate back to space frame: omega = R * omega_principal
+    [
+        ex[0] * wpx + ey[0] * wpy + ez[0] * wpz,
+        ex[1] * wpx + ey[1] * wpy + ez[1] * wpz,
+        ex[2] * wpx + ey[2] * wpy + ez[2] * wpz,
+    ]
+}
+
+/// Quaternion kinematic equation: dq/dt = 0.5 * omega_quat * q.
+///
+/// Returns the time derivative components (not scaled by dt).
+/// Matches LIGGGHTS `MathExtra::vecquat`.
+#[inline]
+fn vecquat(w: [f64; 3], q: [f64; 4]) -> [f64; 4] {
+    [
+        -w[0] * q[1] - w[1] * q[2] - w[2] * q[3],
+         q[0] * w[0] + w[1] * q[3] - w[2] * q[2],
+         q[0] * w[1] + w[2] * q[1] - w[0] * q[3],
+         q[0] * w[2] + w[0] * q[2] - w[1] * q[1],
+    ]
+}
+
+/// Richardson extrapolation for quaternion integration.
+///
+/// Uses two estimates (full step and two half-steps) for second-order accuracy.
+/// Matches LIGGGHTS `FixMultisphere::richardson`.
+///
+/// `q` is the body quaternion (body→space). `principal_axes` is the body→principal
+/// rotation; composed internally for `angmom_to_omega` calls.
+fn richardson(
+    q: &mut [f64; 4],
+    angmom: [f64; 3],
+    omega: [f64; 3],
+    moments: [f64; 3],
+    dtq: f64,
+    principal_axes: [f64; 4],
+) {
+    let half_dtq = 0.5 * dtq;
+
+    // Full Euler step
+    let dq = vecquat(omega, *q);
+    let q_full = quat_normalize([
+        q[0] + dtq * dq[0],
+        q[1] + dtq * dq[1],
+        q[2] + dtq * dq[2],
+        q[3] + dtq * dq[3],
+    ]);
+
+    // First half step
+    let mut q_half = quat_normalize([
+        q[0] + half_dtq * dq[0],
+        q[1] + half_dtq * dq[1],
+        q[2] + half_dtq * dq[2],
+        q[3] + half_dtq * dq[3],
+    ]);
+
+    // Recompute omega at the half-step orientation
+    let q_half_ps = quat_mul(q_half, principal_axes);
+    let omega_half = angmom_to_omega(angmom, q_half_ps, moments);
+
+    // Second half step
+    let dq2 = vecquat(omega_half, q_half);
+    q_half = quat_normalize([
+        q_half[0] + half_dtq * dq2[0],
+        q_half[1] + half_dtq * dq2[1],
+        q_half[2] + half_dtq * dq2[2],
+        q_half[3] + half_dtq * dq2[3],
+    ]);
+
+    // Richardson extrapolation: 2*q_half - q_full
+    *q = quat_normalize([
+        2.0 * q_half[0] - q_full[0],
+        2.0 * q_half[1] - q_full[1],
+        2.0 * q_half[2] - q_full[2],
+        2.0 * q_half[3] - q_full[3],
+    ]);
 }
 
 // ── Inertia tensor computation ──────────────────────────────────────────────
@@ -381,12 +536,14 @@ pub fn diagonalize_inertia(tensor: [[f64; 3]; 3]) -> ([f64; 3], [f64; 4]) {
 
 /// Initial half-step integration for a rigid body (Velocity Verlet).
 ///
-/// 1. Transform torque and omega to body principal frame
-/// 2. Euler equations for angular acceleration
-/// 3. Half-kick omega in body frame, transform back
-/// 4. Translational half-kick + drift for COM
-/// 5. Quaternion update from omega
-/// 6. Renormalize quaternion
+/// Uses angular momentum as state variable with Richardson-extrapolated
+/// quaternion integration, matching LIGGGHTS `fix_multisphere`.
+///
+/// 1. Translational half-kick velocity + full drift position
+/// 2. Half-kick angular momentum from torque
+/// 3. Derive omega from angular momentum
+/// 4. Richardson-extrapolated quaternion update
+/// 5. Recompute omega with updated quaternion
 pub fn integrate_body_initial(body: &mut MultisphereBody, dt: f64) {
     let half_dt = 0.5 * dt;
 
@@ -398,67 +555,41 @@ pub fn integrate_body_initial(body: &mut MultisphereBody, dt: f64) {
         body.com_pos[d] += dt * body.com_vel[d];
     }
 
-    // --- Rotational: Euler equations in principal frame ---
-    let q = body.quaternion;
-    let pa = body.principal_axes;
-
-    // Combined rotation: body → principal = pa^-1 * q^-1
-    // space → body = q^-1, body → principal = pa^-1
-    let q_to_body = quat_conj(q);
-    let q_body_to_principal = quat_conj(pa);
-
-    // Transform torque: space → body → principal
-    let torque_body = quat_rotate(q_to_body, body.torque);
-    let torque_principal = quat_rotate(q_body_to_principal, torque_body);
-
-    // Transform omega: space → body → principal
-    let omega_body = quat_rotate(q_to_body, body.omega);
-    let mut omega_p = quat_rotate(q_body_to_principal, omega_body);
-
-    let ix = body.principal_moments[0];
-    let iy = body.principal_moments[1];
-    let iz = body.principal_moments[2];
-
-    // Euler equations: I*alpha = tau - omega x (I*omega)
-    // alpha_x = (tau_x + (Iy - Iz)*wy*wz) / Ix
-    if ix > 1e-30 {
-        omega_p[0] += half_dt * (torque_principal[0] + (iy - iz) * omega_p[1] * omega_p[2]) / ix;
-    }
-    if iy > 1e-30 {
-        omega_p[1] += half_dt * (torque_principal[1] + (iz - ix) * omega_p[2] * omega_p[0]) / iy;
-    }
-    if iz > 1e-30 {
-        omega_p[2] += half_dt * (torque_principal[2] + (ix - iy) * omega_p[0] * omega_p[1]) / iz;
+    // --- Rotational: angular momentum integration ---
+    // Half-kick angular momentum
+    for d in 0..3 {
+        body.angmom[d] += half_dt * body.torque[d];
     }
 
-    // Transform omega back: principal → body → space
-    let omega_body = quat_rotate(pa, omega_p);
-    body.omega = quat_rotate(q, omega_body);
+    // Combined quaternion: principal frame → space frame
+    let q_ps = quat_mul(body.quaternion, body.principal_axes);
 
-    // --- Quaternion update from omega ---
-    let omega_mag = (body.omega[0] * body.omega[0]
-        + body.omega[1] * body.omega[1]
-        + body.omega[2] * body.omega[2])
-    .sqrt();
-    let angle = omega_mag * dt;
-    if angle > 1e-14 {
-        let inv = 1.0 / omega_mag;
-        let axis = [
-            body.omega[0] * inv,
-            body.omega[1] * inv,
-            body.omega[2] * inv,
-        ];
-        let dq = quat_from_axis_angle(axis, angle);
-        body.quaternion = quat_normalize(quat_mul(dq, body.quaternion));
-    }
+    // Derive omega from angular momentum
+    body.omega = angmom_to_omega(body.angmom, q_ps, body.principal_moments);
+
+    // Richardson-extrapolated quaternion update (dtq = dt/2 per LIGGGHTS convention)
+    richardson(
+        &mut body.quaternion,
+        body.angmom,
+        body.omega,
+        body.principal_moments,
+        half_dt,
+        body.principal_axes,
+    );
+
+    // Recompute omega with the updated quaternion
+    let q_ps = quat_mul(body.quaternion, body.principal_axes);
+    body.omega = angmom_to_omega(body.angmom, q_ps, body.principal_moments);
 }
 
 /// Final half-step integration for a rigid body (Velocity Verlet).
 ///
-/// 1. Transform torque and omega to body principal frame
-/// 2. Euler equation angular acceleration
-/// 3. Half-kick omega, transform back
-/// 4. Translational half-kick for COM velocity
+/// Uses angular momentum as state variable, matching LIGGGHTS.
+/// No quaternion update in the final step.
+///
+/// 1. Translational half-kick velocity
+/// 2. Half-kick angular momentum from torque
+/// 3. Derive omega from angular momentum
 pub fn integrate_body_final(body: &mut MultisphereBody, dt: f64) {
     let half_dt = 0.5 * dt;
 
@@ -467,35 +598,14 @@ pub fn integrate_body_final(body: &mut MultisphereBody, dt: f64) {
         body.com_vel[d] += half_dt * body.force[d] * body.inv_mass;
     }
 
-    // --- Rotational: Euler equations in principal frame ---
-    let q = body.quaternion;
-    let pa = body.principal_axes;
-
-    let q_to_body = quat_conj(q);
-    let q_body_to_principal = quat_conj(pa);
-
-    let torque_body = quat_rotate(q_to_body, body.torque);
-    let torque_principal = quat_rotate(q_body_to_principal, torque_body);
-
-    let omega_body = quat_rotate(q_to_body, body.omega);
-    let mut omega_p = quat_rotate(q_body_to_principal, omega_body);
-
-    let ix = body.principal_moments[0];
-    let iy = body.principal_moments[1];
-    let iz = body.principal_moments[2];
-
-    if ix > 1e-30 {
-        omega_p[0] += half_dt * (torque_principal[0] + (iy - iz) * omega_p[1] * omega_p[2]) / ix;
-    }
-    if iy > 1e-30 {
-        omega_p[1] += half_dt * (torque_principal[1] + (iz - ix) * omega_p[2] * omega_p[0]) / iy;
-    }
-    if iz > 1e-30 {
-        omega_p[2] += half_dt * (torque_principal[2] + (ix - iy) * omega_p[0] * omega_p[1]) / iz;
+    // --- Rotational: angular momentum half-kick ---
+    for d in 0..3 {
+        body.angmom[d] += half_dt * body.torque[d];
     }
 
-    let omega_body = quat_rotate(pa, omega_p);
-    body.omega = quat_rotate(q, omega_body);
+    // Derive omega from angular momentum
+    let q_ps = quat_mul(body.quaternion, body.principal_axes);
+    body.omega = angmom_to_omega(body.angmom, q_ps, body.principal_moments);
 }
 
 // ── Pack / Unpack for future MPI ────────────────────────────────────────────
@@ -511,6 +621,7 @@ impl MultisphereBody {
         buf.push(self.quaternion[2]);
         buf.push(self.quaternion[3]);
         buf.extend_from_slice(&self.omega);
+        buf.extend_from_slice(&self.angmom);
         buf.extend_from_slice(&self.principal_moments);
         buf.push(self.principal_axes[0]);
         buf.push(self.principal_axes[1]);
@@ -545,6 +656,8 @@ impl MultisphereBody {
         let quaternion = [buf[p], buf[p + 1], buf[p + 2], buf[p + 3]];
         p += 4;
         let omega = [buf[p], buf[p + 1], buf[p + 2]];
+        p += 3;
+        let angmom = [buf[p], buf[p + 1], buf[p + 2]];
         p += 3;
         let principal_moments = [buf[p], buf[p + 1], buf[p + 2]];
         p += 3;
@@ -581,6 +694,7 @@ impl MultisphereBody {
                 com_vel,
                 quaternion,
                 omega,
+                angmom,
                 principal_moments,
                 principal_axes,
                 total_mass,
@@ -748,6 +862,7 @@ mod tests {
             com_vel: [0.1, 0.2, 0.3],
             quaternion: [1.0, 0.0, 0.0, 0.0],
             omega: [10.0, 20.0, 30.0],
+            angmom: [15.0, 50.0, 105.0],
             principal_moments: [1.5, 2.5, 3.5],
             principal_axes: [1.0, 0.0, 0.0, 0.0],
             total_mass: 5.0,
@@ -781,6 +896,7 @@ mod tests {
             com_vel: [0.0; 3],
             quaternion: [1.0, 0.0, 0.0, 0.0],
             omega: [0.0, 0.0, 100.0],
+            angmom: [0.0, 0.0, 200.0], // L = I * omega = 2.0 * 100.0
             principal_moments: [1.0, 1.0, 2.0],
             principal_axes: [1.0, 0.0, 0.0, 0.0],
             total_mass: 1.0,
@@ -831,6 +947,7 @@ mod tests {
             com_vel: [0.0; 3],
             quaternion: [1.0, 0.0, 0.0, 0.0],
             omega: [0.0; 3],
+            angmom: [0.0; 3],
             principal_moments: [ix, 3.0, 4.0],
             principal_axes: [1.0, 0.0, 0.0, 0.0],
             total_mass: 1.0,

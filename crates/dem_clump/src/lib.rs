@@ -47,8 +47,11 @@ use rand::Rng;
 
 use mddem_core::{
     register_atom_data, Atom, AtomData, AtomDataRegistry, CommResource, Config, Domain, Region,
-    ScheduleSet, ScheduleSetupSet,
+    RunState, ScheduleSet, ScheduleSetupSet,
 };
+
+#[cfg(feature = "mpi_backend")]
+use mddem_core::CommTopology;
 
 use dem_atom::DemAtom;
 
@@ -126,6 +129,7 @@ pub struct ClumpAtom {
     pub body_id: Vec<f64>,
 
     /// Local offset from body COM in body frame [x, y, z].
+    #[forward]
     pub body_offset: Vec<[f64; 3]>,
 }
 
@@ -253,6 +257,42 @@ impl Plugin for ClumpPlugin {
             ScheduleSetupSet::Setup,
         );
 
+        // Set minimum ghost cutoff for clumps BEFORE neighbor_setup computes bins.
+        // neighbor_setup will use max(its_value, domain.ghost_cutoff).
+        app.add_setup_system(
+            extend_ghost_cutoff_for_clumps
+                .label("extend_ghost_cutoff_for_clumps"),
+            ScheduleSetupSet::Setup,
+        );
+
+        // Before any exchange, snap sub-sphere positions to body COM so they
+        // always migrate to the same rank as their body. Must run before
+        // exchange_bodies so all bodies are still local for the lookup.
+        app.add_update_system(
+            snap_subspheres_to_body_com
+                .label("snap_subspheres_to_body_com")
+                .before("exchange_bodies")
+                .before("exchange"),
+            ScheduleSet::Exchange,
+        );
+
+        // Body exchange: migrate bodies whose COM left the local subdomain.
+        app.add_update_system(
+            exchange_bodies
+                .label("exchange_bodies")
+                .before("exchange"),
+            ScheduleSet::Exchange,
+        );
+
+        // After atom exchange, restore sub-sphere positions from body state
+        // (undo the snap-to-COM done before exchange).
+        app.add_update_system(
+            restore_subsphere_positions
+                .label("restore_subsphere_positions")
+                .after("exchange"),
+            ScheduleSet::Exchange,
+        );
+
         // Body initial integration (half-kick + drift + quaternion update)
         app.add_update_system(
             integrate_bodies_initial.label("integrate_bodies_initial"),
@@ -266,10 +306,13 @@ impl Plugin for ClumpPlugin {
         );
 
         // Force aggregation: sub-sphere forces → body force/torque
+        // Must run after reverse_send_force so ghost sub-sphere forces are
+        // accumulated back to their owning atoms before aggregation to bodies.
         app.add_update_system(
             aggregate_clump_forces
                 .label("aggregate_clump_forces")
-                .after("hertz_mindlin_contact"),
+                .after("hertz_mindlin_contact")
+                .after("reverse_send_force"),
             ScheduleSet::PostForce,
         );
 
@@ -279,15 +322,137 @@ impl Plugin for ClumpPlugin {
             ScheduleSet::FinalIntegration,
         );
 
-        // Derive sub-sphere pos/vel from body state
+        // Update sub-sphere positions before exchange so atoms migrate to the
+        // same rank as their body (prevents orphan sub-spheres whose forces
+        // would have no local body to aggregate to).
+        app.add_update_system(
+            update_clump_positions
+                .label("update_clump_positions_pre_exchange")
+                .after("pbc_multisphere_bodies"),
+            ScheduleSet::PostInitialIntegration,
+        );
+
+        // Derive sub-sphere pos/vel from body state (end of step)
         app.add_update_system(
             update_clump_positions.label("update_clump_positions"),
+            ScheduleSet::PostFinalIntegration,
+        );
+
+        // Lost atom detection (lightweight, every 1000 steps)
+        app.add_update_system(
+            check_lost_clump_atoms
+                .label("check_lost_clump_atoms")
+                .after("update_clump_positions"),
             ScheduleSet::PostFinalIntegration,
         );
     }
 }
 
 // ── Systems ─────────────────────────────────────────────────────────────────
+
+/// Extend `Domain::ghost_cutoff` by the maximum clump bounding radius.
+///
+/// Ensures all sub-spheres of bodies near subdomain boundaries are visible as
+/// ghosts on the body-owning rank. Mirrors LIGGGHTS's `extend_cut_ghost()`.
+fn extend_ghost_cutoff_for_clumps(
+    clump_registry: Res<ClumpRegistry>,
+    mut domain: ResMut<Domain>,
+    comm: Res<CommResource>,
+) {
+    let mut max_r_bound: f64 = 0.0;
+    for def in &clump_registry.defs {
+        for sphere in &def.spheres {
+            let r = (sphere.offset[0].powi(2) + sphere.offset[1].powi(2) + sphere.offset[2].powi(2)).sqrt()
+                + sphere.radius;
+            max_r_bound = max_r_bound.max(r);
+        }
+    }
+    if max_r_bound > 0.0 {
+        let extension = 2.0 * max_r_bound;
+        domain.ghost_cutoff += extension;
+        if comm.rank() == 0 {
+            println!(
+                "ClumpPlugin: extended ghost_cutoff by {:.6} (2 * R_bound={:.6}) → {:.6}",
+                extension, max_r_bound, domain.ghost_cutoff
+            );
+        }
+    }
+}
+
+/// Snap sub-sphere positions to their body COM before atom exchange.
+///
+/// This ensures sub-spheres always migrate to the same rank as their body.
+/// Without this, a sub-sphere near a subdomain boundary could exchange to a
+/// different rank than its body, causing orphaned forces.
+fn snap_subspheres_to_body_com(
+    mut atoms: ResMut<Atom>,
+    bodies: Res<MultisphereBodyStore>,
+    registry: Res<AtomDataRegistry>,
+) {
+    let clump = match registry.get::<ClumpAtom>() {
+        Some(c) => c,
+        None => return,
+    };
+
+    let nlocal = atoms.nlocal as usize;
+    for i in 0..nlocal {
+        if i >= clump.body_id.len() {
+            break;
+        }
+        let bid = clump.body_id[i] as u32;
+        if bid == 0 {
+            continue;
+        }
+        if let Some(body_idx) = bodies.map(bid) {
+            atoms.pos[i] = bodies.bodies[body_idx].com_pos;
+        }
+    }
+}
+
+/// Restore sub-sphere positions from body state after atom exchange.
+///
+/// Undoes the snap-to-COM and sets correct offset positions, velocities, and angular velocities.
+/// Also regenerates the body ID→index map after body exchange.
+fn restore_subsphere_positions(
+    mut atoms: ResMut<Atom>,
+    mut bodies: ResMut<MultisphereBodyStore>,
+    registry: Res<AtomDataRegistry>,
+) {
+    bodies.generate_map();
+
+    let clump = match registry.get::<ClumpAtom>() {
+        Some(c) => c,
+        None => return,
+    };
+    let mut dem = registry.expect_mut::<DemAtom>("restore_subsphere_positions");
+
+    let nlocal = atoms.nlocal as usize;
+    for i in 0..nlocal {
+        if i >= clump.body_id.len() {
+            break;
+        }
+        let bid = clump.body_id[i] as u32;
+        if bid == 0 {
+            continue;
+        }
+        if let Some(body_idx) = bodies.map(bid) {
+            let body = &bodies.bodies[body_idx];
+            let rotated = quat_rotate(body.quaternion, clump.body_offset[i]);
+            atoms.pos[i] = [
+                body.com_pos[0] + rotated[0],
+                body.com_pos[1] + rotated[1],
+                body.com_pos[2] + rotated[2],
+            ];
+            let omega_cross_r = cross(body.omega, rotated);
+            atoms.vel[i] = [
+                body.com_vel[0] + omega_cross_r[0],
+                body.com_vel[1] + omega_cross_r[1],
+                body.com_vel[2] + omega_cross_r[2],
+            ];
+            dem.omega[i] = body.omega;
+        }
+    }
+}
 
 /// Initial half-step: integrate all rigid bodies (Euler equations).
 fn integrate_bodies_initial(atoms: Res<Atom>, mut bodies: ResMut<MultisphereBodyStore>) {
@@ -325,6 +490,96 @@ fn pbc_multisphere_bodies(mut bodies: ResMut<MultisphereBodyStore>, domain: Res<
     }
 }
 
+/// Exchange bodies between processors when their COM leaves the local subdomain.
+///
+/// Mirrors the atom exchange pattern in `comm.rs`: for each dimension, scan bodies
+/// whose COM is outside `[sub_domain_low, sub_domain_high)`, pack them, send to the
+/// neighbor processor, receive incoming bodies, and rebuild the ID→index map.
+#[cfg(feature = "mpi_backend")]
+fn exchange_bodies(
+    comm: Res<CommResource>,
+    topo: Res<CommTopology>,
+    mut bodies: ResMut<MultisphereBodyStore>,
+    domain: Res<Domain>,
+) {
+    let decomp = comm.processor_decomposition();
+
+    let mut lo_buf: Vec<f64> = Vec::new();
+    let mut hi_buf: Vec<f64> = Vec::new();
+
+    for dim in 0..3usize {
+        if decomp[dim] == 1 {
+            continue;
+        }
+
+        let lo_proc = topo.swap_directions[0][dim];
+        let hi_proc = topo.swap_directions[1][dim];
+
+        lo_buf.clear();
+        hi_buf.clear();
+        let mut lo_count = 0u32;
+        let mut hi_count = 0u32;
+
+        // Scan bodies in reverse, pack those with COM outside subdomain
+        for i in (0..bodies.bodies.len()).rev() {
+            let pos = bodies.bodies[i].com_pos[dim];
+            if pos < domain.sub_domain_low[dim] {
+                lo_count += 1;
+                bodies.bodies[i].pack(&mut lo_buf);
+                bodies.bodies.swap_remove(i);
+            } else if pos >= domain.sub_domain_high[dim] {
+                hi_count += 1;
+                bodies.bodies[i].pack(&mut hi_buf);
+                bodies.bodies.swap_remove(i);
+            }
+        }
+
+        lo_buf.push(lo_count as f64);
+        hi_buf.push(hi_count as f64);
+
+        // Send lo, receive from hi
+        if lo_proc != -1 && hi_proc != -1 {
+            let msg = comm.sendrecv_f64(lo_proc, &lo_buf, hi_proc);
+            unpack_bodies_from_msg(&msg, &mut bodies.bodies);
+        } else if lo_proc != -1 {
+            comm.send_f64(lo_proc, &lo_buf);
+        } else if hi_proc != -1 {
+            let msg = comm.recv_f64(hi_proc);
+            unpack_bodies_from_msg(&msg, &mut bodies.bodies);
+        }
+
+        // Send hi, receive from lo
+        if hi_proc != -1 && lo_proc != -1 {
+            let msg = comm.sendrecv_f64(hi_proc, &hi_buf, lo_proc);
+            unpack_bodies_from_msg(&msg, &mut bodies.bodies);
+        } else if hi_proc != -1 {
+            comm.send_f64(hi_proc, &hi_buf);
+        } else if lo_proc != -1 {
+            let msg = comm.recv_f64(lo_proc);
+            unpack_bodies_from_msg(&msg, &mut bodies.bodies);
+        }
+    }
+
+    bodies.generate_map();
+}
+
+/// Unpack bodies from a received message buffer.
+#[cfg(feature = "mpi_backend")]
+fn unpack_bodies_from_msg(msg: &[f64], bodies: &mut Vec<MultisphereBody>) {
+    let count = msg[msg.len() - 1] as usize;
+    let data = &msg[..msg.len() - 1];
+    let mut pos = 0;
+    for _ in 0..count {
+        let (body, consumed) = MultisphereBody::unpack(&data[pos..]);
+        bodies.push(body);
+        pos += consumed;
+    }
+}
+
+/// No-op body exchange for single-process builds.
+#[cfg(not(feature = "mpi_backend"))]
+fn exchange_bodies() {}
+
 /// Aggregate forces from sub-sphere atoms onto their parent body.
 ///
 /// For each sub-sphere with `body_id > 0`:
@@ -350,14 +605,6 @@ pub fn aggregate_clump_forces(
         body.zero_accumulators();
     }
 
-    // Build body_id → index map
-    let body_map: HashMap<u32, usize> = bodies
-        .bodies
-        .iter()
-        .enumerate()
-        .map(|(idx, b)| (b.id, idx))
-        .collect();
-
     let nlocal = atoms.nlocal as usize;
 
     // Collect contributions to avoid borrow conflicts
@@ -379,8 +626,8 @@ pub fn aggregate_clump_forces(
             continue;
         }
 
-        let body_idx = match body_map.get(&bid) {
-            Some(&idx) => idx,
+        let body_idx = match bodies.map(bid) {
+            Some(idx) => idx,
             None => continue,
         };
 
@@ -428,9 +675,10 @@ pub fn aggregate_clump_forces(
     }
 }
 
-/// Derive sub-sphere positions and velocities from body state.
+/// Derive sub-sphere positions, velocities, and angular velocities from body state.
 ///
-/// For each sub-sphere: `pos = COM + q * body_offset`, `vel = COM_vel + omega × (q * offset)`.
+/// For each sub-sphere: `pos = COM + q * body_offset`, `vel = COM_vel + omega × (q * offset)`,
+/// `omega = body.omega` (rigid body constraint — all sub-spheres share the body angular velocity).
 pub fn update_clump_positions(
     mut atoms: ResMut<Atom>,
     bodies: Res<MultisphereBodyStore>,
@@ -442,19 +690,13 @@ pub fn update_clump_positions(
         None => return,
     };
 
-    let body_map: HashMap<u32, usize> = bodies
-        .bodies
-        .iter()
-        .enumerate()
-        .map(|(idx, b)| (b.id, idx))
-        .collect();
-
     let nlocal = atoms.nlocal as usize;
 
     struct SubUpdate {
         idx: usize,
         pos: [f64; 3],
         vel: [f64; 3],
+        omega: [f64; 3],
     }
 
     let mut updates: Vec<SubUpdate> = Vec::new();
@@ -468,8 +710,8 @@ pub fn update_clump_positions(
             continue;
         }
 
-        let body_idx = match body_map.get(&bid) {
-            Some(&idx) => idx,
+        let body_idx = match bodies.map(bid) {
+            Some(idx) => idx,
             None => continue,
         };
 
@@ -493,12 +735,59 @@ pub fn update_clump_positions(
             idx: i,
             pos: new_pos,
             vel: new_vel,
+            omega: body.omega,
         });
     }
 
+    let mut dem = registry.expect_mut::<DemAtom>("update_clump_positions");
     for u in updates {
         atoms.pos[u.idx] = u.pos;
         atoms.vel[u.idx] = u.vel;
+        dem.omega[u.idx] = u.omega;
+    }
+}
+
+/// Diagnostic: check that each body has the expected number of local sub-sphere atoms.
+///
+/// Runs every 1000 steps. Warns on mismatch but does not delete atoms.
+fn check_lost_clump_atoms(
+    atoms: Res<Atom>,
+    bodies: Res<MultisphereBodyStore>,
+    registry: Res<AtomDataRegistry>,
+    comm: Res<CommResource>,
+    run_state: Res<RunState>,
+) {
+    if run_state.total_cycle % 1000 != 0 {
+        return;
+    }
+
+    let clump = match registry.get::<ClumpAtom>() {
+        Some(c) => c,
+        None => return,
+    };
+
+    let nlocal = atoms.nlocal as usize;
+    let mut counts: HashMap<u32, usize> = HashMap::new();
+
+    for i in 0..nlocal {
+        if i >= clump.body_id.len() {
+            break;
+        }
+        let bid = clump.body_id[i] as u32;
+        if bid > 0 {
+            *counts.entry(bid).or_default() += 1;
+        }
+    }
+
+    for body in &bodies.bodies {
+        let expected = body.sub_sphere_tags.len();
+        let actual = counts.get(&body.id).copied().unwrap_or(0);
+        if actual != expected {
+            eprintln!(
+                "WARNING: Body {} has {}/{} atoms on rank {}",
+                body.id, actual, expected, comm.rank()
+            );
+        }
     }
 }
 
@@ -719,6 +1008,7 @@ pub fn insert_clump(
         com_vel,
         quaternion: [1.0, 0.0, 0.0, 0.0],
         omega: [0.0; 3],
+        angmom: [0.0; 3],
         principal_moments,
         principal_axes,
         total_mass,
@@ -731,6 +1021,7 @@ pub fn insert_clump(
         sub_sphere_tags,
     };
     body_store.bodies.push(body);
+    body_store.generate_map();
 
     // Insert sub-sphere atoms (no parent atom)
     for (si, sphere) in def.spheres.iter().enumerate() {

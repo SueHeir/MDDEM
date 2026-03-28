@@ -63,6 +63,7 @@ pub fn initial_rotation(atoms: Res<Atom>, registry: Res<AtomDataRegistry>) {
 
     for i in 0..nlocal {
         let inv_inertia = dem.inv_inertia[i];
+        if inv_inertia == 0.0 { continue; } // Skip clump sub-spheres
 
         dem.omega[i][0] += 0.5 * dt * dem.torque[i][0] * inv_inertia;
         dem.omega[i][1] += 0.5 * dt * dem.torque[i][1] * inv_inertia;
@@ -90,6 +91,7 @@ pub fn final_rotation(atoms: Res<Atom>, registry: Res<AtomDataRegistry>) {
 
     for i in 0..nlocal {
         let inv_inertia = dem.inv_inertia[i];
+        if inv_inertia == 0.0 { continue; } // Skip clump sub-spheres
 
         dem.omega[i][0] += 0.5 * dt * dem.torque[i][0] * inv_inertia;
         dem.omega[i][1] += 0.5 * dt * dem.torque[i][1] * inv_inertia;

@@ -1,0 +1,72 @@
+# Haff's Cooling with Rod-Shaped Clumps
+# ======================================
+# Rod clumps (4 spheres in a line) in a fully periodic box with no gravity.
+# The rod shape gives a highly asymmetric inertia tensor (Ix << Iy ≈ Iz),
+# testing the Richardson angular momentum integration.
+#
+# Run with:
+#   cargo run --release --example bench_rod_haff_cooling --no-default-features \
+#       -- examples/bench_rod_haff_cooling/config.toml
+
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[domain]
+x_low = 0.0
+x_high = 0.04              # 40 mm
+y_low = 0.0
+y_high = 0.04
+z_low = 0.0
+z_high = 0.04
+periodic_x = true
+periodic_y = true
+periodic_z = true
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.004            # ~4x sub-sphere diameter
+rebuild_on_pbc_wrap = true
+
+# --- Material: softened glass ---
+[dem]
+contact_model = "hertz"
+
+[[dem.materials]]
+name = "glass"
+youngs_mod = 5.0e7          # [Pa] softened for faster timestep
+poisson_ratio = 0.3
+restitution = 0.9           # mild dissipation for clear Haff decay
+friction = 0.3
+
+# --- Rod-shaped clump: 4 spheres along x-axis ---
+# Each sub-sphere r = 0.5 mm, centers spaced 0.8 mm apart (overlapping)
+# Rod half-length: 0.0012 + 0.0005 = 0.0017 m
+[[clump.definitions]]
+name = "rod4"
+spheres = [
+    { offset = [-0.0012, 0.0, 0.0], radius = 0.0005 },
+    { offset = [-0.0004, 0.0, 0.0], radius = 0.0005 },
+    { offset = [ 0.0004, 0.0, 0.0], radius = 0.0005 },
+    { offset = [ 0.0012, 0.0, 0.0], radius = 0.0005 },
+]
+
+# --- Insert 200 clumps with random initial velocity ---
+[[clump.insert]]
+definition = "rod4"
+count = 200
+density = 2500.0
+material = "glass"
+velocity = 0.5              # [m/s] random velocity per component
+region = { type = "block", min = [0.002, 0.002, 0.002], max = [0.038, 0.038, 0.038] }
+
+[output]
+dir = "examples/bench_rod_haff_cooling/data"
+
+[vtp]
+interval = 50000
+
+[run]
+steps = 4000000
+thermo = 20000
