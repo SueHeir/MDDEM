@@ -4,13 +4,12 @@
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE)
 
-## Disclaimer
 
-This codebase, although initally hand written, is now largely **LLM-generated** and most features have **not been rigorously tested or validated**, if tested at all. While unit tests exist and several benchmark examples produce physically reasonable results, the code should not be assumed correct for production or publication-quality simulations without independent verification. Use at your own risk.
+>Many features exist in this codebase that have not been tested, examples include all testing done within this codebase.
 
 ## What is MDDEM?
 
-MDDEM is a particle simulation engine written in Rust, supporting both **Discrete Element Method (DEM)** for granular materials and **Molecular Dynamics (MD)** for continuous-potential systems such as Lennard-Jones fluids.
+MDDEM is a particle simulation engine written in Rust, supporting both **Discrete Element Method (DEM)** for granular materials and potentially **Molecular Dynamics (MD)** (still learning this side).
 
 The framework is built around **composability**. A dependency-injection scheduler inspired by [Bevy](https://github.com/bevyengine/bevy) and a plugin system let you assemble simulations from independent, reusable pieces. Physics models, integrators, neighbor lists, and output formats are all plugins. Systems declare their resource dependencies as function arguments; the scheduler injects them automatically and resolves execution order.
 
@@ -23,43 +22,13 @@ Both tiers can be mixed freely. The [hopper](examples/hopper/) example uses TOML
 
 ## Motivation
 
-MDDEM began as a Rust reimplementation of LAMMPS communication patterns, motivated by a desire to **explore whether a scheduler with dependency injection could work for particle simulations**. The scope has since expanded into eventaully become a general-purpose DEM/MD framework that prioritizes ergonomics — composable plugins, typed configs, and a Rust-native API — as alternatives to the scripting and class-hierarchy approaches used by established codes.
+MDDEM began as a Rust reimplementation of LAMMPS communication patterns, motivated by a desire to **explore whether a scheduler with dependency injection could work for particle simulations**. 
 
-The framework produces reasonable physics results and performs within 2–3% of LAMMPS single-core and within 10% on MPI for LJ 12-6 benchmarks. This is not validated to publication standards, with many features probably not even running, I'll get there eventually.
-
-If you're looking for a starting point, the [hopper](examples/hopper/) example demonstrates how straightforward it is to add custom physics into the simulation loop.
 
 ## Design Notes
 
-MDDEM uses TOML for input configuration. Balancing compile-time type safety against runtime flexibility remains an active design question — the current approach leans toward typed, validated config with `serde`, which catches errors at startup rather than mid-simulation.
+MDDEM uses TOML for input configuration. I don't like this, Still exploring alternative ideas to input configurations. 
 
-Hot-path code is heavily optimized with unsafe Rust where profiling justifies it. The framework has no external math library dependencies; it optionally depends on the Rust MPI wrapper for distributed simulations. The `#[derive(AtomData)]` proc macro generates pack/unpack, communication, and permutation code for per-atom extension data, supporting `Vec<f64>`, `Vec<[f64; 3]>`, and `Vec<[f64; 4]>` fields with `#[forward]`, `#[reverse]`, and `#[zero]` attributes. The `#[derive(StageEnum)]` macro enables named multi-stage simulation workflows.
-
-## Installation
-
-MDDEM is not yet published on crates.io. Add it as a git dependency:
-
-```toml
-[dependencies]
-mddem = { git = "https://github.com/SueHeir/MDDEM" }
-```
-
-To build without MPI (single-process mode):
-
-```toml
-[dependencies]
-mddem = { git = "https://github.com/SueHeir/MDDEM", default-features = false }
-```
-
-To clone and build from source:
-
-```bash
-git clone https://github.com/SueHeir/MDDEM.git
-cd MDDEM
-cargo build --release
-```
-
-MPI support requires an MPI implementation (e.g., OpenMPI, MPICH) installed on the system.
 
 ## Quick Start
 
@@ -75,6 +44,21 @@ fn main() {
         .add_plugins(GranularDefaultPlugins);
     app.start();
 }
+```
+
+MDDEM is not yet published on crates.io. Add it as a git dependency:
+
+**`Cargo.toml`**
+```toml
+[dependencies]
+mddem = { git = "https://github.com/SueHeir/MDDEM" }
+```
+
+To build without MPI (single-process mode):
+
+```toml
+[dependencies]
+mddem = { git = "https://github.com/SueHeir/MDDEM", default-features = false }
 ```
 
 **`config.toml`**
@@ -168,60 +152,11 @@ cargo run --release -- config.toml
 cargo build --release
 mpiexec -n 4 ./target/release/my_simulation config.toml
 
-# Print the compiled schedule (Graphviz DOT)
+# Print the compiled schedule for your specific simulation (Graphviz DOT)
 cargo run --release -- config.toml --schedule
 ```
 
-## Examples
-
-| Example | Description | Run |
-|---------|-------------|-----|
-| [granular_basic](examples/granular_basic/) | 500-particle granular gas in a periodic box | `cargo run --example granular_basic -- examples/granular_basic/config.toml` |
-| [granular_gas_benchmark](examples/granular_gas_benchmark/) | Haff's cooling law validation with LAMMPS comparison | `cargo run --example granular_gas_benchmark -- examples/granular_gas_benchmark/run_debug.toml` |
-| [granular_gas_vdist](examples/granular_gas_vdist/) | Velocity distribution analysis (Maxwell-Boltzmann comparison) | `cargo run --example granular_gas_vdist -- examples/granular_gas_vdist/config.toml` |
-| [granular_shear](examples/granular_shear/) | Polydisperse shear flow with velocity distribution analysis | `cargo run --example granular_shear -- examples/granular_shear/config.toml` |
-| [hopper](examples/hopper/) | 2D slot hopper with named stages and KE-based state transitions | `cargo run --example hopper -- examples/hopper/config.toml` |
-| [dem_compression](examples/dem_compression/) | 3-stage DEM compression with per-stage config overrides | `cargo run --example dem_compression -- examples/dem_compression/config.toml` |
-| [bond_basic](examples/bond_basic/) | Bonded particle model with auto-bonding and breakage | `cargo run --example bond_basic -- examples/bond_basic/config.toml` |
-| [dem_benchmark](examples/dem_benchmark/) | 10k-particle DEM performance benchmark | `cargo run --release --example dem_benchmark -- examples/dem_benchmark/config.toml` |
-| [fire_packing](examples/fire_packing/) | FIRE energy minimization for particle packing | `cargo run --example fire_packing -- examples/fire_packing/config.toml` |
-| [lj_argon](examples/lj_argon/) | LJ fluid validated against liquid Argon (RDF, MSD, pressure) | `cargo run --release --example lj_argon -- examples/lj_argon/config.toml` |
-| [lj_langevin](examples/lj_langevin/) | LJ fluid with Langevin thermostat | `cargo run --release --example lj_langevin -- examples/lj_langevin/config.toml` |
-| [lj_per_atom_energy](examples/lj_per_atom_energy/) | Per-atom energy output via DumpRegistry | `cargo run --release --example lj_per_atom_energy -- examples/lj_per_atom_energy/config.toml` |
-| [group_freeze](examples/group_freeze/) | Group-based freeze fix demonstration | `cargo run --release --example group_freeze -- examples/group_freeze/config.toml` |
-| [poiseuille_flow](examples/poiseuille_flow/) | Poiseuille flow with body force and frozen walls | `cargo run --release --example poiseuille_flow -- examples/poiseuille_flow/config.toml` |
-| [lj_type_rdf](examples/lj_type_rdf/) | Type-filtered RDF measurement | `cargo run --release --example lj_type_rdf -- examples/lj_type_rdf/config.toml` |
-| [polymer_chain](examples/polymer_chain/) | Bead-spring polymer chain with FENE bonds, R_ee and R_g | `cargo run --release --example polymer_chain -- examples/polymer_chain/config.toml` |
-| [toml_single](examples/toml_single/) | Programmatic config — no TOML file needed | `cargo run --example toml_single` |
-
-DEM examples include `validate.py` scripts for physics checks (Haff's law, hopper settling). The `lj_argon` example validates against known liquid Argon properties. Run `./validate.sh` to execute all tests and validations.
-
-## Performance
-
-Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). Identical physics: LJ 12-6 with cutoff 2.5σ, FCC lattice at ρ*=0.8442, Nosé-Hoover NVT at T*=1.44, full 6-component virial stress tensor, neighbor rebuild every 20 steps, 200 timesteps. Compiled with `--release` on Apple M1 Pro.
-
-| Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
-|--------:|---------------:|----------------:|------:|
-|     108 |         23,305 |          31,145 | 1.34× |
-|   1,000 |          2,562 |           2,943 | 1.15× |
-|  10,000 |            277 |             293 | 1.06× |
-|  32,000 |           88.1 |            92.7 | 1.05× |
-| 100,920 |           28.4 |            29.1 | 1.02× |
-| 202,612 |           14.1 |            14.5 | 1.03× |
-
-At scale (10k+ atoms), MDDEM is within 2–5% of LAMMPS with consistent O(N) scaling. The force loop uses precomputed constants, explicit FMA, and cached CSR pointers. The Nosé-Hoover thermostat fuses velocity rescaling with Verlet integration to reduce array passes. The neighbor list build uses CSR bins with a forward stencil and sorted position caches.
-
-**MPI benchmark** (4 processes, 2×2×1 decomposition):
-
-| Atoms   | MDDEM (step/s) | LAMMPS (step/s) | MDDEM Speedup | Ratio |
-|--------:|---------------:|----------------:|--------------:|------:|
-|     108 |         28,893 |          29,565 |         1.24× | 1.02× |
-|   1,000 |          5,725 |           9,498 |         2.23× | 1.66× |
-|  10,000 |            857 |           1,088 |         3.09× | 1.27× |
-|  32,000 |            305 |             335 |         3.46× | 1.10× |
-| 100,920 |           98.5 |             108 |         3.47× | 1.10× |
-
-MDDEM achieves 2.2–3.5× speedup over single-core at scale, with the LAMMPS ratio narrowing to 1.10× at 32k+ atoms. Communication uses per-dimension exchange with non-blocking sends, multi-hop ghost forwarding, and lightweight ghost position updates between neighbor rebuilds.
+`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, groups, and output. `GranularDefaultPlugins` adds DEM contact physics, rotational dynamics, particle insertion, and Velocity Verlet integration. `LJDefaultPlugins` adds FCC lattice, LJ forces, Nosé-Hoover thermostat with fused Verlet integration, and measurements. Individual plugins can be added separately for custom configurations. Please read sim_schduler and sim_app readme for more information.
 
 ## Architecture
 
@@ -250,48 +185,40 @@ MDDEM achieves 2.2–3.5× speedup over single-core at scale, with the LAMMPS ra
 | [`md_lj`](crates/md_lj/) | LJ 12-6 pair force with virial, tail corrections, and multi-type support |
 | [`md_thermostat`](crates/md_thermostat/) | Nosé-Hoover NVT and Langevin thermostats |
 | [`md_lattice`](crates/md_lattice/) | FCC lattice initialization with Maxwell-Boltzmann velocities |
-| [`md_bond`](crates/md_bond/) | Harmonic and FENE bond potentials, cosine angle bending |
-| [`md_polymer`](crates/md_polymer/) | Polymer chain initialization, end-to-end distance, radius of gyration |
 | [`md_measure`](crates/md_measure/) | RDF, MSD, virial pressure |
 | [`md_msd`](crates/md_msd/) | Per-type mean squared displacement with diffusion coefficients |
 | [`md_type_rdf`](crates/md_type_rdf/) | Type-filtered radial distribution function |
 | [`mddem_test_utils`](crates/mddem_test_utils/) | Shared test utilities |
 
-A simulation is composed by adding plugin groups to an `App`:
-
-```rust
-use mddem::prelude::*;
-
-fn main() {
-    let mut app = App::new();
-    app.add_plugins(CorePlugins).add_plugins(GranularDefaultPlugins);
-    app.start();
-}
-```
-
-`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, groups, and output. `GranularDefaultPlugins` adds DEM contact physics, rotational dynamics, particle insertion, and Velocity Verlet integration. `LJDefaultPlugins` adds FCC lattice, LJ forces, Nosé-Hoover thermostat with fused Verlet integration, and measurements. Individual plugins can be added separately for custom configurations.
-
-## Testing
-
-```bash
-cargo test --workspace                       # All tests (with MPI)
-cargo test --workspace --no-default-features # All tests (single-process)
-cargo test -p dem_granular                   # Single crate
-
-./validate.sh                                # Full validation suite
-./validate.sh --long                         # Production-length physics validation
-./validate.sh --dem                          # DEM examples only
-./validate.sh --md                           # MD examples only
-```
-
-Unit tests cover communication, domain decomposition, integration, neighbor lists, contact forces, rotational dynamics, material mixing, LJ forces, thermostats, lattice initialization, and measurement systems.
-
-Physics validation scripts (`validate.py` per example) check simulation output against analytical solutions: Haff's cooling law for granular gas, settling behavior for hopper discharge, and RDF/MSD/pressure against known liquid Argon properties.
 
 
-## Contributing
 
-Contributions are welcome. Please ensure that submitted code has been personally reviewed and that contributors are familiar with the relevant domain. Report issues at [github.com/SueHeir/MDDEM/issues](https://github.com/SueHeir/MDDEM/issues).
+## Performance (at one point)
+
+Single-core LJ fluid benchmark comparing MDDEM to LAMMPS (29 Sep 2024 release). Identical physics: LJ 12-6 with cutoff 2.5σ, FCC lattice at ρ*=0.8442, Nosé-Hoover NVT at T*=1.44, full 6-component virial stress tensor, neighbor rebuild every 20 steps, 200 timesteps. Compiled with `--release` on Apple M1 Pro.
+
+| Atoms   | MDDEM (step/s) | LAMMPS (step/s) | Ratio |
+|--------:|---------------:|----------------:|------:|
+|     108 |         23,305 |          31,145 | 1.34× |
+|   1,000 |          2,562 |           2,943 | 1.15× |
+|  10,000 |            277 |             293 | 1.06× |
+|  32,000 |           88.1 |            92.7 | 1.05× |
+| 100,920 |           28.4 |            29.1 | 1.02× |
+| 202,612 |           14.1 |            14.5 | 1.03× |
+
+At scale (10k+ atoms), MDDEM is within 2–5% of LAMMPS with consistent O(N) scaling. 
+
+**MPI benchmark** (4 processes, 2×2×1 decomposition):
+
+| Atoms   | MDDEM (step/s) | LAMMPS (step/s) | MDDEM Speedup | Ratio |
+|--------:|---------------:|----------------:|--------------:|------:|
+|     108 |         28,893 |          29,565 |         1.24× | 1.02× |
+|   1,000 |          5,725 |           9,498 |         2.23× | 1.66× |
+|  10,000 |            857 |           1,088 |         3.09× | 1.27× |
+|  32,000 |            305 |             335 |         3.46× | 1.10× |
+| 100,920 |           98.5 |             108 |         3.47× | 1.10× |
+
+MDDEM achieves 2.2–3.5× (4 mpi processes) speedup over single-core at scale, with the LAMMPS ratio narrowing to 1.10× at 32k+ atoms.
 
 ## License
 
