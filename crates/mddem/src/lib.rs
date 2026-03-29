@@ -92,8 +92,6 @@
 //! | [`md_measure`] | Pressure, temperature, and energy measurements |
 //! | [`md_type_rdf`] | Type-filtered radial distribution function |
 //! | [`md_msd`] | Mean squared displacement per atom type |
-//! | [`md_bond`] | FENE and harmonic bond potentials |
-//! | [`md_polymer`] | Polymer chain initialization, end-to-end distance, radius of gyration |
 //!
 //! # Feature Flags
 //!
@@ -144,9 +142,6 @@ pub use md_lattice;
 /// Lennard-Jones 12-6 pair potential with optional tail corrections.
 pub use md_lj;
 
-/// FENE and harmonic bond potentials for molecular dynamics.
-pub use md_bond;
-
 /// Pressure, temperature, and energy measurement systems.
 pub use md_measure;
 
@@ -155,9 +150,6 @@ pub use md_msd;
 
 /// Type-filtered radial distribution function.
 pub use md_type_rdf;
-
-/// Polymer chain initialization, end-to-end distance, and radius of gyration.
-pub use md_polymer;
 
 /// Nose–Hoover NVT and Langevin thermostats with fused Velocity Verlet integration.
 pub use md_thermostat;
@@ -337,11 +329,9 @@ pub mod prelude {
     // MD plugins and config types
     pub use md_lattice::{LatticeConfig, LatticePlugin};
     pub use md_lj::{LJConfig, LJForcePlugin, LJPairTable, LJTailCorrections};
-    pub use md_bond::{MdBondConfig, MdBondPlugin};
     pub use md_measure::{MeasureConfig, MeasurePlugin};
     pub use md_msd::{MsdConfig, TypeMsdPlugin};
     pub use md_type_rdf::{TypeRdfConfig, TypeRdfPlugin};
-    pub use md_polymer::{ChainStatsConfig, ChainStatsPlugin, PolymerConfig, PolymerInitConfig, PolymerInitPlugin, PolymerPlugin};
     pub use md_thermostat::{LangevinConfig, LangevinPlugin, LangevinState, NoseHooverPlugin, NoseHooverState, ThermostatConfig};
 
     // Shared infrastructure plugins
@@ -350,7 +340,7 @@ pub mod prelude {
     pub use mddem_velocity_distribution::VelocityDistributionPlugin;
 
     // Derive macros
-    pub use mddem_derive::{SchedulePhase, StageEnum};
+    pub use mddem_derive::{Schedule, StageEnum};
 
     // Core framework re-exports (glob)
     pub use sim_app::prelude::*;

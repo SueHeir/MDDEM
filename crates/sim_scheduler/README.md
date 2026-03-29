@@ -4,11 +4,11 @@ A lightweight, Bevy-inspired dependency-injection scheduler for scientific simul
 
 ## What It Does
 
-Systems are plain functions that declare the resources they need as parameters. The scheduler automatically injects typed resources, manages execution order across user-defined lifecycle phases (`SchedulePhase`), and supports conditional execution and simulation states.
+Systems are plain functions that declare the resources they need as parameters. The scheduler automatically injects typed resources, manages execution order across user-defined lifecycle phases (`Schedule`), and supports conditional execution and simulation states.
 
 ## Key Types
 
-- **`SchedulePhase`** — Trait for defining custom execution phases. Implement on your own enum or use `#[derive(SchedulePhase)]`.
+- **`Schedule`** — Trait for defining custom execution phases. Implement on your own enum or use `#[derive(Schedule)]`.
 - **`Res<T>` / `ResMut<T>`** — Resource access (read-only / mutable). The scheduler validates that all required resources are registered before execution starts.
 - **`Local<T>`** — Per-system persistent state, unshared with other systems.
 - **`Option<Res<T>>`** — Optional resources; systems are not skipped if missing.
@@ -41,7 +41,7 @@ fn compute_forces(temp: Res<Temperature>) {
 
 let mut scheduler = Scheduler::default();
 scheduler.add_resource(Temperature(300.0));
-// Use any type implementing SchedulePhase as the phase argument
+// Use any type implementing Schedule as the phase argument
 scheduler.add_update_system(compute_forces, MySchedule::Force);
 ```
 
@@ -55,13 +55,13 @@ running a Newton-Raphson correction loop.
 
 ### Defining inner phases
 
-Inner phases use the same `SchedulePhase` trait (or `#[derive(SchedulePhase)]`)
+Inner phases use the same `Schedule` trait (or `#[derive(Schedule)]`)
 as top-level phases — no magic numbers:
 
 ```rust
 use sim_scheduler::prelude::*;
 
-#[derive(Clone, Copy, Debug, SchedulePhase)]
+#[derive(Clone, Copy, Debug, Schedule)]
 enum SolverPhase {
     #[phase(0)] Assemble,
     #[phase(1)] Solve,

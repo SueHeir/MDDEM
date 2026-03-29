@@ -2,9 +2,9 @@
 //!
 //! These enums define the execution order for a velocity-Verlet integration loop.
 //! Other domains (e.g. CFD) can define their own schedule phases by implementing
-//! [`SchedulePhase`] on a custom enum (or using `#[derive(SchedulePhase)]`).
+//! [`Schedule`] on a custom enum (or using `#[derive(Schedule)]`).
 
-use sim_scheduler::SchedulePhase;
+use sim_scheduler::Schedule;
 
 /// Execution phase within each timestep (the run loop).
 ///
@@ -65,7 +65,7 @@ pub enum ScheduleSetupSet {
     PostSetup,
 }
 
-impl SchedulePhase for ScheduleSet {
+impl Schedule for ScheduleSet {
     fn to_index(&self) -> u32 {
         match self {
             ScheduleSet::Setup => 0,
@@ -184,7 +184,7 @@ pub fn verlet_schedule_warnings(phase_names: &[&str]) -> Vec<String> {
     warnings
 }
 
-impl SchedulePhase for ScheduleSetupSet {
+impl Schedule for ScheduleSetupSet {
     fn to_index(&self) -> u32 {
         match self {
             ScheduleSetupSet::PreSetup => 0,

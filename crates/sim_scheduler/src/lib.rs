@@ -22,7 +22,7 @@
 //! # Execution Order
 //!
 //! Each timestep executes systems sorted by `(namespace, index)`. The namespace defaults to 0
-//! for all phase enums; use [`Scheduler::set_phase_namespace`] or [`chain_namespaces!`] to
+//! for all phase enums; use [`Scheduler::set_schedule_namespace`] or [`chain_namespaces!`] to
 //! control cross-solver ordering when multiple phase enums coexist.
 //! Within each `(namespace, index)` group, systems are topologically sorted by
 //! `.before()` / `.after()` constraints. Systems with no ordering constraints run in
@@ -36,7 +36,7 @@
 //! #[derive(Debug, Clone, Copy)]
 //! enum MySchedule { Force }
 //!
-//! impl SchedulePhase for MySchedule {
+//! impl Schedule for MySchedule {
 //!     fn to_index(&self) -> u32 { 0 }
 //!     fn name(&self) -> &'static str { "Force" }
 //! }
@@ -815,13 +815,13 @@ impl SystemGroup {
     }
 
     /// Adds an inner system at the given phase.
-    pub fn add_system<M>(mut self, system: impl IntoScheduledSystem<M>, phase: impl SchedulePhase) -> Self {
+    pub fn add_system<M>(mut self, system: impl IntoScheduledSystem<M>, phase: impl Schedule) -> Self {
         self.inner_systems.push((system.into_stored(), StoredPhase::from_typed(phase)));
         self
     }
 
     /// Adds a nested `SystemGroup` at the given phase.
-    pub fn add_group(mut self, group: SystemGroup, phase: impl SchedulePhase) -> Self {
+    pub fn add_group(mut self, group: SystemGroup, phase: impl Schedule) -> Self {
         let name = group.name.clone();
         self.inner_systems.push((
             StoredSystemEntry {
@@ -1031,9 +1031,9 @@ pub struct StoredSystemEntry {
 /// [`Scheduler::add_update_system`] or [`Scheduler::add_setup_system`].
 /// The built-in [`ScheduleSet`] and [`ScheduleSetupSet`] implement this trait.
 ///
-/// Use `#[derive(SchedulePhase)]` from `mddem_derive` to auto-implement this
+/// Use `#[derive(Schedule)]` from `mddem_derive` to auto-implement this
 /// for custom enums with `#[phase(N)]` attributes on each variant.
-pub trait SchedulePhase: Copy + Clone + std::fmt::Debug + 'static {
+pub trait Schedule: Copy + Clone + std::fmt::Debug + 'static {
     /// Returns the numeric ordering index for this phase.
     fn to_index(&self) -> u32;
     /// Returns the human-readable name of this phase (used in DOT output and tracing).
@@ -1047,8 +1047,8 @@ pub trait SchedulePhase: Copy + Clone + std::fmt::Debug + 'static {
 /// cross-solver ordering: systems are sorted by `(namespace, index)`.
 #[derive(Clone, Copy, Debug)]
 pub struct StoredPhase {
-    /// Which `SchedulePhase` enum this came from (for `set_phase_namespace`).
-    phase_type_id: TypeId,
+    /// Which `Schedule` enum this came from (for `set_schedule_namespace`).
+    schedule_type_id: TypeId,
     /// Namespace for cross-solver ordering (default 0).
     namespace: u32,
     /// Numeric ordering index within the namespace.
@@ -1058,10 +1058,10 @@ pub struct StoredPhase {
 }
 
 impl StoredPhase {
-    /// Captures the index, name, and type identity from any [`SchedulePhase`] implementor.
-    pub fn from(phase: impl SchedulePhase) -> Self {
+    /// Captures the index, name, and type identity from any [`Schedule`] implementor.
+    pub fn from(phase: impl Schedule) -> Self {
         Self {
-            phase_type_id: TypeId::of::<Self>(),
+            schedule_type_id: TypeId::of::<Self>(),
             namespace: 0,
             index: phase.to_index(),
             name: phase.name(),
@@ -1069,9 +1069,9 @@ impl StoredPhase {
     }
 
     /// Creates a `StoredPhase` that remembers the concrete phase enum type.
-    pub fn from_typed<P: SchedulePhase>(phase: P) -> Self {
+    pub fn from_typed<P: Schedule>(phase: P) -> Self {
         Self {
-            phase_type_id: TypeId::of::<P>(),
+            schedule_type_id: TypeId::of::<P>(),
             namespace: 0,
             index: phase.to_index(),
             name: phase.name(),
@@ -1089,7 +1089,7 @@ impl StoredPhase {
     }
 }
 
-impl SchedulePhase for StoredPhase {
+impl Schedule for StoredPhase {
     fn to_index(&self) -> u32 {
         self.index
     }
@@ -1107,17 +1107,17 @@ impl SchedulePhase for StoredPhase {
 /// ```rust,ignore
 /// chain_namespaces!(app, CouplingPrePhase, FluidPhase, MaterialPhase, CouplingPostPhase);
 /// // equivalent to:
-/// // app.set_phase_namespace::<CouplingPrePhase>(0);
-/// // app.set_phase_namespace::<FluidPhase>(1);
-/// // app.set_phase_namespace::<MaterialPhase>(2);
-/// // app.set_phase_namespace::<CouplingPostPhase>(3);
+/// // app.set_schedule_namespace::<CouplingPrePhase>(0);
+/// // app.set_schedule_namespace::<FluidPhase>(1);
+/// // app.set_schedule_namespace::<MaterialPhase>(2);
+/// // app.set_schedule_namespace::<CouplingPostPhase>(3);
 /// ```
 #[macro_export]
 macro_rules! chain_namespaces {
     ($scheduler:expr, $($phase:ty),+ $(,)?) => {{
         let mut _ns: u32 = 0;
         $(
-            $scheduler.set_phase_namespace::<$phase>(_ns);
+            $scheduler.set_schedule_namespace::<$phase>(_ns);
             _ns += 1;
         )+
     }};
@@ -1798,7 +1798,7 @@ impl Scheduler {
     pub fn add_setup_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
-        schedule_set: impl SchedulePhase,
+        schedule_set: impl Schedule,
     ) {
         self.setup_systems
             .push((system.into_stored(), StoredPhase::from_typed(schedule_set)));
@@ -1808,32 +1808,32 @@ impl Scheduler {
     pub fn add_update_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
-        schedule_set: impl SchedulePhase,
+        schedule_set: impl Schedule,
     ) {
         self.update_systems
             .push((system.into_stored(), StoredPhase::from_typed(schedule_set)));
     }
 
-    /// Assigns a namespace to all systems registered under the given [`SchedulePhase`] enum type.
+    /// Assigns a namespace to all systems registered under the given [`Schedule`] enum type.
     ///
     /// Systems are sorted by `(namespace, index)` during [`organize_systems`](Self::organize_systems).
     /// Use this to control cross-solver ordering. For example, a coupling plugin might do:
     ///
     /// ```rust,ignore
-    /// app.set_phase_namespace::<CouplingPrePhase>(0);
-    /// app.set_phase_namespace::<FluidPhase>(1);
-    /// app.set_phase_namespace::<MaterialPhase>(2);
-    /// app.set_phase_namespace::<CouplingPostPhase>(3);
+    /// app.set_schedule_namespace::<CouplingPrePhase>(0);
+    /// app.set_schedule_namespace::<FluidPhase>(1);
+    /// app.set_schedule_namespace::<MaterialPhase>(2);
+    /// app.set_schedule_namespace::<CouplingPostPhase>(3);
     /// ```
-    pub fn set_phase_namespace<P: SchedulePhase + 'static>(&mut self, namespace: u32) {
+    pub fn set_schedule_namespace<P: Schedule + 'static>(&mut self, namespace: u32) {
         let target = TypeId::of::<P>();
         for (_, phase) in &mut self.setup_systems {
-            if phase.phase_type_id == target {
+            if phase.schedule_type_id == target {
                 phase.namespace = namespace;
             }
         }
         for (_, phase) in &mut self.update_systems {
-            if phase.phase_type_id == target {
+            if phase.schedule_type_id == target {
                 phase.namespace = namespace;
             }
         }
@@ -2714,7 +2714,7 @@ pub mod prelude {
         // Stage enum trait
         StageName,
         // Schedule phase trait (for user-definable schedule phases)
-        SchedulePhase,
+        Schedule,
         StoredPhase,
         // System ordering
         SystemDescriptor,
@@ -2741,7 +2741,7 @@ mod tests {
         PostFinalIntegration,
     }
 
-    impl SchedulePhase for TestSchedule {
+    impl Schedule for TestSchedule {
         fn to_index(&self) -> u32 {
             match self {
                 TestSchedule::InitialIntegration => 2,
@@ -2998,7 +2998,7 @@ mod tests {
         assert_eq!(c.0, 2);
     }
 
-    // ─── Custom SchedulePhase tests ─────────────────────────────────────────
+    // ─── Custom Schedule tests ─────────────────────────────────────────
 
     #[derive(Clone, Copy, Debug)]
     enum CustomSchedule {
@@ -3007,7 +3007,7 @@ mod tests {
         PhaseC,
     }
 
-    impl SchedulePhase for CustomSchedule {
+    impl Schedule for CustomSchedule {
         fn to_index(&self) -> u32 {
             match self {
                 CustomSchedule::PhaseA => 0,
@@ -3074,7 +3074,7 @@ mod tests {
         Third,
     }
 
-    impl SchedulePhase for GroupPhase {
+    impl Schedule for GroupPhase {
         fn to_index(&self) -> u32 {
             match self {
                 GroupPhase::First => 0,

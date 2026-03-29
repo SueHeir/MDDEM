@@ -21,7 +21,7 @@
 
 use downcast_rs::{impl_downcast, Downcast};
 use sim_scheduler::{
-    apply_state_transitions, check_stage_advance, CurrentState, NextState, SchedulePhase,
+    apply_state_transitions, check_stage_advance, CurrentState, NextState, Schedule,
     StageName, StoredPhase,
 };
 use std::marker::PhantomData;
@@ -245,7 +245,7 @@ pub struct StatesPlugin<S: Clone + PartialEq + Default + Send + Sync + 'static> 
 
 impl<S: Clone + PartialEq + Default + Send + Sync + 'static> StatesPlugin<S> {
     /// Creates a new [`StatesPlugin`] with the given initial state and schedule phase.
-    pub fn new(initial: S, phase: impl SchedulePhase) -> Self {
+    pub fn new(initial: S, phase: impl Schedule) -> Self {
         Self {
             initial,
             phase: StoredPhase::from(phase),
@@ -281,7 +281,7 @@ pub struct StageAdvancePlugin<S: StageName + Clone + PartialEq + Default + Send 
 
 impl<S: StageName + Clone + PartialEq + Default + Send + Sync + 'static> StageAdvancePlugin<S> {
     /// Creates a new [`StageAdvancePlugin`] for state type `S` at the given schedule phase.
-    pub fn new(phase: impl SchedulePhase) -> Self {
+    pub fn new(phase: impl Schedule) -> Self {
         Self {
             _marker: PhantomData,
             phase: StoredPhase::from(phase),

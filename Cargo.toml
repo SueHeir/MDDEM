@@ -31,10 +31,6 @@ name = "granular_gas_benchmark"
 path = "examples/granular_gas_benchmark/main.rs"
 
 [[example]]
-name = "toml_single"
-path = "examples/toml_single/main.rs"
-
-[[example]]
 name = "hopper"
 path = "examples/hopper/main.rs"
 
@@ -43,120 +39,8 @@ name = "lj_argon"
 path = "examples/lj_argon/main.rs"
 
 [[example]]
-name = "lj_performance"
-path = "examples/lj_performance/main.rs"
-
-[[example]]
-name = "group_freeze"
-path = "examples/group_freeze/main.rs"
-
-[[example]]
-name = "lj_langevin"
-path = "examples/lj_langevin/main.rs"
-
-[[example]]
-name = "poiseuille_flow"
-path = "examples/poiseuille_flow/main.rs"
-
-[[example]]
-name = "dem_compression"
-path = "examples/dem_compression/main.rs"
-
-[[example]]
-name = "bond_basic"
-path = "examples/bond_basic/main.rs"
-
-[[example]]
-name = "lj_per_atom_energy"
-path = "examples/lj_per_atom_energy/main.rs"
-
-[[example]]
-name = "fire_packing"
-path = "examples/fire_packing/main.rs"
-
-[[example]]
-name = "conveyor_belt"
-path = "examples/conveyor_belt/main.rs"
-
-[[example]]
-name = "lj_type_rdf"
-path = "examples/lj_type_rdf/main.rs"
-
-[[example]]
-name = "granular_shear"
-path = "examples/granular_shear/main.rs"
-
-[[example]]
-name = "granular_gas_vdist"
-path = "examples/granular_gas_vdist/main.rs"
-
-[[example]]
-name = "granular_gas_polydisperse"
-path = "examples/granular_gas_polydisperse/main.rs"
-
-[[example]]
-name = "polymer_chain"
-path = "examples/polymer_chain/main.rs"
-
-[[example]]
-name = "dem_triaxial"
-path = "examples/dem_triaxial/main.rs"
-
-[[example]]
-name = "shrink_wrap_demo"
-path = "examples/shrink_wrap_demo/main.rs"
-
-[[example]]
-name = "dem_benchmark"
-path = "examples/dem_benchmark/main.rs"
-
-[[example]]
-name = "polymer_melt"
-path = "examples/polymer_melt/main.rs"
-
-[[example]]
-name = "lj_binary"
-path = "examples/lj_binary/main.rs"
-
-[[example]]
-name = "example_template"
-path = "examples/example_template/main.rs"
-
-[[example]]
-name = "cone_hopper"
-path = "examples/cone_hopper/main.rs"
-
-[[example]]
 name = "bench_hertz_rebound"
 path = "examples/bench_hertz_rebound/main.rs"
-
-[[example]]
-name = "bench_beverloo_hopper"
-path = "examples/bench_beverloo_hopper/main.rs"
-
-[[example]]
-name = "bench_rotating_drum"
-path = "examples/bench_rotating_drum/main.rs"
-
-[[example]]
-name = "bench_triaxial"
-path = "examples/bench_triaxial/main.rs"
-
-[[example]]
-name = "bench_brazilian_disk"
-path = "examples/bench_brazilian_disk/main.rs"
-
-[[example]]
-name = "bench_thermal_bed"
-path = "examples/bench_thermal_bed/main.rs"
-
-[[example]]
-name = "bench_lunar_regolith"
-path = "examples/bench_lunar_regolith/main.rs"
-
-[[example]]
-name = "bench_multisphere_segregation"
-path = "examples/bench_multisphere_segregation/main.rs"
 
 [[example]]
 name = "bench_clump_haff_cooling"

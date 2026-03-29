@@ -619,7 +619,7 @@ pub fn derive_stage_enum(input: TokenStream) -> TokenStream {
     expanded.into()
 }
 
-/// Derive macro that implements `sim_scheduler::SchedulePhase` for an enum.
+/// Derive macro that implements `sim_scheduler::Schedule` for an enum.
 ///
 /// Every variant must carry a `#[phase(N)]` attribute with a numeric literal
 /// specifying the execution order index.
@@ -627,7 +627,7 @@ pub fn derive_stage_enum(input: TokenStream) -> TokenStream {
 /// # Example
 ///
 /// ```rust,ignore
-/// #[derive(Clone, Copy, Debug, PartialEq, SchedulePhase)]
+/// #[derive(Clone, Copy, Debug, PartialEq, Schedule)]
 /// enum CfdSchedule {
 ///     #[phase(0)]
 ///     Setup,
@@ -644,7 +644,7 @@ pub fn derive_stage_enum(input: TokenStream) -> TokenStream {
 /// - Applied to a struct or union (must be an enum)
 /// - Any variant is missing the `#[phase(N)]` attribute
 /// - Two variants share the same phase index
-#[proc_macro_derive(SchedulePhase, attributes(phase))]
+#[proc_macro_derive(Schedule, attributes(phase))]
 pub fn derive_schedule_phase(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
@@ -654,7 +654,7 @@ pub fn derive_schedule_phase(input: TokenStream) -> TokenStream {
         _ => {
             return syn::Error::new_spanned(
                 &input,
-                "SchedulePhase can only be derived for enums, not structs or unions",
+                "Schedule can only be derived for enums, not structs or unions",
             )
             .to_compile_error()
             .into();
@@ -674,7 +674,7 @@ pub fn derive_schedule_phase(input: TokenStream) -> TokenStream {
             return syn::Error::new_spanned(
                 variant,
                 format!(
-                    "SchedulePhase: variant `{ident}` is missing a #[phase(N)] attribute. \
+                    "Schedule: variant `{ident}` is missing a #[phase(N)] attribute. \
                      Every variant must specify its ordering index, e.g.:\n\n    \
                      #[phase(0)]\n    {ident},"
                 ),
@@ -689,7 +689,7 @@ pub fn derive_schedule_phase(input: TokenStream) -> TokenStream {
             Err(_) => {
                 return syn::Error::new_spanned(
                     attr,
-                    "SchedulePhase: #[phase(...)] expects an integer literal, \
+                    "Schedule: #[phase(...)] expects an integer literal, \
                      e.g. #[phase(0)]",
                 )
                 .to_compile_error()
@@ -702,7 +702,7 @@ pub fn derive_schedule_phase(input: TokenStream) -> TokenStream {
             Err(_) => {
                 return syn::Error::new_spanned(
                     &phase_index,
-                    "SchedulePhase: #[phase(...)] must be a valid u32 integer",
+                    "Schedule: #[phase(...)] must be a valid u32 integer",
                 )
                 .to_compile_error()
                 .into();
@@ -714,7 +714,7 @@ pub fn derive_schedule_phase(input: TokenStream) -> TokenStream {
             return syn::Error::new_spanned(
                 &phase_index,
                 format!(
-                    "SchedulePhase: duplicate phase index {index_val}. \
+                    "Schedule: duplicate phase index {index_val}. \
                      Each variant must have a unique phase index."
                 ),
             )
@@ -729,7 +729,7 @@ pub fn derive_schedule_phase(input: TokenStream) -> TokenStream {
     }
 
     let expanded = quote! {
-        impl sim_scheduler::SchedulePhase for #name {
+        impl sim_scheduler::Schedule for #name {
             fn to_index(&self) -> u32 {
                 match self {
                     #(#match_index_arms)*
