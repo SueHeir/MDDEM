@@ -17,7 +17,7 @@ use std::{
 
 use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
-use crate::ScheduleSet;
+use crate::ParticleSimScheduleSet;
 
 /// Number of `f64`s packed/unpacked for one atom's base fields
 /// (tag, origin_index, cutoff_radius, atom_type, pos×3, vel×3, force×3, mass, image×3).
@@ -521,8 +521,8 @@ impl Plugin for AtomPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(Atom::new())
             .add_resource(AtomDataRegistry::new())
-            .add_update_system(remove_ghost_atoms, ScheduleSet::PostInitialIntegration)
-            .add_update_system(zero_all_forces, ScheduleSet::PostInitialIntegration);
+            .add_update_system(remove_ghost_atoms, ParticleSimScheduleSet::PostInitialIntegration)
+            .add_update_system(zero_all_forces, ParticleSimScheduleSet::PostInitialIntegration);
     }
 }
 

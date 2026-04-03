@@ -23,18 +23,18 @@ use std::{
 use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 
-use mddem_core::{Atom, CommResource, Input, RunConfig, RunState, ScheduleSet};
+use mddem_core::{Atom, CommResource, Input, RunConfig, RunState, ParticleSimScheduleSet};
 
 /// Plugin that outputs granular temperature to `data/GranularTemp.txt`.
 ///
-/// Registers [`print_granular_temperature`] at [`ScheduleSet::PreExchange`],
+/// Registers [`print_granular_temperature`] at [`ParticleSimScheduleSet::PreExchange`],
 /// writing one line per thermo interval with step, time, granular temperature,
 /// total kinetic energy, and total momentum magnitude.
 pub struct GranularTempPlugin;
 
 impl Plugin for GranularTempPlugin {
     fn build(&self, app: &mut App) {
-        app.add_update_system(print_granular_temperature, ScheduleSet::PreExchange);
+        app.add_update_system(print_granular_temperature, ParticleSimScheduleSet::PreExchange);
     }
 }
 

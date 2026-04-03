@@ -109,7 +109,7 @@ use serde::Deserialize;
 
 use dem_atom::{DemAtom, MaterialTable, SQRT_5_3};
 use mddem_core::region::Region;
-use mddem_core::{Atom, AtomDataRegistry, Config, ScheduleSet};
+use mddem_core::{Atom, AtomDataRegistry, Config, ParticleSimScheduleSet};
 
 fn default_neg_inf() -> f64 {
     f64::NEG_INFINITY
@@ -751,9 +751,9 @@ impl Plugin for WallPlugin {
         };
 
         app.add_resource(walls);
-        app.add_update_system(wall_move, ScheduleSet::PreInitialIntegration);
-        app.add_update_system(wall_zero_force_accumulators, ScheduleSet::PreForce);
-        app.add_update_system(wall_contact_force.label("wall_contact"), ScheduleSet::Force);
+        app.add_update_system(wall_move, ParticleSimScheduleSet::PreInitialIntegration);
+        app.add_update_system(wall_zero_force_accumulators, ParticleSimScheduleSet::PreForce);
+        app.add_update_system(wall_contact_force.label("wall_contact"), ParticleSimScheduleSet::Force);
     }
 }
 
@@ -761,7 +761,7 @@ impl Plugin for WallPlugin {
 
 /// Update wall positions and velocities according to their motion mode.
 ///
-/// Runs in [`ScheduleSet::PreInitialIntegration`] so walls are moved
+/// Runs in [`ParticleSimScheduleSet::PreInitialIntegration`] so walls are moved
 /// *before* the integration step each timestep. Advances `walls.time` by `dt`.
 pub fn wall_move(mut walls: ResMut<Walls>, atoms: Res<Atom>) {
     let dt = atoms.dt;
@@ -815,7 +815,7 @@ pub fn wall_move(mut walls: ResMut<Walls>, atoms: Res<Atom>) {
 
 /// Zero all per-wall force accumulators before the force computation pass.
 ///
-/// Runs in [`ScheduleSet::PreForce`]. The accumulators are summed during
+/// Runs in [`ParticleSimScheduleSet::PreForce`]. The accumulators are summed during
 /// [`wall_contact_force`] and read by servo controllers in the next
 /// [`wall_move`] call.
 pub fn wall_zero_force_accumulators(mut walls: ResMut<Walls>) {
@@ -844,7 +844,7 @@ pub fn wall_zero_force_accumulators(mut walls: ResMut<Walls>) {
 /// 6. Applies twisting friction torque (plane walls only)
 /// 7. Accumulates the scalar contact force for servo control
 ///
-/// Runs in [`ScheduleSet::Force`].
+/// Runs in [`ParticleSimScheduleSet::Force`].
 pub fn wall_contact_force(
     mut atoms: ResMut<Atom>,
     mut walls: ResMut<Walls>,
@@ -1315,7 +1315,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1349,7 +1349,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1380,7 +1380,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1411,7 +1411,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1449,7 +1449,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1484,7 +1484,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(mt);
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1514,7 +1514,7 @@ mod tests {
         let mut app = App::new();
         app.add_resource(atom);
         app.add_resource(walls);
-        app.add_update_system(wall_move, ScheduleSet::PreInitialIntegration);
+        app.add_update_system(wall_move, ParticleSimScheduleSet::PreInitialIntegration);
         app.organize_systems();
         app.run();
 
@@ -1544,7 +1544,7 @@ mod tests {
         let mut app = App::new();
         app.add_resource(atom);
         app.add_resource(walls);
-        app.add_update_system(wall_move, ScheduleSet::PreInitialIntegration);
+        app.add_update_system(wall_move, ParticleSimScheduleSet::PreInitialIntegration);
         app.organize_systems();
         app.run();
 
@@ -1580,7 +1580,7 @@ mod tests {
         let mut app = App::new();
         app.add_resource(atom);
         app.add_resource(walls);
-        app.add_update_system(wall_move, ScheduleSet::PreInitialIntegration);
+        app.add_update_system(wall_move, ParticleSimScheduleSet::PreInitialIntegration);
         app.organize_systems();
         app.run();
 
@@ -1625,7 +1625,7 @@ mod tests {
             app.add_resource(registry);
             app.add_resource(make_material_table());
             app.add_resource(walls);
-            app.add_update_system(wall_contact_force, ScheduleSet::Force);
+            app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
             app.organize_systems();
             app.run();
 
@@ -1723,7 +1723,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1770,7 +1770,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1808,7 +1808,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1852,7 +1852,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1908,7 +1908,7 @@ mod tests {
             app.add_resource(registry);
             app.add_resource(make_material_table());
             app.add_resource(walls);
-            app.add_update_system(wall_contact_force, ScheduleSet::Force);
+            app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
             app.organize_systems();
             app.run();
 
@@ -1985,7 +1985,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -2048,7 +2048,7 @@ mod tests {
             app.add_resource(registry);
             app.add_resource(make_material_table());
             app.add_resource(walls);
-            app.add_update_system(wall_contact_force, ScheduleSet::Force);
+            app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
             app.organize_systems();
             app.run();
 
@@ -2100,7 +2100,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -2139,7 +2139,7 @@ mod tests {
             app.add_resource(registry);
             app.add_resource(make_material_table());
             app.add_resource(walls);
-            app.add_update_system(wall_contact_force, ScheduleSet::Force);
+            app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
             app.organize_systems();
             app.run();
 
@@ -2195,7 +2195,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -2240,7 +2240,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -2280,7 +2280,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -2331,7 +2331,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(make_material_table());
         app.add_resource(walls);
-        app.add_update_system(wall_contact_force, ScheduleSet::Force);
+        app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -2375,7 +2375,7 @@ mod tests {
             app.add_resource(registry);
             app.add_resource(make_material_table());
             app.add_resource(walls);
-            app.add_update_system(wall_contact_force, ScheduleSet::Force);
+            app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
             app.organize_systems();
             app.run();
             let atom = app.get_resource_ref::<Atom>().unwrap();
@@ -2407,7 +2407,7 @@ mod tests {
             app.add_resource(registry);
             app.add_resource(make_material_table());
             app.add_resource(walls);
-            app.add_update_system(wall_contact_force, ScheduleSet::Force);
+            app.add_update_system(wall_contact_force, ParticleSimScheduleSet::Force);
             app.organize_systems();
             app.run();
             let atom = app.get_resource_ref::<Atom>().unwrap();
@@ -2438,7 +2438,7 @@ mod tests {
         let mut app = App::new();
         app.add_resource(atom);
         app.add_resource(walls);
-        app.add_update_system(wall_move, ScheduleSet::PreInitialIntegration);
+        app.add_update_system(wall_move, ParticleSimScheduleSet::PreInitialIntegration);
         app.organize_systems();
         app.run();
 

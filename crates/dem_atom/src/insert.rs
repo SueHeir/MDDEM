@@ -12,7 +12,7 @@ use serde::Deserialize;
 
 use mddem_core::{
     Atom, AtomDataRegistry, CommResource, Config, Domain, Region, RunConfig, RunState,
-    ScheduleSet, ScheduleSetupSet, StageOverrides,
+    ParticleSimScheduleSet, ScheduleSetupSet, StageOverrides,
 };
 
 use crate::{DemAtom, MaterialTable, RadiusSpec};
@@ -308,7 +308,7 @@ density = 2500.0
         app.add_resource(RateInsertState::default());
         app.add_setup_system(dem_insert_atoms, ScheduleSetupSet::Setup)
             .add_setup_system(calculate_delta_time, ScheduleSetupSet::PostSetup)
-            .add_update_system(dem_rate_insert, ScheduleSet::PreInitialIntegration);
+            .add_update_system(dem_rate_insert, ParticleSimScheduleSet::PreInitialIntegration);
     }
 }
 
@@ -1166,7 +1166,7 @@ fn read_lammps_data_particles(
 ///
 /// Checks each registered [`RateInsertEntry`] against the current timestep, interval,
 /// start/end bounds, and total limit. Uses a [`SpatialHash`] for O(1) overlap detection
-/// when placing new particles. Runs in `ScheduleSet::PreInitialIntegration`.
+/// when placing new particles. Runs in `ParticleSimScheduleSet::PreInitialIntegration`.
 #[allow(clippy::too_many_arguments)]
 pub fn dem_rate_insert(
     comm: Res<CommResource>,

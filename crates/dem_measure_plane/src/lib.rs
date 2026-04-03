@@ -38,7 +38,7 @@
 use std::collections::HashMap;
 
 use sim_app::prelude::*;
-use mddem_core::{Atom, CommResource, Config, RunState, ScheduleSet};
+use mddem_core::{Atom, CommResource, Config, RunState, ParticleSimScheduleSet};
 use mddem_print::Thermo;
 use sim_scheduler::prelude::*;
 use serde::Deserialize;
@@ -167,7 +167,7 @@ pub struct MeasurePlanes {
 ///
 /// Reads `[[measure_plane]]` blocks from the TOML config and sets up:
 /// - A [`MeasurePlanes`] resource with per-plane runtime state
-/// - A crossing-detection system running at [`ScheduleSet::PostFinalIntegration`]
+/// - A crossing-detection system running at [`ParticleSimScheduleSet::PostFinalIntegration`]
 /// - A reporting system that writes averaged rates to [`Thermo`](mddem_print::Thermo)
 ///
 /// If no `[[measure_plane]]` blocks are configured, only an empty resource is
@@ -204,11 +204,11 @@ impl Plugin for MeasurePlanePlugin {
         app.add_resource(MeasurePlanes { planes });
         app.add_update_system(
             measure_plane_detect_crossings,
-            ScheduleSet::PostFinalIntegration,
+            ParticleSimScheduleSet::PostFinalIntegration,
         );
         app.add_update_system(
             measure_plane_report,
-            ScheduleSet::PostFinalIntegration,
+            ParticleSimScheduleSet::PostFinalIntegration,
         );
     }
 }
@@ -217,7 +217,7 @@ impl Plugin for MeasurePlanePlugin {
 
 /// Detect particles crossing each measurement plane.
 ///
-/// Runs every timestep at [`ScheduleSet::PostFinalIntegration`]. For each
+/// Runs every timestep at [`ParticleSimScheduleSet::PostFinalIntegration`]. For each
 /// local particle, computes the signed distance from each plane and compares
 /// it to the previous step's distance (stored by atom tag). A crossing is
 /// recorded when the signed distance transitions from `≤ 0` to `> 0`,

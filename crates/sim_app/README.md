@@ -15,13 +15,13 @@ Plugin-based application framework for scientific simulations.
 
 ```rust
 use sim_app::prelude::*;
-use sim_scheduler::Schedule;
+use sim_scheduler::ScheduleSet;
 
 // Define a custom schedule phase
 #[derive(Clone, Copy, Debug)]
 enum MySchedule { Update }
 
-impl Schedule for MySchedule {
+impl ScheduleSet for MySchedule {
     fn to_index(&self) -> u32 { 0 }
     fn name(&self) -> &'static str { "Update" }
 }

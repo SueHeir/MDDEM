@@ -20,7 +20,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{Atom, AtomDataRegistry, Config, Domain, ScheduleSet, ScheduleSetupSet};
+use crate::{Atom, AtomDataRegistry, Config, Domain, ParticleSimScheduleSet, ScheduleSetupSet};
 
 #[cfg(feature = "mpi_backend")]
 use std::sync::Mutex;
@@ -361,11 +361,11 @@ processors_z = 1"#,
 
         app.add_setup_system(comm_read_input.run_if(first_stage_only()), ScheduleSetupSet::PreSetup)
             .add_setup_system(comm_setup.run_if(first_stage_only()), ScheduleSetupSet::PostSetup)
-            .add_update_system(borders, ScheduleSet::PreNeighbor)
-            .add_update_system(reverse_send_force.label("reverse_send_force"), ScheduleSet::PostForce);
+            .add_update_system(borders, ParticleSimScheduleSet::PreNeighbor)
+            .add_update_system(reverse_send_force.label("reverse_send_force"), ParticleSimScheduleSet::PostForce);
 
         #[cfg(feature = "mpi_backend")]
-        app.add_update_system(exchange.label("exchange"), ScheduleSet::Exchange);
+        app.add_update_system(exchange.label("exchange"), ParticleSimScheduleSet::Exchange);
 
         app.add_cleanup(finalize_mpi);
     }

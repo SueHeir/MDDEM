@@ -4,7 +4,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
-use crate::{Atom, Config, Region, ScheduleSet, ScheduleSetupSet, StageOverrides};
+use crate::{Atom, Config, Region, ParticleSimScheduleSet, ScheduleSetupSet, StageOverrides};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -170,7 +170,7 @@ impl Plugin for GroupPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(GroupRegistry::new())
             .add_setup_system(setup_groups, ScheduleSetupSet::PostSetup)
-            .add_update_system(rebuild_groups, ScheduleSet::PreForce);
+            .add_update_system(rebuild_groups, ParticleSimScheduleSet::PreForce);
     }
 }
 

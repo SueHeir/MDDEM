@@ -37,7 +37,7 @@ remap = true
 - **`AxisDeformDef`**: Per-axis definition with style and parameters
 - **`DeformStyle`** enum: `Erate`, `Vel`, or `Final` variants
 - **`DeformState`**: Runtime resource tracking deformation progress
-- **`DeformPlugin`**: Registers systems at `ScheduleSetupSet::PostSetup` (setup) and `ScheduleSet::PreInitialIntegration` (apply)
+- **`DeformPlugin`**: Registers systems at `ScheduleSetupSet::PostSetup` (setup) and `ParticleSimScheduleSet::PreInitialIntegration` (apply)
 
 ## Usage
 

@@ -50,11 +50,11 @@ app.add_plugins(StatesPlugin {
 ```rust
 app.add_update_system(
     check_settled.run_if(in_state(Phase::Filling)),
-    ScheduleSet::PostFinalIntegration,
+    ParticleSimScheduleSet::PostFinalIntegration,
 );
 ```
 
-The `check_settled` system is registered with a **run condition**: it only executes while the simulation is in `Phase::Filling`. Once the state transitions to `Flowing`, the system is skipped entirely. `ScheduleSet::PostFinalIntegration` places it after the Velocity Verlet update each timestep.
+The `check_settled` system is registered with a **run condition**: it only executes while the simulation is in `Phase::Filling`. Once the state transitions to `Flowing`, the system is skipped entirely. `ParticleSimScheduleSet::PostFinalIntegration` places it after the Velocity Verlet update each timestep.
 
 The `check_settled` function itself is a regular system that declares its dependencies as function arguments — the scheduler injects them automatically:
 

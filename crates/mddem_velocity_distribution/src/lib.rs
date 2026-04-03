@@ -30,7 +30,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, CommResource, Config, Input, RunConfig, RunState, ScheduleSet};
+use mddem_core::{Atom, CommResource, Config, Input, RunConfig, RunState, ParticleSimScheduleSet};
 
 // ── Configuration ──────────────────────────────────────────────────────────
 
@@ -216,7 +216,7 @@ collapse_rate_window = 5"#,
 
         app.add_update_system(
             compute_velocity_distribution,
-            ScheduleSet::PostFinalIntegration,
+            ParticleSimScheduleSet::PostFinalIntegration,
         );
     }
 }

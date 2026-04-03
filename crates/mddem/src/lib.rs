@@ -340,13 +340,16 @@ pub mod prelude {
     pub use mddem_velocity_distribution::VelocityDistributionPlugin;
 
     // Derive macros
-    pub use mddem_derive::{Schedule, StageEnum};
+    pub use mddem_derive::{ScheduleSet, StageEnum};
 
     // Core framework re-exports (glob)
     pub use sim_app::prelude::*;
     pub use mddem_core::*;
     pub use mddem_neighbor::*;
     pub use mddem_print::*;
+    // Re-export the ParticleSimScheduleSet enum explicitly so downstream users
+    // can access it without ambiguity with the ScheduleSet trait from sim_scheduler.
+    pub use mddem_core::ParticleSimScheduleSet;
     pub use sim_scheduler::prelude::*;
     pub use mddem_verlet::*;
 }

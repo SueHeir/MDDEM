@@ -11,7 +11,7 @@ use std::{
 };
 
 use sim_scheduler::{
-    IntoScheduledSystem, IntoSystem, Schedule, Scheduler,
+    IntoScheduledSystem, IntoSystem, ScheduleSet, Scheduler,
 };
 
 /// A self-contained simulation world: one [`Scheduler`] with its resource store
@@ -64,7 +64,7 @@ impl SubApp {
     pub fn add_setup_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
-        schedule_set: impl Schedule,
+        schedule_set: impl ScheduleSet,
     ) {
         self.scheduler.add_setup_system(system, schedule_set);
     }
@@ -73,13 +73,13 @@ impl SubApp {
     pub fn add_update_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
-        schedule_set: impl Schedule,
+        schedule_set: impl ScheduleSet,
     ) {
         self.scheduler.add_update_system(system, schedule_set);
     }
 
     /// Assigns a namespace to all systems registered under the given phase enum type.
-    pub fn set_schedule_namespace<P: Schedule + 'static>(&mut self, namespace: u32) {
+    pub fn set_schedule_namespace<P: ScheduleSet + 'static>(&mut self, namespace: u32) {
         self.scheduler.set_schedule_namespace::<P>(namespace);
     }
 

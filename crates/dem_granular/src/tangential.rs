@@ -26,7 +26,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 
 use dem_atom::{DemAtom, MaterialTable};
-use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, ScheduleSet};
+use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, ParticleSimScheduleSet};
 use mddem_neighbor::Neighbor;
 
 use crate::{SQRT_5_3, TANGENTIAL_EPSILON};
@@ -137,7 +137,7 @@ impl AtomData for ContactHistoryStore {
 /// Standalone Mindlin tangential force plugin with Coulomb friction cap and torque.
 ///
 /// Registers [`ContactHistoryStore`] in the [`AtomDataRegistry`] and adds the
-/// [`mindlin_tangential_force`] system at [`ScheduleSet::Force`], ordered after
+/// [`mindlin_tangential_force`] system at [`ParticleSimScheduleSet::Force`], ordered after
 /// the Hertz normal force.
 ///
 /// For the recommended fused normal+tangential implementation, use
@@ -151,7 +151,7 @@ impl Plugin for MindlinTangentialForcePlugin {
             mindlin_tangential_force
                 .label("mindlin_tangential")
                 .after(crate::normal::hertz_normal_force),
-            ScheduleSet::Force,
+            ParticleSimScheduleSet::Force,
         );
     }
 }
@@ -383,7 +383,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table());
-        app.add_update_system(mindlin_tangential_force, ScheduleSet::Force);
+        app.add_update_system(mindlin_tangential_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -443,7 +443,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(mt);
-        app.add_update_system(mindlin_tangential_force, ScheduleSet::Force);
+        app.add_update_system(mindlin_tangential_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -490,7 +490,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table());
-        app.add_update_system(mindlin_tangential_force, ScheduleSet::Force);
+        app.add_update_system(mindlin_tangential_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 

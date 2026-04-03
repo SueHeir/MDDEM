@@ -4,11 +4,11 @@ A lightweight, Bevy-inspired dependency-injection scheduler for scientific simul
 
 ## What It Does
 
-Systems are functions that declare the resources they need as parameters. The scheduler automatically injects typed resources, manages execution order across user-defined lifecycle phases (`Schedule`), and supports conditional execution and simulation states.
+Systems are functions that declare the resources they need as parameters. The scheduler automatically injects typed resources, manages execution order across user-defined lifecycle phases (`ScheduleSet`), and supports conditional execution and simulation states.
 
 ## Key Types
 
-- **`Schedule`** — Trait for defining custom execution phases. Implement on your own enum or use `#[derive(Schedule)]`.
+- **`ScheduleSet`** — Trait for defining custom execution phases. Implement on your own enum or use `#[derive(ScheduleSet)]`.
 - **`Res<T>` / `ResMut<T>`** — Resource access (read-only / mutable). The scheduler validates that all required resources are registered before execution starts.
 - **`Local<T>`** — Per-system persistent state, unshared with other systems.
 - **`Option<Res<T>>`** — Optional resources; systems are not skipped if missing.
@@ -37,14 +37,14 @@ A minimal velocity-Verlet DEM schedule:
 ```rust
 use sim_scheduler::prelude::*;
 
-#[derive(Clone, Copy, Debug, Schedule)]
+#[derive(Clone, Copy, Debug, ScheduleSet)]
 enum VerletSchedule {
-    #[phase(0)] InitialIntegration,
-    #[phase(1)] Exchange,
-    #[phase(2)] Neighbor,
-    #[phase(3)] Force,
-    #[phase(4)] FinalIntegration,
-    #[phase(5)] PostFinalIntegration,
+    InitialIntegration,
+    Exchange,
+    Neighbor,
+    Force,
+    FinalIntegration,
+    PostFinalIntegration,
 }
 
 struct Particles { pos: Vec<[f64; 3]>, vel: Vec<[f64; 3]>, force: Vec<[f64; 3]> }
@@ -75,17 +75,17 @@ internal phase ordering and optional looping.
 
 ### Defining inner phases
 
-Inner phases use the same `Schedule` trait (or `#[derive(Schedule)]`)
+Inner phases use the same `ScheduleSet` trait (or `#[derive(ScheduleSet)]`)
 as top-level phases:
 
 ```rust
 use sim_scheduler::prelude::*;
 
-#[derive(Clone, Copy, Debug, Schedule)]
+#[derive(Clone, Copy, Debug, ScheduleSet)]
 enum RelaxPhase {
-    #[phase(0)] ComputeForces,
-    #[phase(1)] MoveParticles,
-    #[phase(2)] CheckOverlap,
+    ComputeForces,
+    MoveParticles,
+    CheckOverlap,
 }
 
 struct Overlap(f64);

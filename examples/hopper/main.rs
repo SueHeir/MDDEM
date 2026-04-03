@@ -24,12 +24,12 @@ fn main() {
         .add_plugins(GranularDefaultPlugins)
         .add_plugins(GravityPlugin)
         .add_plugins(WallPlugin)
-        .add_plugins(StatesPlugin::new(Phase::Filling, ScheduleSet::PostFinalIntegration))
-        .add_plugins(StageAdvancePlugin::<Phase>::new(ScheduleSet::PostFinalIntegration));
+        .add_plugins(StatesPlugin::new(Phase::Filling, ParticleSimScheduleSet::PostFinalIntegration))
+        .add_plugins(StageAdvancePlugin::<Phase>::new(ParticleSimScheduleSet::PostFinalIntegration));
 
     app.add_update_system(
         check_settled.run_if(in_state(Phase::Filling)),
-        ScheduleSet::PostFinalIntegration,
+        ParticleSimScheduleSet::PostFinalIntegration,
     );
 
     app.start();

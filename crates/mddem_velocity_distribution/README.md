@@ -45,7 +45,7 @@ fn main() {
 }
 ```
 
-The plugin registers the ECS system `compute_velocity_distribution` on `ScheduleSet::PostFinalIntegration`. Each output cycle writes CSV files to `data/`:
+The plugin registers the ECS system `compute_velocity_distribution` on `ParticleSimScheduleSet::PostFinalIntegration`. Each output cycle writes CSV files to `data/`:
 - `velocity_distribution_{step}.csv`: speed histogram
 - `velocity_components_{step}.csv`: per-component distributions
 - `velocity_distribution_summary.csv`: time series of T_g, cooling rate, collapse status

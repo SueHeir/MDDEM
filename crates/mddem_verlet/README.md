@@ -41,4 +41,4 @@ app.add_plugins(VelocityVerletPlugin::new());
 app.add_plugins(VelocityVerletPlugin::for_stage("relaxation"));
 ```
 
-The plugin schedules integration at `ScheduleSet::InitialIntegration` (before forces) and `ScheduleSet::FinalIntegration` (after forces).
+The plugin schedules integration at `ParticleSimScheduleSet::InitialIntegration` (before forces) and `ParticleSimScheduleSet::FinalIntegration` (after forces).

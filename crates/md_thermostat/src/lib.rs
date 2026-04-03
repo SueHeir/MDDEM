@@ -53,7 +53,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use serde::Deserialize;
 
-use mddem_core::{compute_ke, group_includes, Atom, CommResource, Config, GroupRegistry, ScheduleSet, ScheduleSetupSet, StageOverrides};
+use mddem_core::{compute_ke, group_includes, Atom, CommResource, Config, GroupRegistry, ParticleSimScheduleSet, ScheduleSetupSet, StageOverrides};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -180,8 +180,8 @@ coupling = 1.0       # relaxation time tau_T
 
         app.add_resource(NoseHooverState::default())
             .add_setup_system(setup_nose_hoover, ScheduleSetupSet::PostSetup)
-            .add_update_system(nh_pre_initial, ScheduleSet::PreInitialIntegration)
-            .add_update_system(nh_post_final, ScheduleSet::PostFinalIntegration);
+            .add_update_system(nh_pre_initial, ParticleSimScheduleSet::PreInitialIntegration)
+            .add_update_system(nh_post_final, ParticleSimScheduleSet::PostFinalIntegration);
     }
 }
 
@@ -469,7 +469,7 @@ seed = 12345         # RNG seed
         Config::load::<LangevinConfig>(app, "langevin");
         app.add_resource(LangevinState::default())
             .add_setup_system(setup_langevin, ScheduleSetupSet::PostSetup)
-            .add_update_system(langevin_force, ScheduleSet::PostForce);
+            .add_update_system(langevin_force, ParticleSimScheduleSet::PostForce);
     }
 }
 
@@ -626,8 +626,8 @@ mod tests {
         app.add_resource(atom);
         app.add_resource(make_single_comm());
         app.add_resource(GroupRegistry::default());
-        app.add_update_system(nh_pre_initial, ScheduleSet::PreInitialIntegration);
-        app.add_update_system(nh_post_final, ScheduleSet::PostFinalIntegration);
+        app.add_update_system(nh_pre_initial, ParticleSimScheduleSet::PreInitialIntegration);
+        app.add_update_system(nh_post_final, ParticleSimScheduleSet::PostFinalIntegration);
         app.organize_systems();
         app
     }
@@ -701,7 +701,7 @@ mod tests {
         app.add_resource(atom);
         app.add_resource(make_single_comm());
         app.add_resource(GroupRegistry::default());
-        app.add_update_system(langevin_force, ScheduleSet::PostForce);
+        app.add_update_system(langevin_force, ParticleSimScheduleSet::PostForce);
         app.organize_systems();
         app
     }

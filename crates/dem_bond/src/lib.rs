@@ -87,7 +87,7 @@ use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 use dem_atom::DemAtom;
-use mddem_core::{Atom, AtomData, AtomDataRegistry, BondEntry, BondStore, CommResource, Config, ScheduleSet, ScheduleSetupSet, VirialStress, VirialStressPlugin};
+use mddem_core::{Atom, AtomData, AtomDataRegistry, BondEntry, BondStore, CommResource, Config, ParticleSimScheduleSet, ScheduleSetupSet, VirialStress, VirialStressPlugin};
 use mddem_print::Thermo;
 
 // ── BondConfig ──────────────────────────────────────────────────────────────
@@ -331,9 +331,9 @@ impl Plugin for DemBondPlugin {
             init_bond_history.run_if(first_stage_only()),
             ScheduleSetupSet::PostSetup,
         );
-        app.add_update_system(zero_bond_metrics, ScheduleSet::PreForce);
-        app.add_update_system(bond_force.label("dem_bond_force"), ScheduleSet::Force);
-        app.add_update_system(output_bond_metrics, ScheduleSet::PostForce);
+        app.add_update_system(zero_bond_metrics, ParticleSimScheduleSet::PreForce);
+        app.add_update_system(bond_force.label("dem_bond_force"), ParticleSimScheduleSet::Force);
+        app.add_update_system(output_bond_metrics, ParticleSimScheduleSet::PostForce);
     }
 }
 
@@ -1026,7 +1026,7 @@ mod tests {
         app.add_resource(BondMetrics::default());
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
         app.add_resource(Thermo::new());
-        app.add_update_system(bond_force, ScheduleSet::Force);
+        app.add_update_system(bond_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1064,7 +1064,7 @@ mod tests {
         app.add_resource(BondMetrics::default());
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
         app.add_resource(Thermo::new());
-        app.add_update_system(bond_force, ScheduleSet::Force);
+        app.add_update_system(bond_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1101,7 +1101,7 @@ mod tests {
         app.add_resource(BondMetrics::default());
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
         app.add_resource(Thermo::new());
-        app.add_update_system(bond_force, ScheduleSet::Force);
+        app.add_update_system(bond_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1149,7 +1149,7 @@ mod tests {
         app.add_resource(BondMetrics::default());
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
         app.add_resource(Thermo::new());
-        app.add_update_system(bond_force, ScheduleSet::Force);
+        app.add_update_system(bond_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1201,7 +1201,7 @@ mod tests {
         app.add_resource(BondMetrics::default());
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
         app.add_resource(Thermo::new());
-        app.add_update_system(bond_force, ScheduleSet::Force);
+        app.add_update_system(bond_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1255,7 +1255,7 @@ mod tests {
         app.add_resource(BondMetrics::default());
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
         app.add_resource(Thermo::new());
-        app.add_update_system(bond_force, ScheduleSet::Force);
+        app.add_update_system(bond_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1302,7 +1302,7 @@ mod tests {
         app.add_resource(BondMetrics::default());
         app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
         app.add_resource(Thermo::new());
-        app.add_update_system(bond_force, ScheduleSet::Force);
+        app.add_update_system(bond_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 

@@ -31,7 +31,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, CommResource, Config, GroupRegistry, ScheduleSet, ScheduleSetupSet};
+use mddem_core::{Atom, CommResource, Config, GroupRegistry, ParticleSimScheduleSet, ScheduleSetupSet};
 use mddem_print::Thermo;
 
 // ── Config structs ─────────────────────────────────────────────────────────
@@ -279,23 +279,23 @@ impl Plugin for FixesPlugin {
             .add_setup_system(setup_fixes, ScheduleSetupSet::PostSetup);
 
         if has_move {
-            app.add_update_system(apply_move_linear_pre, ScheduleSet::PreInitialIntegration);
-            app.add_update_system(apply_move_linear_post, ScheduleSet::PostForce);
+            app.add_update_system(apply_move_linear_pre, ParticleSimScheduleSet::PreInitialIntegration);
+            app.add_update_system(apply_move_linear_post, ParticleSimScheduleSet::PostForce);
         }
         if has_add {
-            app.add_update_system(apply_add_force, ScheduleSet::PostForce);
+            app.add_update_system(apply_add_force, ParticleSimScheduleSet::PostForce);
         }
         if has_set {
-            app.add_update_system(apply_set_force, ScheduleSet::PostForce);
+            app.add_update_system(apply_set_force, ParticleSimScheduleSet::PostForce);
         }
         if has_freeze {
-            app.add_update_system(apply_freeze, ScheduleSet::PostForce);
+            app.add_update_system(apply_freeze, ParticleSimScheduleSet::PostForce);
         }
         if has_viscous {
-            app.add_update_system(apply_viscous, ScheduleSet::PostForce);
+            app.add_update_system(apply_viscous, ParticleSimScheduleSet::PostForce);
         }
         if has_nve_limit {
-            app.add_update_system(apply_nve_limit, ScheduleSet::PostFinalIntegration);
+            app.add_update_system(apply_nve_limit, ParticleSimScheduleSet::PostFinalIntegration);
         }
     }
 }
@@ -585,7 +585,7 @@ gz = -9.81"#,
 
     fn build(&self, app: &mut App) {
         Config::load::<GravityConfig>(app, "gravity");
-        app.add_update_system(apply_gravity, ScheduleSet::Force);
+        app.add_update_system(apply_gravity, ParticleSimScheduleSet::Force);
     }
 }
 
@@ -633,7 +633,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(groups);
         app.add_resource(registry);
-        app.add_update_system(apply_add_force, ScheduleSet::PostForce);
+        app.add_update_system(apply_add_force, ParticleSimScheduleSet::PostForce);
         app.organize_systems();
         app.run();
 
@@ -671,7 +671,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(groups);
         app.add_resource(registry);
-        app.add_update_system(apply_set_force, ScheduleSet::PostForce);
+        app.add_update_system(apply_set_force, ParticleSimScheduleSet::PostForce);
         app.organize_systems();
         app.run();
 
@@ -707,7 +707,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(groups);
         app.add_resource(registry);
-        app.add_update_system(apply_freeze, ScheduleSet::PostForce);
+        app.add_update_system(apply_freeze, ParticleSimScheduleSet::PostForce);
         app.organize_systems();
         app.run();
 
@@ -743,8 +743,8 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(groups);
         app.add_resource(registry);
-        app.add_update_system(apply_move_linear_pre, ScheduleSet::PreInitialIntegration);
-        app.add_update_system(apply_move_linear_post, ScheduleSet::PostForce);
+        app.add_update_system(apply_move_linear_pre, ParticleSimScheduleSet::PreInitialIntegration);
+        app.add_update_system(apply_move_linear_post, ParticleSimScheduleSet::PostForce);
         app.organize_systems();
         app.run();
 
@@ -781,7 +781,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(groups);
         app.add_resource(registry);
-        app.add_update_system(apply_viscous, ScheduleSet::PostForce);
+        app.add_update_system(apply_viscous, ParticleSimScheduleSet::PostForce);
         app.organize_systems();
         app.run();
 
@@ -811,7 +811,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(groups);
         app.add_resource(registry);
-        app.add_update_system(apply_viscous, ScheduleSet::PostForce);
+        app.add_update_system(apply_viscous, ParticleSimScheduleSet::PostForce);
         app.organize_systems();
         app.run();
 
@@ -844,7 +844,7 @@ mod tests {
             gy: 0.0,
             gz,
         });
-        app.add_update_system(apply_gravity, ScheduleSet::Force);
+        app.add_update_system(apply_gravity, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -872,7 +872,7 @@ mod tests {
             gy: 0.0,
             gz,
         });
-        app.add_update_system(apply_gravity, ScheduleSet::Force);
+        app.add_update_system(apply_gravity, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -914,7 +914,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(groups);
         app.add_resource(registry);
-        app.add_update_system(apply_nve_limit, ScheduleSet::PostFinalIntegration);
+        app.add_update_system(apply_nve_limit, ParticleSimScheduleSet::PostFinalIntegration);
         app.organize_systems();
         app.run();
 
@@ -944,7 +944,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(groups);
         app.add_resource(registry);
-        app.add_update_system(apply_nve_limit, ScheduleSet::PostFinalIntegration);
+        app.add_update_system(apply_nve_limit, ParticleSimScheduleSet::PostFinalIntegration);
         app.organize_systems();
         app.run();
 
@@ -968,7 +968,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(groups);
         app.add_resource(registry);
-        app.add_update_system(apply_nve_limit, ScheduleSet::PostFinalIntegration);
+        app.add_update_system(apply_nve_limit, ParticleSimScheduleSet::PostFinalIntegration);
         app.organize_systems();
         app.run();
 
@@ -993,7 +993,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(groups);
         app.add_resource(registry);
-        app.add_update_system(apply_nve_limit, ScheduleSet::PostFinalIntegration);
+        app.add_update_system(apply_nve_limit, ParticleSimScheduleSet::PostFinalIntegration);
         app.organize_systems();
         app.run();
 
@@ -1017,7 +1017,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(groups);
         app.add_resource(registry);
-        app.add_update_system(apply_nve_limit, ScheduleSet::PostFinalIntegration);
+        app.add_update_system(apply_nve_limit, ParticleSimScheduleSet::PostFinalIntegration);
         app.organize_systems();
         app.run();
 

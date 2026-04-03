@@ -19,7 +19,7 @@ use std::{
     cell::RefCell,
 };
 
-use sim_scheduler::{IntoScheduledSystem, IntoSystem, Schedule};
+use sim_scheduler::{IntoScheduledSystem, IntoSystem, ScheduleSet};
 
 use crate::{Plugin, Plugins, SubApp, SubApps};
 
@@ -255,7 +255,7 @@ impl App {
     pub fn add_setup_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
-        schedule_set: impl Schedule,
+        schedule_set: impl ScheduleSet,
     ) -> &mut Self {
         self.sub_apps.main.add_setup_system(system, schedule_set);
         self
@@ -265,7 +265,7 @@ impl App {
     pub fn add_update_system<M>(
         &mut self,
         system: impl IntoScheduledSystem<M>,
-        schedule_set: impl Schedule,
+        schedule_set: impl ScheduleSet,
     ) -> &mut Self {
         self.sub_apps.main.add_update_system(system, schedule_set);
         self
@@ -274,7 +274,7 @@ impl App {
     /// Assigns a namespace to all systems registered under the given phase enum type.
     ///
     /// Systems sort by `(namespace, index)`, so this controls cross-solver ordering.
-    pub fn set_schedule_namespace<P: Schedule + 'static>(&mut self, namespace: u32) -> &mut Self {
+    pub fn set_schedule_namespace<P: ScheduleSet + 'static>(&mut self, namespace: u32) -> &mut Self {
         self.sub_apps.main.set_schedule_namespace::<P>(namespace);
         self
     }

@@ -32,7 +32,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, Domain, ScheduleSet, ScheduleSetupSet};
+use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, Domain, ParticleSimScheduleSet, ScheduleSetupSet};
 
 fn default_one_f64() -> f64 {
     1.0
@@ -449,23 +449,23 @@ sort_every = 1000"#,
             .add_setup_system(neighbor_setup.label("neighbor_setup"), ScheduleSetupSet::PostSetup)
             .add_update_system(
                 decide_rebuild.label("decide_rebuild").before(mddem_core::remove_ghost_atoms),
-                ScheduleSet::PostInitialIntegration,
+                ParticleSimScheduleSet::PostInitialIntegration,
             );
         match self.style {
             NeighborStyle::BruteForce => {
-                app.add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
+                app.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
             }
             NeighborStyle::SweepAndPrune => {
-                app.add_update_system(sweep_and_prune_neighbor_list, ScheduleSet::Neighbor);
+                app.add_update_system(sweep_and_prune_neighbor_list, ParticleSimScheduleSet::Neighbor);
             }
             NeighborStyle::Bin => {
                 app.add_update_system(
                     sort_atoms_by_bin
                         .label("sort_atoms")
                         .before(mddem_core::borders),
-                    ScheduleSet::PreNeighbor,
+                    ParticleSimScheduleSet::PreNeighbor,
                 );
-                app.add_update_system(bin_neighbor_list, ScheduleSet::Neighbor);
+                app.add_update_system(bin_neighbor_list, ParticleSimScheduleSet::Neighbor);
             }
         }
     }
@@ -808,7 +808,7 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
 
 /// Reorder local atoms by spatial bin for improved cache locality.
 ///
-/// Runs at [`ScheduleSet::PreNeighbor`] (before ghost communication). Atoms are
+/// Runs at [`ParticleSimScheduleSet::PreNeighbor`] (before ghost communication). Atoms are
 /// sorted by their bin cell index so that spatially nearby atoms are contiguous
 /// in memory, improving cache hit rates during neighbor list construction and
 /// force computation.
@@ -1206,7 +1206,7 @@ mod tests {
 
         app.add_resource(atom);
         app.add_resource(neighbor);
-        app.add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
+        app.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
         app.organize_systems();
         app.run();
 
@@ -1230,7 +1230,7 @@ mod tests {
 
         app.add_resource(atom);
         app.add_resource(neighbor);
-        app.add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
+        app.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
         app.organize_systems();
         app.run();
 
@@ -1264,7 +1264,7 @@ mod tests {
             mddem_core::SingleProcessComm::new(),
         )));
         app.add_setup_system(neighbor_setup, ScheduleSetupSet::PostSetup);
-        app.add_update_system(bin_neighbor_list, ScheduleSet::Neighbor);
+        app.add_update_system(bin_neighbor_list, ParticleSimScheduleSet::Neighbor);
         app.organize_systems();
         app.setup();
         app.run();
@@ -1324,7 +1324,7 @@ mod tests {
         app.add_resource(mddem_core::CommResource(Box::new(
             mddem_core::SingleProcessComm::new(),
         )));
-        app.add_update_system(sweep_and_prune_neighbor_list, ScheduleSet::Neighbor);
+        app.add_update_system(sweep_and_prune_neighbor_list, ParticleSimScheduleSet::Neighbor);
         app.organize_systems();
         app.run();
 
@@ -1392,7 +1392,7 @@ mod tests {
         neighbor.skin_fraction = skin_fraction;
         app.add_resource(atom);
         app.add_resource(neighbor);
-        app.add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
+        app.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
         app.organize_systems();
         app.run();
 
@@ -1446,7 +1446,7 @@ mod tests {
         neighbor_bf.skin_fraction = skin_fraction;
         app_bf.add_resource(atom_bf);
         app_bf.add_resource(neighbor_bf);
-        app_bf.add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
+        app_bf.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
         app_bf.organize_systems();
         app_bf.run();
 
@@ -1484,7 +1484,7 @@ mod tests {
             mddem_core::SingleProcessComm::new(),
         )));
         app_bin.add_setup_system(neighbor_setup, ScheduleSetupSet::PostSetup);
-        app_bin.add_update_system(bin_neighbor_list, ScheduleSet::Neighbor);
+        app_bin.add_update_system(bin_neighbor_list, ParticleSimScheduleSet::Neighbor);
         app_bin.organize_systems();
         app_bin.setup();
         app_bin.run();
@@ -1549,7 +1549,7 @@ mod tests {
         neighbor.skin_fraction = 1.0;
         app.add_resource(atom);
         app.add_resource(neighbor);
-        app.add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
+        app.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
         app.organize_systems();
         app.run();
 
@@ -1596,7 +1596,7 @@ mod tests {
         neighbor.skin_fraction = 1.0;
         app.add_resource(atom);
         app.add_resource(neighbor);
-        app.add_update_system(brute_force_neighbor_list, ScheduleSet::Neighbor);
+        app.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
         app.organize_systems();
         app.run();
 

@@ -38,7 +38,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, Config, ScheduleSet};
+use mddem_core::{Atom, Config, ParticleSimScheduleSet};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -276,20 +276,20 @@ impl Plugin for FireMinPlugin {
         if let Some(ref stage_name) = self.stage {
             app.add_update_system(
                 fire_initial_integration.run_if(in_stage(stage_name)),
-                ScheduleSet::InitialIntegration,
+                ParticleSimScheduleSet::InitialIntegration,
             );
             app.add_update_system(
                 fire_final_integration.run_if(in_stage(stage_name)),
-                ScheduleSet::FinalIntegration,
+                ParticleSimScheduleSet::FinalIntegration,
             );
         } else {
             app.add_update_system(
                 fire_initial_integration,
-                ScheduleSet::InitialIntegration,
+                ParticleSimScheduleSet::InitialIntegration,
             );
             app.add_update_system(
                 fire_final_integration,
-                ScheduleSet::FinalIntegration,
+                ParticleSimScheduleSet::FinalIntegration,
             );
         }
     }
@@ -515,8 +515,8 @@ mod tests {
             }
 
             // Run FIRE integration
-            app.add_update_system(fire_initial_integration, ScheduleSet::InitialIntegration);
-            app.add_update_system(fire_final_integration, ScheduleSet::FinalIntegration);
+            app.add_update_system(fire_initial_integration, ParticleSimScheduleSet::InitialIntegration);
+            app.add_update_system(fire_final_integration, ParticleSimScheduleSet::FinalIntegration);
             app.organize_systems();
             app.run();
         }
@@ -552,7 +552,7 @@ mod tests {
         app.add_resource(fire_state);
         app.add_resource(fire_config);
         app.add_resource(scheduler);
-        app.add_update_system(fire_final_integration, ScheduleSet::FinalIntegration);
+        app.add_update_system(fire_final_integration, ParticleSimScheduleSet::FinalIntegration);
         app.organize_systems();
         app.run();
 
@@ -589,7 +589,7 @@ mod tests {
         app.add_resource(fire_state);
         app.add_resource(fire_config);
         app.add_resource(scheduler);
-        app.add_update_system(fire_final_integration, ScheduleSet::FinalIntegration);
+        app.add_update_system(fire_final_integration, ParticleSimScheduleSet::FinalIntegration);
         app.organize_systems();
         app.run();
 
@@ -624,7 +624,7 @@ mod tests {
         app.add_resource(fire_state);
         app.add_resource(fire_config);
         app.add_resource(scheduler);
-        app.add_update_system(fire_final_integration, ScheduleSet::FinalIntegration);
+        app.add_update_system(fire_final_integration, ParticleSimScheduleSet::FinalIntegration);
         app.organize_systems();
         app.run();
 

@@ -5,7 +5,7 @@ use std::any::TypeId;
 use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 
-use crate::{RunState, ScheduleSet};
+use crate::{RunState, ParticleSimScheduleSet};
 
 /// Symmetric virial stress tensor (upper triangle: xx, yy, zz, xy, xz, yz).
 ///
@@ -104,7 +104,7 @@ impl Plugin for VirialStressPlugin {
             return;
         }
         app.add_resource(VirialStress::default());
-        app.add_update_system(zero_virial_stress, ScheduleSet::PreForce);
+        app.add_update_system(zero_virial_stress, ParticleSimScheduleSet::PreForce);
     }
 }
 

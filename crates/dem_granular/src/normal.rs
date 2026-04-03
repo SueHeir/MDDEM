@@ -21,21 +21,21 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 
 use dem_atom::{DemAtom, MaterialTable};
-use mddem_core::{Atom, AtomDataRegistry, BondStore, ScheduleSet};
+use mddem_core::{Atom, AtomDataRegistry, BondStore, ParticleSimScheduleSet};
 use mddem_neighbor::Neighbor;
 
 use crate::{LARGE_OVERLAP_WARN_THRESHOLD, MAX_OVERLAP_WARNINGS, SQRT_5_3};
 
 /// Standalone Hertz elastic normal contact force plugin.
 ///
-/// Registers the [`hertz_normal_force`] system at [`ScheduleSet::Force`].
+/// Registers the [`hertz_normal_force`] system at [`ParticleSimScheduleSet::Force`].
 /// Does **not** include tangential friction, rolling, or twisting — for full
 /// contact physics use [`crate::contact::HertzMindlinContactPlugin`].
 pub struct HertzNormalForcePlugin;
 
 impl Plugin for HertzNormalForcePlugin {
     fn build(&self, app: &mut App) {
-        app.add_update_system(hertz_normal_force, ScheduleSet::Force);
+        app.add_update_system(hertz_normal_force, ParticleSimScheduleSet::Force);
     }
 }
 
@@ -196,7 +196,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table());
-        app.add_update_system(hertz_normal_force, ScheduleSet::Force);
+        app.add_update_system(hertz_normal_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -242,7 +242,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table());
-        app.add_update_system(hertz_normal_force, ScheduleSet::Force);
+        app.add_update_system(hertz_normal_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 

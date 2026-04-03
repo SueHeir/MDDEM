@@ -59,7 +59,7 @@ use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 use md_lj::LJTailCorrections;
-use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState, ScheduleSet, ScheduleSetupSet, VirialStress};
+use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState, ParticleSimScheduleSet, ScheduleSetupSet, VirialStress};
 use mddem_neighbor::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -303,10 +303,10 @@ output_interval = 1000"#,
             .add_resource(MsdTracker::default())
             .add_resource(PressureHistory::default())
             .add_setup_system(setup_measure_virial, ScheduleSetupSet::PostSetup)
-            .add_update_system(accumulate_rdf, ScheduleSet::PostFinalIntegration)
-            .add_update_system(track_msd, ScheduleSet::PostFinalIntegration)
-            .add_update_system(compute_pressure, ScheduleSet::PostFinalIntegration)
-            .add_update_system(write_measurements, ScheduleSet::PostFinalIntegration);
+            .add_update_system(accumulate_rdf, ParticleSimScheduleSet::PostFinalIntegration)
+            .add_update_system(track_msd, ParticleSimScheduleSet::PostFinalIntegration)
+            .add_update_system(compute_pressure, ParticleSimScheduleSet::PostFinalIntegration)
+            .add_update_system(write_measurements, ParticleSimScheduleSet::PostFinalIntegration);
     }
 }
 

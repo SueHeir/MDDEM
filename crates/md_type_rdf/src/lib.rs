@@ -73,7 +73,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState, ScheduleSet};
+use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState, ParticleSimScheduleSet};
 use mddem_neighbor::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -253,9 +253,9 @@ output_interval = 1000  # write output every N steps"#,
             .add_resource(accumulators)
             .add_update_system(
                 accumulate_type_rdf,
-                ScheduleSet::PostFinalIntegration,
+                ParticleSimScheduleSet::PostFinalIntegration,
             )
-            .add_update_system(write_type_rdf, ScheduleSet::PostFinalIntegration);
+            .add_update_system(write_type_rdf, ParticleSimScheduleSet::PostFinalIntegration);
     }
 }
 

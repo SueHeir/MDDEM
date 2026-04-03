@@ -59,7 +59,7 @@ use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 use dem_atom::DemAtom;
-use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, CommResource, Config, Input, RunState, ScheduleSet};
+use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, CommResource, Config, Input, RunState, ParticleSimScheduleSet};
 use mddem_neighbor::Neighbor;
 use mddem_print::{DumpRegistry, Thermo};
 
@@ -269,7 +269,7 @@ file_prefix = "contact""#,
             // Push coordination stats to thermo
             app.add_update_system(
                 push_coordination_to_thermo.after("contact_analysis"),
-                ScheduleSet::PostForce,
+                ParticleSimScheduleSet::PostForce,
             );
         }
 
@@ -279,19 +279,19 @@ file_prefix = "contact""#,
             compute_contact_analysis
                 .label("contact_analysis")
                 .after("hertz_mindlin_contact"),
-            ScheduleSet::PostForce,
+            ParticleSimScheduleSet::PostForce,
         );
 
         // Contact CSV dump (PostFinalIntegration, with other output)
         if config.interval > 0 {
-            app.add_update_system(dump_contact_records, ScheduleSet::PostFinalIntegration);
+            app.add_update_system(dump_contact_records, ParticleSimScheduleSet::PostFinalIntegration);
         }
 
         if config.fabric_tensor {
             // Fabric tensor thermo output reads the accumulator filled by compute_contact_analysis
             app.add_update_system(
                 push_fabric_tensor_to_thermo.after("contact_analysis"),
-                ScheduleSet::PostForce,
+                ParticleSimScheduleSet::PostForce,
             );
         }
     }

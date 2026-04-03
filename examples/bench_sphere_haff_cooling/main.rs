@@ -21,7 +21,7 @@ fn main() {
     app.add_plugins(CorePlugins)
         .add_plugins(GranularDefaultPlugins);
 
-    app.add_update_system(measure_cooling, ScheduleSet::PostFinalIntegration);
+    app.add_update_system(measure_cooling, ParticleSimScheduleSet::PostFinalIntegration);
 
     app.start();
 }

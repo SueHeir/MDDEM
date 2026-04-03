@@ -16,6 +16,7 @@ mpi_backend = ["dep:mpi", "dep:libffi-sys"]
 [dependencies]
 sim_scheduler = { path = "../sim_scheduler", version = "0.1.3" }
 sim_app = { path = "../sim_app", version = "0.1.3" }
+mddem_derive = { path = "../mddem_derive", version = "0.1.3" }
 mpi = { version = "0.8.0", features = ["user-operations", "derive"], optional = true }
 libffi-sys = { version = "2.3.0", features = ["system"], optional = true }
 serde = { version = "1", features = ["derive"] }

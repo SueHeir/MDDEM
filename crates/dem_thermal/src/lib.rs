@@ -62,7 +62,7 @@ use serde::Deserialize;
 
 use dem_atom::DemAtom;
 use dem_wall::Walls;
-use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, Config, ScheduleSet, ScheduleSetupSet};
+use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, Config, ParticleSimScheduleSet, ScheduleSetupSet};
 use mddem_neighbor::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -205,15 +205,15 @@ impl Plugin for ThermalPlugin {
         app.add_resource(thermal_config);
 
         app.add_setup_system(initialize_temperatures, ScheduleSetupSet::PostSetup);
-        app.add_update_system(compute_heat_conduction, ScheduleSet::Force);
+        app.add_update_system(compute_heat_conduction, ParticleSimScheduleSet::Force);
 
         // Register wall heat conduction if walls resource exists
         let has_walls = app.get_resource_ref::<Walls>().is_some();
         if has_walls {
-            app.add_update_system(compute_wall_heat_conduction, ScheduleSet::Force);
+            app.add_update_system(compute_wall_heat_conduction, ParticleSimScheduleSet::Force);
         }
 
-        app.add_update_system(integrate_temperature, ScheduleSet::PostFinalIntegration);
+        app.add_update_system(integrate_temperature, ParticleSimScheduleSet::PostFinalIntegration);
     }
 }
 
@@ -580,7 +580,7 @@ mod tests {
         let sep = 0.0019; // overlap
         let (mut app, _) = setup_two_atoms(400.0, 300.0, sep, radius);
 
-        app.add_update_system(compute_heat_conduction, ScheduleSet::Force);
+        app.add_update_system(compute_heat_conduction, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -614,7 +614,7 @@ mod tests {
         let sep = 0.0019;
         let (mut app, _) = setup_two_atoms(300.0, 300.0, sep, radius);
 
-        app.add_update_system(compute_heat_conduction, ScheduleSet::Force);
+        app.add_update_system(compute_heat_conduction, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -636,7 +636,7 @@ mod tests {
         let sep = 0.003; // no overlap
         let (mut app, _) = setup_two_atoms(400.0, 300.0, sep, radius);
 
-        app.add_update_system(compute_heat_conduction, ScheduleSet::Force);
+        app.add_update_system(compute_heat_conduction, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -749,7 +749,7 @@ mod tests {
             app.add_resource(neighbor);
             app.add_resource(registry);
             app.add_resource(config);
-            app.add_update_system(compute_heat_conduction, ScheduleSet::Force);
+            app.add_update_system(compute_heat_conduction, ParticleSimScheduleSet::Force);
             app.organize_systems();
             app.run();
 
@@ -783,7 +783,7 @@ mod tests {
         let radius = 0.001;
         let sep = 0.0019;
         let (mut app, _) = setup_two_atoms(450.0, 250.0, sep, radius);
-        app.add_update_system(compute_heat_conduction, ScheduleSet::Force);
+        app.add_update_system(compute_heat_conduction, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -802,8 +802,8 @@ mod tests {
         let sep = 0.0019;
         let (mut app, _) = setup_two_atoms(400.0, 300.0, sep, radius);
 
-        app.add_update_system(compute_heat_conduction, ScheduleSet::Force);
-        app.add_update_system(integrate_temperature, ScheduleSet::PostFinalIntegration);
+        app.add_update_system(compute_heat_conduction, ParticleSimScheduleSet::Force);
+        app.add_update_system(integrate_temperature, ParticleSimScheduleSet::PostFinalIntegration);
         app.organize_systems();
         app.run();
 
@@ -910,7 +910,7 @@ mod tests {
         app.add_resource(registry);
         app.add_resource(config);
         app.add_resource(walls);
-        app.add_update_system(compute_wall_heat_conduction, ScheduleSet::Force);
+        app.add_update_system(compute_wall_heat_conduction, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app
     }

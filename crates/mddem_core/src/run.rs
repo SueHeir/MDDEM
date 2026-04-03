@@ -8,7 +8,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{CommResource, Config, ScheduleSet, ScheduleSetupSet};
+use crate::{CommResource, Config, ParticleSimScheduleSet, ScheduleSetupSet};
 use sim_app::StageNames;
 
 fn default_steps() -> u32 {
@@ -161,7 +161,7 @@ thermo = 100
         app.add_resource(RunState::new())
             .add_setup_system(set_stage_name, ScheduleSetupSet::PreSetup)
             .add_setup_system(run_read_input, ScheduleSetupSet::Setup)
-            .add_update_system(update_cycle.label("update_cycle"), ScheduleSet::PostFinalIntegration);
+            .add_update_system(update_cycle.label("update_cycle"), ParticleSimScheduleSet::PostFinalIntegration);
 
         // If StageAdvancePlugin registered StageNames, add validation
         if app

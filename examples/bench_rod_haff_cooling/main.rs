@@ -37,7 +37,7 @@ fn main() {
         // translational and rotational temperatures instead.
         .add_plugins(ClumpPlugin);
 
-    app.add_update_system(measure_cooling, ScheduleSet::PostFinalIntegration);
+    app.add_update_system(measure_cooling, ParticleSimScheduleSet::PostFinalIntegration);
 
     app.start();
 }

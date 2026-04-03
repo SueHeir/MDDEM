@@ -37,7 +37,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 
 use dem_atom::{self, DemAtom, MaterialTable};
-use mddem_core::{register_atom_data, Atom, AtomDataRegistry, BondStore, ScheduleSet, VirialStress, VirialStressPlugin};
+use mddem_core::{register_atom_data, Atom, AtomDataRegistry, BondStore, ParticleSimScheduleSet, VirialStress, VirialStressPlugin};
 use mddem_neighbor::Neighbor;
 
 use crate::tangential::ContactHistoryStore;
@@ -46,7 +46,7 @@ use crate::{LARGE_OVERLAP_WARN_THRESHOLD, MAX_OVERLAP_WARNINGS, SQRT_5_3, TANGEN
 /// Fused Hertz normal + Mindlin tangential contact force plugin.
 ///
 /// Registers [`ContactHistoryStore`] in the [`AtomDataRegistry`] and a single
-/// `hertz_mindlin_contact` system at [`ScheduleSet::Force`].
+/// `hertz_mindlin_contact` system at [`ParticleSimScheduleSet::Force`].
 pub struct HertzMindlinContactPlugin;
 
 impl Plugin for HertzMindlinContactPlugin {
@@ -77,13 +77,13 @@ impl Plugin for HertzMindlinContactPlugin {
             "hooke" => {
                 app.add_update_system(
                     hooke_contact_force.label("hertz_mindlin_contact"),
-                    ScheduleSet::Force,
+                    ParticleSimScheduleSet::Force,
                 );
             }
             _ => {
                 app.add_update_system(
                     hertz_mindlin_contact_force.label("hertz_mindlin_contact"),
-                    ScheduleSet::Force,
+                    ParticleSimScheduleSet::Force,
                 );
             }
         }
@@ -1000,7 +1000,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1043,7 +1043,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1096,7 +1096,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1149,7 +1149,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table_cohesion());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1193,7 +1193,7 @@ mod tests {
             app.add_resource(neighbor);
             app.add_resource(registry);
             app.add_resource(mt);
-            app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+            app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
             app.organize_systems();
             app.run();
             let atom = app.get_resource_ref::<Atom>().unwrap();
@@ -1259,7 +1259,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(mt);
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1313,7 +1313,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table_jkr());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1361,7 +1361,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table_jkr());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1407,7 +1407,7 @@ mod tests {
             app.add_resource(neighbor);
             app.add_resource(registry);
             app.add_resource(make_material_table_hooke());
-            app.add_update_system(hooke_contact_force, ScheduleSet::Force);
+            app.add_update_system(hooke_contact_force, ParticleSimScheduleSet::Force);
             app.organize_systems();
             app.run();
             let atom = app.get_resource_ref::<Atom>().unwrap();
@@ -1455,7 +1455,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table_hooke());
-        app.add_update_system(hooke_contact_force, ScheduleSet::Force);
+        app.add_update_system(hooke_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1491,7 +1491,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table_twisting());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1532,7 +1532,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table_twisting());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1575,7 +1575,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table_rolling());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1654,7 +1654,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table_sds_rolling());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1704,7 +1704,7 @@ mod tests {
             app.add_resource(neighbor);
             app.add_resource(registry);
             app.add_resource(make_material_table_sds_rolling());
-            app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+            app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
             app.organize_systems();
             app.run();
 
@@ -1757,7 +1757,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(mt);
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1813,7 +1813,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table_sds_twisting());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1860,7 +1860,7 @@ mod tests {
             app.add_resource(neighbor);
             app.add_resource(registry);
             app.add_resource(make_material_table_sds_twisting());
-            app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+            app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
             app.organize_systems();
             app.run();
 
@@ -1918,7 +1918,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(mt);
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -1986,7 +1986,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table_dmt());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -2039,7 +2039,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table_dmt());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -2100,7 +2100,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table_dmt());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -2149,7 +2149,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table_jkr());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -2195,7 +2195,7 @@ mod tests {
             app.add_resource(neighbor);
             app.add_resource(registry);
             app.add_resource(make_material_table());
-            app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+            app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
             app.organize_systems();
             app.run();
             let atom = app.get_resource_ref::<Atom>().unwrap();
@@ -2246,7 +2246,7 @@ mod tests {
             app.add_resource(neighbor);
             app.add_resource(registry);
             app.add_resource(make_material_table_hooke());
-            app.add_update_system(hooke_contact_force, ScheduleSet::Force);
+            app.add_update_system(hooke_contact_force, ParticleSimScheduleSet::Force);
             app.organize_systems();
             app.run();
             let atom = app.get_resource_ref::<Atom>().unwrap();
@@ -2302,7 +2302,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(mt);
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 
@@ -2365,15 +2365,15 @@ mod tests {
         app.add_resource(mt);
         app.add_update_system(
             crate::contact::hertz_mindlin_contact_force,
-            ScheduleSet::Force,
+            ParticleSimScheduleSet::Force,
         );
         app.add_update_system(
             mddem_verlet::initial_integration,
-            ScheduleSet::InitialIntegration,
+            ParticleSimScheduleSet::InitialIntegration,
         );
         app.add_update_system(
             mddem_verlet::final_integration,
-            ScheduleSet::FinalIntegration,
+            ParticleSimScheduleSet::FinalIntegration,
         );
         // Zero forces between steps
         app.add_update_system(
@@ -2382,7 +2382,7 @@ mod tests {
                 atoms.force[..n].fill([0.0; 3]);
                 registry.zero_all(n);
             },
-            ScheduleSet::PostInitialIntegration,
+            ParticleSimScheduleSet::PostInitialIntegration,
         );
         app.organize_systems();
 
@@ -2440,7 +2440,7 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(registry);
         app.add_resource(make_material_table());
-        app.add_update_system(hertz_mindlin_contact_force, ScheduleSet::Force);
+        app.add_update_system(hertz_mindlin_contact_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app.run();
 

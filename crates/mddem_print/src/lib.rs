@@ -67,7 +67,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use mddem_core::{compute_ke, Atom, AtomDataRegistry, CommResource, Config, GroupRegistry, Input, RunConfig, RunState, ScheduleSet, ScheduleSetupSet, VirialStress};
+use mddem_core::{compute_ke, Atom, AtomDataRegistry, CommResource, Config, GroupRegistry, Input, RunConfig, RunState, ParticleSimScheduleSet, ScheduleSetupSet, VirialStress};
 use mddem_neighbor::Neighbor;
 
 // ── Thermo config ───────────────────────────────────────────────────────────
@@ -514,12 +514,12 @@ interval = 0"#,
         app.add_resource(Thermo::new())
             .add_setup_system(setup_thermo, ScheduleSetupSet::PostSetup)
             .add_setup_system(read_restart.run_if(first_stage_only()), ScheduleSetupSet::PostSetup)
-            .add_update_system(output_virial_to_thermo, ScheduleSet::PostForce)
-            .add_update_system(print_vtp, ScheduleSet::PostFinalIntegration)
-            .add_update_system(print_thermo, ScheduleSet::PostFinalIntegration)
-            .add_update_system(dump_atoms, ScheduleSet::PostFinalIntegration)
-            .add_update_system(write_restart, ScheduleSet::PostFinalIntegration)
-            .add_update_system(check_stage_end_save.before("update_cycle"), ScheduleSet::PostFinalIntegration);
+            .add_update_system(output_virial_to_thermo, ParticleSimScheduleSet::PostForce)
+            .add_update_system(print_vtp, ParticleSimScheduleSet::PostFinalIntegration)
+            .add_update_system(print_thermo, ParticleSimScheduleSet::PostFinalIntegration)
+            .add_update_system(dump_atoms, ParticleSimScheduleSet::PostFinalIntegration)
+            .add_update_system(write_restart, ParticleSimScheduleSet::PostFinalIntegration)
+            .add_update_system(check_stage_end_save.before("update_cycle"), ParticleSimScheduleSet::PostFinalIntegration);
     }
 }
 

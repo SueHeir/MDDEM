@@ -24,7 +24,7 @@
 use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 
-use mddem_core::{Atom, ScheduleSet};
+use mddem_core::{Atom, ParticleSimScheduleSet};
 
 /// Registers initial and final integration systems for translational Velocity Verlet.
 ///
@@ -71,15 +71,15 @@ impl Plugin for VelocityVerletPlugin {
         if let Some(ref stage_name) = self.stage {
             app.add_update_system(
                 initial_integration.run_if(in_stage(stage_name)),
-                ScheduleSet::InitialIntegration,
+                ParticleSimScheduleSet::InitialIntegration,
             )
             .add_update_system(
                 final_integration.run_if(in_stage(stage_name)),
-                ScheduleSet::FinalIntegration,
+                ParticleSimScheduleSet::FinalIntegration,
             );
         } else {
-            app.add_update_system(initial_integration, ScheduleSet::InitialIntegration)
-                .add_update_system(final_integration, ScheduleSet::FinalIntegration);
+            app.add_update_system(initial_integration, ParticleSimScheduleSet::InitialIntegration)
+                .add_update_system(final_integration, ParticleSimScheduleSet::FinalIntegration);
         }
     }
 }
@@ -93,7 +93,7 @@ impl Plugin for VelocityVerletPlugin {
 ///   x_i  +=  Δt · v_i               (drift at the updated half-step velocity)
 /// ```
 ///
-/// This runs at [`ScheduleSet::InitialIntegration`], **before** force computation.
+/// This runs at [`ParticleSimScheduleSet::InitialIntegration`], **before** force computation.
 pub fn initial_integration(mut atoms: ResMut<Atom>) {
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
@@ -132,7 +132,7 @@ pub fn initial_integration(mut atoms: ResMut<Atom>) {
 ///
 /// After this step the velocity is fully updated: v(t + Δt/2) → v(t + Δt).
 ///
-/// This runs at [`ScheduleSet::FinalIntegration`], **after** force computation.
+/// This runs at [`ParticleSimScheduleSet::FinalIntegration`], **after** force computation.
 pub fn final_integration(mut atoms: ResMut<Atom>) {
     let dt = atoms.dt;
     let nlocal = atoms.nlocal as usize;
@@ -173,7 +173,7 @@ mod tests {
     fn initial_integration_updates_position_and_velocity() {
         let mut app = App::new();
         app.add_resource(make_atom());
-        app.add_update_system(initial_integration, ScheduleSet::InitialIntegration);
+        app.add_update_system(initial_integration, ParticleSimScheduleSet::InitialIntegration);
         app.organize_systems();
         app.run();
 
@@ -299,8 +299,8 @@ mod tests {
         atom.natoms = 1;
 
         app.add_resource(atom);
-        app.add_update_system(initial_integration, ScheduleSet::InitialIntegration);
-        app.add_update_system(final_integration, ScheduleSet::FinalIntegration);
+        app.add_update_system(initial_integration, ParticleSimScheduleSet::InitialIntegration);
+        app.add_update_system(final_integration, ParticleSimScheduleSet::FinalIntegration);
         app.organize_systems();
 
         for _ in 0..1000 {
@@ -369,7 +369,7 @@ mod tests {
     fn final_integration_updates_velocity_only() {
         let mut app = App::new();
         app.add_resource(make_atom());
-        app.add_update_system(final_integration, ScheduleSet::FinalIntegration);
+        app.add_update_system(final_integration, ParticleSimScheduleSet::FinalIntegration);
         app.organize_systems();
         app.run();
 

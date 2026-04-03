@@ -10,7 +10,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{Atom, AtomDataRegistry, CommBackend, CommResource, Config, ScheduleSet, ScheduleSetupSet};
+use crate::{Atom, AtomDataRegistry, CommBackend, CommResource, Config, ParticleSimScheduleSet, ScheduleSetupSet};
 
 fn default_one_f64() -> f64 {
     1.0
@@ -249,9 +249,9 @@ boundary_z = "periodic"
             .add_setup_system(domain_read_input, ScheduleSetupSet::Setup)
             .add_update_system(
                 shrink_wrap.label("shrink_wrap").before("pbc"),
-                ScheduleSet::PreExchange,
+                ParticleSimScheduleSet::PreExchange,
             )
-            .add_update_system(pbc.label("pbc"), ScheduleSet::PreExchange);
+            .add_update_system(pbc.label("pbc"), ParticleSimScheduleSet::PreExchange);
     }
 }
 

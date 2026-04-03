@@ -65,7 +65,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, CommResource, Config, Domain, MixingRule, PairCoeffTable, ScheduleSet, ScheduleSetupSet, VirialStressPlugin};
+use mddem_core::{Atom, CommResource, Config, Domain, MixingRule, PairCoeffTable, ParticleSimScheduleSet, ScheduleSetupSet, VirialStressPlugin};
 use mddem_neighbor::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -320,7 +320,7 @@ cutoff = 2.5     # in sigma units"#,
                 setup_lj_tails.run_if(first_stage_only()),
                 ScheduleSetupSet::PostSetup,
             )
-            .add_update_system(lj_force.label("lj"), ScheduleSet::Force);
+            .add_update_system(lj_force.label("lj"), ParticleSimScheduleSet::Force);
     }
 }
 
@@ -670,9 +670,9 @@ mod tests {
 
         app.add_update_system(
             mddem_core::virial::zero_virial_stress,
-            ScheduleSet::PreForce,
+            ParticleSimScheduleSet::PreForce,
         );
-        app.add_update_system(lj_force, ScheduleSet::Force);
+        app.add_update_system(lj_force, ParticleSimScheduleSet::Force);
         app.organize_systems();
         app
     }

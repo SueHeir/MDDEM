@@ -47,7 +47,7 @@ use rand::Rng;
 
 use mddem_core::{
     register_atom_data, Atom, AtomData, AtomDataRegistry, CommResource, Config, Domain, Region,
-    RunState, ScheduleSet, ScheduleSetupSet,
+    RunState, ParticleSimScheduleSet, ScheduleSetupSet,
 };
 
 #[cfg(feature = "mpi_backend")]
@@ -273,7 +273,7 @@ impl Plugin for ClumpPlugin {
                 .label("snap_subspheres_to_body_com")
                 .before("exchange_bodies")
                 .before("exchange"),
-            ScheduleSet::Exchange,
+            ParticleSimScheduleSet::Exchange,
         );
 
         // Body exchange: migrate bodies whose COM left the local subdomain.
@@ -281,7 +281,7 @@ impl Plugin for ClumpPlugin {
             exchange_bodies
                 .label("exchange_bodies")
                 .before("exchange"),
-            ScheduleSet::Exchange,
+            ParticleSimScheduleSet::Exchange,
         );
 
         // After atom exchange, restore sub-sphere positions from body state
@@ -290,19 +290,19 @@ impl Plugin for ClumpPlugin {
             restore_subsphere_positions
                 .label("restore_subsphere_positions")
                 .after("exchange"),
-            ScheduleSet::Exchange,
+            ParticleSimScheduleSet::Exchange,
         );
 
         // Body initial integration (half-kick + drift + quaternion update)
         app.add_update_system(
             integrate_bodies_initial.label("integrate_bodies_initial"),
-            ScheduleSet::InitialIntegration,
+            ParticleSimScheduleSet::InitialIntegration,
         );
 
         // PBC for body COM
         app.add_update_system(
             pbc_multisphere_bodies.label("pbc_multisphere_bodies"),
-            ScheduleSet::PostInitialIntegration,
+            ParticleSimScheduleSet::PostInitialIntegration,
         );
 
         // Force aggregation: sub-sphere forces → body force/torque
@@ -313,13 +313,13 @@ impl Plugin for ClumpPlugin {
                 .label("aggregate_clump_forces")
                 .after("hertz_mindlin_contact")
                 .after("reverse_send_force"),
-            ScheduleSet::PostForce,
+            ParticleSimScheduleSet::PostForce,
         );
 
         // Body final integration (half-kick after new forces)
         app.add_update_system(
             integrate_bodies_final.label("integrate_bodies_final"),
-            ScheduleSet::FinalIntegration,
+            ParticleSimScheduleSet::FinalIntegration,
         );
 
         // Update sub-sphere positions before exchange so atoms migrate to the
@@ -329,13 +329,13 @@ impl Plugin for ClumpPlugin {
             update_clump_positions
                 .label("update_clump_positions_pre_exchange")
                 .after("pbc_multisphere_bodies"),
-            ScheduleSet::PostInitialIntegration,
+            ParticleSimScheduleSet::PostInitialIntegration,
         );
 
         // Derive sub-sphere pos/vel from body state (end of step)
         app.add_update_system(
             update_clump_positions.label("update_clump_positions"),
-            ScheduleSet::PostFinalIntegration,
+            ParticleSimScheduleSet::PostFinalIntegration,
         );
 
         // Lost atom detection (lightweight, every 1000 steps)
@@ -343,7 +343,7 @@ impl Plugin for ClumpPlugin {
             check_lost_clump_atoms
                 .label("check_lost_clump_atoms")
                 .after("update_clump_positions"),
-            ScheduleSet::PostFinalIntegration,
+            ParticleSimScheduleSet::PostFinalIntegration,
         );
     }
 }
@@ -1254,7 +1254,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(registry);
         app.add_resource(bodies);
-        app.add_update_system(aggregate_clump_forces, ScheduleSet::PostForce);
+        app.add_update_system(aggregate_clump_forces, ParticleSimScheduleSet::PostForce);
         app.organize_systems();
         app.run();
 
@@ -1306,7 +1306,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(registry);
         app.add_resource(bodies);
-        app.add_update_system(update_clump_positions, ScheduleSet::PostFinalIntegration);
+        app.add_update_system(update_clump_positions, ParticleSimScheduleSet::PostFinalIntegration);
         app.organize_systems();
         app.run();
 
@@ -1387,7 +1387,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(registry);
         app.add_resource(bodies);
-        app.add_update_system(update_clump_positions, ScheduleSet::PostFinalIntegration);
+        app.add_update_system(update_clump_positions, ParticleSimScheduleSet::PostFinalIntegration);
         app.organize_systems();
         app.run();
 
@@ -1420,7 +1420,7 @@ mod tests {
         app.add_resource(atoms);
         app.add_resource(registry);
         app.add_resource(bodies);
-        app.add_update_system(aggregate_clump_forces, ScheduleSet::PostForce);
+        app.add_update_system(aggregate_clump_forces, ParticleSimScheduleSet::PostForce);
         app.organize_systems();
         app.run();
 

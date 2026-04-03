@@ -63,7 +63,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
-use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState, ScheduleSet};
+use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState, ParticleSimScheduleSet};
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -178,8 +178,8 @@ output_interval = 1000 # write output every N steps"#,
         Config::load::<MsdConfig>(app, "msd");
 
         app.add_resource(TypeMsdTracker::default())
-            .add_update_system(track_type_msd, ScheduleSet::PostFinalIntegration)
-            .add_update_system(write_type_msd, ScheduleSet::PostFinalIntegration);
+            .add_update_system(track_type_msd, ParticleSimScheduleSet::PostFinalIntegration)
+            .add_update_system(write_type_msd, ParticleSimScheduleSet::PostFinalIntegration);
     }
 }
 

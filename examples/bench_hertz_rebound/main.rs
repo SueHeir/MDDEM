@@ -59,7 +59,7 @@ fn main() {
 
     app.add_resource(ReboundTracker::new());
 
-    app.add_update_system(track_rebound, ScheduleSet::PostFinalIntegration);
+    app.add_update_system(track_rebound, ParticleSimScheduleSet::PostFinalIntegration);
 
     app.start();
 }

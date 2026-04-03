@@ -2,13 +2,12 @@
 //!
 //! These enums define the execution order for a velocity-Verlet integration loop.
 //! Other domains (e.g. CFD) can define their own schedule phases by implementing
-//! [`Schedule`] on a custom enum (or using `#[derive(Schedule)]`).
-
-use sim_scheduler::Schedule;
+//! [`ScheduleSet`](sim_scheduler::ScheduleSet) on a custom enum (or using
+//! `#[derive(ScheduleSet)]`).
 
 /// Execution phase within each timestep (the run loop).
 ///
-/// Systems are sorted first by their `ScheduleSet` phase, then topologically within
+/// Systems are sorted first by their `ParticleSimScheduleSet` phase, then topologically within
 /// each phase using `before`/`after` constraints. The phases execute in the order
 /// listed below, mirroring a standard velocity-Verlet integration cycle:
 ///
@@ -20,8 +19,8 @@ use sim_scheduler::Schedule;
 /// | 6–7   | `Pre/Neighbor`           | Neighbor-list rebuild                |
 /// | 8–10  | `Pre/Force/PostForce`    | Force computation                    |
 /// | 11–13 | `Pre/Final/PostFinalIntegration` | Second half-step velocity update |
-#[derive(Debug, Clone, Copy)]
-pub enum ScheduleSet {
+#[derive(Debug, Clone, Copy, mddem_derive::ScheduleSet)]
+pub enum ParticleSimScheduleSet {
     /// Per-step bookkeeping (e.g., incrementing timestep counters).
     Setup,
     /// Runs before the initial (first half-step) integration.
@@ -55,7 +54,7 @@ pub enum ScheduleSet {
 /// Execution phase during one-time setup (before the run loop begins).
 ///
 /// Setup systems run once per stage in order: `PreSetup` → `Setup` → `PostSetup`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, mddem_derive::ScheduleSet)]
 pub enum ScheduleSetupSet {
     /// Runs before the main setup phase (e.g., early resource initialization).
     PreSetup,
@@ -63,45 +62,6 @@ pub enum ScheduleSetupSet {
     Setup,
     /// Runs after setup (e.g., initial force computation, diagnostics).
     PostSetup,
-}
-
-impl Schedule for ScheduleSet {
-    fn to_index(&self) -> u32 {
-        match self {
-            ScheduleSet::Setup => 0,
-            ScheduleSet::PreInitialIntegration => 1,
-            ScheduleSet::InitialIntegration => 2,
-            ScheduleSet::PostInitialIntegration => 3,
-            ScheduleSet::PreExchange => 4,
-            ScheduleSet::Exchange => 5,
-            ScheduleSet::PreNeighbor => 6,
-            ScheduleSet::Neighbor => 7,
-            ScheduleSet::PreForce => 8,
-            ScheduleSet::Force => 9,
-            ScheduleSet::PostForce => 10,
-            ScheduleSet::PreFinalIntegration => 11,
-            ScheduleSet::FinalIntegration => 12,
-            ScheduleSet::PostFinalIntegration => 13,
-        }
-    }
-    fn name(&self) -> &'static str {
-        match self {
-            ScheduleSet::Setup => "Setup",
-            ScheduleSet::PreInitialIntegration => "PreInitialIntegration",
-            ScheduleSet::InitialIntegration => "InitialIntegration",
-            ScheduleSet::PostInitialIntegration => "PostInitialIntegration",
-            ScheduleSet::PreExchange => "PreExchange",
-            ScheduleSet::Exchange => "Exchange",
-            ScheduleSet::PreNeighbor => "PreNeighbor",
-            ScheduleSet::Neighbor => "Neighbor",
-            ScheduleSet::PreForce => "PreForce",
-            ScheduleSet::Force => "Force",
-            ScheduleSet::PostForce => "PostForce",
-            ScheduleSet::PreFinalIntegration => "PreFinalIntegration",
-            ScheduleSet::FinalIntegration => "FinalIntegration",
-            ScheduleSet::PostFinalIntegration => "PostFinalIntegration",
-        }
-    }
 }
 
 /// Returns Verlet-specific schedule warnings for the given phase names.
@@ -182,23 +142,6 @@ pub fn verlet_schedule_warnings(phase_names: &[&str]) -> Vec<String> {
     }
 
     warnings
-}
-
-impl Schedule for ScheduleSetupSet {
-    fn to_index(&self) -> u32 {
-        match self {
-            ScheduleSetupSet::PreSetup => 0,
-            ScheduleSetupSet::Setup => 1,
-            ScheduleSetupSet::PostSetup => 2,
-        }
-    }
-    fn name(&self) -> &'static str {
-        match self {
-            ScheduleSetupSet::PreSetup => "PreSetup",
-            ScheduleSetupSet::Setup => "Setup",
-            ScheduleSetupSet::PostSetup => "PostSetup",
-        }
-    }
 }
 
 #[cfg(test)]

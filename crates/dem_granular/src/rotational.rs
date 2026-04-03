@@ -19,7 +19,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 
 use dem_atom::DemAtom;
-use mddem_core::{Atom, AtomDataRegistry, ScheduleSet};
+use mddem_core::{Atom, AtomDataRegistry, ParticleSimScheduleSet};
 
 /// Construct a unit quaternion `[w, x, y, z]` from a unit rotation axis and angle (radians).
 #[inline]
@@ -44,14 +44,14 @@ fn quat_mul(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
 ///
 /// Assumes solid spheres with moment of inertia `I = 2/5 m r²`. Registers
 /// two systems:
-/// - [`initial_rotation`] at [`ScheduleSet::InitialIntegration`] — half-step ω, update quaternion
-/// - [`final_rotation`] at [`ScheduleSet::FinalIntegration`] — half-step ω after new torques
+/// - [`initial_rotation`] at [`ParticleSimScheduleSet::InitialIntegration`] — half-step ω, update quaternion
+/// - [`final_rotation`] at [`ParticleSimScheduleSet::FinalIntegration`] — half-step ω after new torques
 pub struct RotationalDynamicsPlugin;
 
 impl Plugin for RotationalDynamicsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_update_system(initial_rotation, ScheduleSet::InitialIntegration)
-            .add_update_system(final_rotation, ScheduleSet::FinalIntegration);
+        app.add_update_system(initial_rotation, ParticleSimScheduleSet::InitialIntegration)
+            .add_update_system(final_rotation, ParticleSimScheduleSet::FinalIntegration);
     }
 }
 
@@ -129,7 +129,7 @@ mod tests {
 
         app.add_resource(atom);
         app.add_resource(registry);
-        app.add_update_system(initial_rotation, ScheduleSet::InitialIntegration);
+        app.add_update_system(initial_rotation, ParticleSimScheduleSet::InitialIntegration);
         app.organize_systems();
         app.run();
 
@@ -162,7 +162,7 @@ mod tests {
 
         app.add_resource(atom);
         app.add_resource(registry);
-        app.add_update_system(initial_rotation, ScheduleSet::InitialIntegration);
+        app.add_update_system(initial_rotation, ParticleSimScheduleSet::InitialIntegration);
         app.organize_systems();
         app.run();
 

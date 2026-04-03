@@ -29,11 +29,11 @@
 //!
 //! # Scheduling
 //!
-//! The deform system runs at [`ScheduleSet::PreInitialIntegration`], updating
+//! The deform system runs at [`ParticleSimScheduleSet::PreInitialIntegration`], updating
 //! domain bounds and remapping atoms before the Verlet position update.
 
 use sim_app::prelude::*;
-use mddem_core::{Atom, CommResource, Config, Domain, ScheduleSet, ScheduleSetupSet, StageOverrides};
+use mddem_core::{Atom, CommResource, Config, Domain, ParticleSimScheduleSet, ScheduleSetupSet, StageOverrides};
 use mddem_neighbor::Neighbor;
 use sim_scheduler::prelude::*;
 use serde::Deserialize;
@@ -164,7 +164,7 @@ impl DeformState {
 /// Registers the [`DeformState`] resource and two systems:
 /// - **Setup** ([`ScheduleSetupSet::PostSetup`]): reads the `[deform]` config
 ///   (including per-stage overrides) and initializes axis definitions.
-/// - **Update** ([`ScheduleSet::PreInitialIntegration`]): applies the
+/// - **Update** ([`ParticleSimScheduleSet::PreInitialIntegration`]): applies the
 ///   deformation each timestep before the Verlet position update.
 ///
 /// Add this plugin to your app to enable `[deform]` TOML configuration:
@@ -203,7 +203,7 @@ impl Plugin for DeformPlugin {
         // returns when no axes are active.
         app.add_resource(state)
             .add_setup_system(setup_deform, ScheduleSetupSet::PostSetup)
-            .add_update_system(apply_deform, ScheduleSet::PreInitialIntegration);
+            .add_update_system(apply_deform, ParticleSimScheduleSet::PreInitialIntegration);
     }
 }
 
@@ -327,7 +327,7 @@ fn setup_deform(
 
 // ── Update system ───────────────────────────────────────────────────────────
 
-/// Apply box deformation each timestep. Runs at [`ScheduleSet::PreInitialIntegration`].
+/// Apply box deformation each timestep. Runs at [`ParticleSimScheduleSet::PreInitialIntegration`].
 ///
 /// 1. Compute new domain bounds based on deformation style and current step.
 /// 2. Remap atom positions proportionally (affine transform).
@@ -539,7 +539,7 @@ mod tests {
         app.add_resource(state);
         app.add_resource(neighbor);
         app.add_resource(run_state);
-        app.add_update_system(apply_deform, ScheduleSet::PreInitialIntegration);
+        app.add_update_system(apply_deform, ParticleSimScheduleSet::PreInitialIntegration);
         app.organize_systems();
         app.run();
 
@@ -581,7 +581,7 @@ mod tests {
         app.add_resource(state);
         app.add_resource(neighbor);
         app.add_resource(run_state);
-        app.add_update_system(apply_deform, ScheduleSet::PreInitialIntegration);
+        app.add_update_system(apply_deform, ParticleSimScheduleSet::PreInitialIntegration);
         app.organize_systems();
         app.run();
 
@@ -624,7 +624,7 @@ mod tests {
         app.add_resource(state);
         app.add_resource(neighbor);
         app.add_resource(run_state);
-        app.add_update_system(apply_deform, ScheduleSet::PreInitialIntegration);
+        app.add_update_system(apply_deform, ParticleSimScheduleSet::PreInitialIntegration);
         app.organize_systems();
 
         // Run 10 steps
@@ -676,7 +676,7 @@ mod tests {
         app.add_resource(state);
         app.add_resource(neighbor);
         app.add_resource(run_state);
-        app.add_update_system(apply_deform, ScheduleSet::PreInitialIntegration);
+        app.add_update_system(apply_deform, ParticleSimScheduleSet::PreInitialIntegration);
         app.organize_systems();
         app.run();
 
@@ -730,7 +730,7 @@ mod tests {
         app.add_resource(state);
         app.add_resource(neighbor);
         app.add_resource(run_state);
-        app.add_update_system(apply_deform, ScheduleSet::PreInitialIntegration);
+        app.add_update_system(apply_deform, ParticleSimScheduleSet::PreInitialIntegration);
         app.organize_systems();
         app.run();
 
@@ -772,7 +772,7 @@ mod tests {
         app.add_resource(state);
         app.add_resource(neighbor);
         app.add_resource(run_state);
-        app.add_update_system(apply_deform, ScheduleSet::PreInitialIntegration);
+        app.add_update_system(apply_deform, ParticleSimScheduleSet::PreInitialIntegration);
         app.organize_systems();
         app.run();
 
@@ -817,7 +817,7 @@ mod tests {
         app.add_resource(state);
         app.add_resource(neighbor);
         app.add_resource(run_state);
-        app.add_update_system(apply_deform, ScheduleSet::PreInitialIntegration);
+        app.add_update_system(apply_deform, ParticleSimScheduleSet::PreInitialIntegration);
         app.organize_systems();
         app.run();
 
