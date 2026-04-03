@@ -3,8 +3,7 @@
 //! This module provides:
 //! - [`Domain`]: runtime state for box boundaries, sub-domain bounds, and periodicity
 //! - [`DomainConfig`]: TOML `[domain]` section with boundary types and box extents
-//! - [`DomainDecomposition`] trait and [`CartesianDecomposition`]: split the box
-//!   across MPI ranks
+//! - [`decompose_domain`]: uniform Cartesian grid decomposition across MPI ranks
 //! - [`DomainPlugin`]: registers setup, PBC wrapping, and shrink-wrap systems
 
 use sim_app::prelude::*;
@@ -16,8 +15,8 @@ use crate::{Atom, AtomDataRegistry, CommBackend, CommResource, Config, ScheduleS
 fn default_one_f64() -> f64 {
     1.0
 }
-fn default_true() -> bool {
-    true
+fn default_periodic() -> BoundaryType {
+    BoundaryType::Periodic
 }
 
 /// Boundary condition type for a single axis.
@@ -40,13 +39,9 @@ impl Default for BoundaryType {
     }
 }
 
-fn default_boundary() -> Option<BoundaryType> {
-    None
-}
-
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
-/// TOML `[domain]` — simulation box boundaries and periodic flags.
+/// TOML `[domain]` — simulation box boundaries and boundary types.
 pub struct DomainConfig {
     /// Lower x boundary of the simulation box (simulation units, e.g. meters for DEM).
     #[serde(default, alias = "x_lo")]
@@ -66,30 +61,15 @@ pub struct DomainConfig {
     /// Upper z boundary of the simulation box (simulation units).
     #[serde(default = "default_one_f64", alias = "z_hi")]
     pub z_high: f64,
-    /// Whether the x axis uses periodic boundary conditions.
-    /// Ignored when `boundary_x` is set.
-    #[serde(default = "default_true", alias = "x_periodic")]
-    pub periodic_x: bool,
-    /// Whether the y axis uses periodic boundary conditions.
-    /// Ignored when `boundary_y` is set.
-    #[serde(default = "default_true", alias = "y_periodic")]
-    pub periodic_y: bool,
-    /// Whether the z axis uses periodic boundary conditions.
-    /// Ignored when `boundary_z` is set.
-    #[serde(default = "default_true", alias = "z_periodic")]
-    pub periodic_z: bool,
-    /// Explicit boundary type for the x axis: "periodic", "fixed", or "shrink-wrap".
-    /// When set, overrides `periodic_x`.
-    #[serde(default = "default_boundary")]
-    pub boundary_x: Option<BoundaryType>,
-    /// Explicit boundary type for the y axis: "periodic", "fixed", or "shrink-wrap".
-    /// When set, overrides `periodic_y`.
-    #[serde(default = "default_boundary")]
-    pub boundary_y: Option<BoundaryType>,
-    /// Explicit boundary type for the z axis: "periodic", "fixed", or "shrink-wrap".
-    /// When set, overrides `periodic_z`.
-    #[serde(default = "default_boundary")]
-    pub boundary_z: Option<BoundaryType>,
+    /// Boundary type for the x axis: "periodic", "fixed", or "shrink-wrap".
+    #[serde(default = "default_periodic")]
+    pub boundary_x: BoundaryType,
+    /// Boundary type for the y axis: "periodic", "fixed", or "shrink-wrap".
+    #[serde(default = "default_periodic")]
+    pub boundary_y: BoundaryType,
+    /// Boundary type for the z axis: "periodic", "fixed", or "shrink-wrap".
+    #[serde(default = "default_periodic")]
+    pub boundary_z: BoundaryType,
     /// Padding added on each side of shrink-wrap boundaries (simulation units).
     /// Defaults to 0.0 (auto-computed from max particle cutoff radius).
     #[serde(default)]
@@ -97,23 +77,9 @@ pub struct DomainConfig {
 }
 
 impl DomainConfig {
-    /// Resolve the effective boundary type per axis, considering both
-    /// the legacy `periodic_*` booleans and the new `boundary_*` fields.
-    pub fn resolved_boundary_types(&self) -> [BoundaryType; 3] {
-        let resolve = |boundary: Option<BoundaryType>, periodic: bool| -> BoundaryType {
-            if let Some(bt) = boundary {
-                bt
-            } else if periodic {
-                BoundaryType::Periodic
-            } else {
-                BoundaryType::Fixed
-            }
-        };
-        [
-            resolve(self.boundary_x, self.periodic_x),
-            resolve(self.boundary_y, self.periodic_y),
-            resolve(self.boundary_z, self.periodic_z),
-        ]
+    /// Return the boundary types as a 3-element array `[x, y, z]`.
+    pub fn boundary_types(&self) -> [BoundaryType; 3] {
+        [self.boundary_x, self.boundary_y, self.boundary_z]
     }
 }
 
@@ -126,12 +92,9 @@ impl Default for DomainConfig {
             y_high: 1.0,
             z_low: 0.0,
             z_high: 1.0,
-            periodic_x: true,
-            periodic_y: true,
-            periodic_z: true,
-            boundary_x: None,
-            boundary_y: None,
-            boundary_z: None,
+            boundary_x: BoundaryType::Periodic,
+            boundary_y: BoundaryType::Periodic,
+            boundary_z: BoundaryType::Periodic,
             shrink_wrap_padding: 0.0,
         }
     }
@@ -146,11 +109,8 @@ pub struct Domain {
     pub sub_length: [f64; 3],
     pub volume: f64,
     pub size: [f64; 3],
-    pub is_periodic: [bool; 3],
-    /// Per-axis boundary type.
+    /// Per-axis boundary type (single source of truth).
     pub boundary_type: [BoundaryType; 3],
-    /// Per-axis shrink-wrap flag (convenience: `boundary_type[d] == ShrinkWrap`).
-    pub is_shrink_wrap: [bool; 3],
     /// Padding for shrink-wrap boundaries. If 0, uses ghost_cutoff as padding.
     pub shrink_wrap_padding: f64,
     /// Set to true whenever shrink-wrap updates domain bounds.
@@ -158,10 +118,6 @@ pub struct Domain {
     pub bounds_changed: bool,
     /// Ghost atom communication cutoff. 0 = use per-atom skin * 4.0 (DEM default).
     pub ghost_cutoff: f64,
-    /// When true, PBC boundary crossings force a full ghost + neighbor rebuild.
-    /// Required for DEM (contact history depends on correct ghost identity).
-    /// Safe to leave false for pair potentials like LJ where stale ghosts are harmless.
-    pub pbc_strict: bool,
 }
 
 impl Default for Domain {
@@ -179,14 +135,11 @@ impl Domain {
             sub_domain_high: [1.0; 3],
             sub_length: [1.0; 3],
             size: [1.0; 3],
-            is_periodic: [false; 3],
             boundary_type: [BoundaryType::Periodic; 3],
-            is_shrink_wrap: [false; 3],
             shrink_wrap_padding: 0.0,
             bounds_changed: false,
             volume: 1.0,
             ghost_cutoff: 0.0,
-            pbc_strict: false,
         }
     }
 
@@ -198,107 +151,76 @@ impl Domain {
         }
         self.volume = self.size[0] * self.size[1] * self.size[2];
     }
+
+    /// Whether axis `d` is periodic.
+    #[inline]
+    pub fn is_periodic(&self, d: usize) -> bool {
+        self.boundary_type[d] == BoundaryType::Periodic
+    }
+
+    /// Whether axis `d` is shrink-wrap.
+    #[inline]
+    pub fn is_shrink_wrap(&self, d: usize) -> bool {
+        self.boundary_type[d] == BoundaryType::ShrinkWrap
+    }
+
+    /// Return periodic flags as a `[bool; 3]` array (convenience for bulk assignment).
+    pub fn periodic_flags(&self) -> [bool; 3] {
+        [self.is_periodic(0), self.is_periodic(1), self.is_periodic(2)]
+    }
 }
 
-// ── DomainDecomposition trait ────────────────────────────────────────────────
+// ── Domain decomposition ─────────────────────────────────────────────────────
 
-/// Computes sub-domain bounds from config and processor grid.
-pub trait DomainDecomposition: Send + Sync + 'static {
-    fn decompose(&self, config: &DomainConfig, comm: &dyn CommBackend) -> Domain;
-}
+/// Compute [`Domain`] from config using uniform Cartesian grid decomposition.
+pub fn decompose_domain(config: &DomainConfig, comm: &dyn CommBackend) -> Domain {
+    let boundaries_low = [config.x_low, config.y_low, config.z_low];
+    let boundaries_high = [config.x_high, config.y_high, config.z_high];
+    let size = [
+        boundaries_high[0] - boundaries_low[0],
+        boundaries_high[1] - boundaries_low[1],
+        boundaries_high[2] - boundaries_low[2],
+    ];
+    let boundary_types = config.boundary_types();
 
-/// Uniform Cartesian grid decomposition (default).
-pub struct CartesianDecomposition;
+    let proc_decomp = comm.processor_decomposition();
+    let proc_pos = comm.processor_position();
 
-impl DomainDecomposition for CartesianDecomposition {
-    fn decompose(&self, config: &DomainConfig, comm: &dyn CommBackend) -> Domain {
-        let boundaries_low = [config.x_low, config.y_low, config.z_low];
-        let boundaries_high = [config.x_high, config.y_high, config.z_high];
-        let size = [
-            boundaries_high[0] - boundaries_low[0],
-            boundaries_high[1] - boundaries_low[1],
-            boundaries_high[2] - boundaries_low[2],
-        ];
-        let boundary_types = config.resolved_boundary_types();
-        let is_periodic = [
-            boundary_types[0] == BoundaryType::Periodic,
-            boundary_types[1] == BoundaryType::Periodic,
-            boundary_types[2] == BoundaryType::Periodic,
-        ];
-        let is_shrink_wrap = [
-            boundary_types[0] == BoundaryType::ShrinkWrap,
-            boundary_types[1] == BoundaryType::ShrinkWrap,
-            boundary_types[2] == BoundaryType::ShrinkWrap,
-        ];
+    let delta_x = size[0] / proc_decomp[0] as f64;
+    let delta_y = size[1] / proc_decomp[1] as f64;
+    let delta_z = size[2] / proc_decomp[2] as f64;
 
-        let proc_decomp = comm.processor_decomposition();
-        let proc_pos = comm.processor_position();
+    let sub_domain_low = [
+        boundaries_low[0] + delta_x * proc_pos[0] as f64,
+        boundaries_low[1] + delta_y * proc_pos[1] as f64,
+        boundaries_low[2] + delta_z * proc_pos[2] as f64,
+    ];
+    let sub_domain_high = [
+        boundaries_low[0] + delta_x * (1 + proc_pos[0]) as f64,
+        boundaries_low[1] + delta_y * (1 + proc_pos[1]) as f64,
+        boundaries_low[2] + delta_z * (1 + proc_pos[2]) as f64,
+    ];
+    let sub_length = [delta_x, delta_y, delta_z];
 
-        let delta_x = size[0] / proc_decomp[0] as f64;
-        let delta_y = size[1] / proc_decomp[1] as f64;
-        let delta_z = size[2] / proc_decomp[2] as f64;
-
-        let sub_domain_low = [
-            boundaries_low[0] + delta_x * proc_pos[0] as f64,
-            boundaries_low[1] + delta_y * proc_pos[1] as f64,
-            boundaries_low[2] + delta_z * proc_pos[2] as f64,
-        ];
-        let sub_domain_high = [
-            boundaries_low[0] + delta_x * (1 + proc_pos[0]) as f64,
-            boundaries_low[1] + delta_y * (1 + proc_pos[1]) as f64,
-            boundaries_low[2] + delta_z * (1 + proc_pos[2]) as f64,
-        ];
-        let sub_length = [delta_x, delta_y, delta_z];
-
-        Domain {
-            boundaries_low,
-            boundaries_high,
-            sub_domain_low,
-            sub_domain_high,
-            sub_length,
-            size,
-            is_periodic,
-            boundary_type: boundary_types,
-            is_shrink_wrap,
-            shrink_wrap_padding: config.shrink_wrap_padding,
-            bounds_changed: false,
-            volume: size[0] * size[1] * size[2],
-            ghost_cutoff: 0.0,
-            pbc_strict: false,
-        }
+    Domain {
+        boundaries_low,
+        boundaries_high,
+        sub_domain_low,
+        sub_domain_high,
+        sub_length,
+        size,
+        boundary_type: boundary_types,
+        shrink_wrap_padding: config.shrink_wrap_padding,
+        bounds_changed: false,
+        volume: size[0] * size[1] * size[2],
+        ghost_cutoff: 0.0,
     }
 }
 
 // ── Plugin ───────────────────────────────────────────────────────────────────
 
-/// Wraps a [`DomainDecomposition`] implementation, used as `Res<DecompositionResource>`.
-pub struct DecompositionResource(pub Box<dyn DomainDecomposition>);
-
-impl std::ops::Deref for DecompositionResource {
-    type Target = dyn DomainDecomposition;
-    fn deref(&self) -> &(dyn DomainDecomposition + 'static) {
-        &*self.0
-    }
-}
-
-/// Registers [`Domain`] resource and periodic boundary condition system.
-pub struct DomainPlugin {
-    decomposition: std::sync::Mutex<Option<Box<dyn DomainDecomposition>>>,
-}
-
-impl DomainPlugin {
-    pub fn new(decomposition: Box<dyn DomainDecomposition>) -> Self {
-        DomainPlugin {
-            decomposition: std::sync::Mutex::new(Some(decomposition)),
-        }
-    }
-}
-
-impl Default for DomainPlugin {
-    fn default() -> Self {
-        DomainPlugin::new(Box::new(CartesianDecomposition))
-    }
-}
+/// Registers [`Domain`] resource and periodic boundary condition systems.
+pub struct DomainPlugin;
 
 impl Plugin for DomainPlugin {
     fn default_config(&self) -> Option<&str> {
@@ -311,15 +233,10 @@ y_low = 0.0
 y_high = 1.0
 z_low = 0.0
 z_high = 1.0
-# Periodic boundary conditions per axis (also accepts x_periodic, y_periodic, z_periodic)
-periodic_x = true
-periodic_y = true
-periodic_z = true
-# Explicit boundary type per axis: "periodic", "fixed", or "shrink-wrap"
-# When set, overrides the corresponding periodic_* flag.
-# boundary_x = "shrink-wrap"
-# boundary_y = "shrink-wrap"
-# boundary_z = "shrink-wrap"
+# Boundary type per axis: "periodic", "fixed", or "shrink-wrap"
+boundary_x = "periodic"
+boundary_y = "periodic"
+boundary_z = "periodic"
 # Padding for shrink-wrap boundaries [simulation units]. 0 = auto (use ghost cutoff).
 # shrink_wrap_padding = 0.0"#,
         )
@@ -328,14 +245,7 @@ periodic_z = true
     fn build(&self, app: &mut App) {
         Config::load::<DomainConfig>(app, "domain");
 
-        let decomp = self
-            .decomposition
-            .lock()
-            .unwrap()
-            .take()
-            .expect("DomainPlugin::build called twice");
-        app.add_resource(DecompositionResource(decomp))
-            .add_resource(Domain::new())
+        app.add_resource(Domain::new())
             .add_setup_system(domain_read_input, ScheduleSetupSet::Setup)
             .add_update_system(
                 shrink_wrap.label("shrink_wrap").before("pbc"),
@@ -353,15 +263,13 @@ fn boundary_type_char(bt: BoundaryType) -> char {
     }
 }
 
-/// Setup system: read `[domain]` config and initialize the [`Domain`] resource
-/// via the registered [`DomainDecomposition`].
+/// Setup system: read `[domain]` config and initialize the [`Domain`] resource.
 pub fn domain_read_input(
     config: Res<DomainConfig>,
     comm: Res<CommResource>,
-    decomp: Res<DecompositionResource>,
     mut domain: ResMut<Domain>,
 ) {
-    let boundary_types = config.resolved_boundary_types();
+    let boundary_types = config.boundary_types();
 
     let has_shrink_wrap = boundary_types.contains(&BoundaryType::ShrinkWrap);
 
@@ -392,7 +300,7 @@ pub fn domain_read_input(
         }
     }
 
-    *domain = decomp.decompose(&config, &**comm);
+    *domain = decompose_domain(&config, &**comm);
 }
 
 /// Core shrink-wrap logic: update domain bounds to encompass all atom positions + padding.
@@ -404,7 +312,7 @@ pub fn domain_read_input(
 /// `domain_read_input`). Future MPI support would need `all_reduce_min/max` for
 /// global extremes and correct sub-domain bound updates per rank.
 pub fn shrink_wrap_update(domain: &mut Domain, positions: &[[f64; 3]], nlocal: usize) -> bool {
-    let any_shrink = domain.is_shrink_wrap[0] || domain.is_shrink_wrap[1] || domain.is_shrink_wrap[2];
+    let any_shrink = domain.is_shrink_wrap(0) || domain.is_shrink_wrap(1) || domain.is_shrink_wrap(2);
     if !any_shrink || nlocal == 0 {
         return false;
     }
@@ -426,7 +334,7 @@ pub fn shrink_wrap_update(domain: &mut Domain, positions: &[[f64; 3]], nlocal: u
     let mut changed = false;
 
     for d in 0..3 {
-        if !domain.is_shrink_wrap[d] {
+        if !domain.is_shrink_wrap(d) {
             continue;
         }
 
@@ -500,7 +408,7 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
     let low = domain.boundaries_low;
     let high = domain.boundaries_high;
     let size = domain.size;
-    let periodic = domain.is_periodic;
+    let periodic = domain.periodic_flags();
 
     if periodic[0] && periodic[1] && periodic[2] {
         // Fast path: fully periodic, no removals possible (local atoms only, ghosts live outside box)
@@ -518,23 +426,18 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
         let nlocal_before = atoms.nlocal as usize;
         let mut removed = 0usize;
         'outer: for i in (0..atoms.nlocal as usize).rev() {
-            macro_rules! handle_dim {
-                ($pos:expr, $img:expr, $is_periodic:expr, $lo:expr, $hi:expr, $sz:expr) => {
-                    if $is_periodic {
-                        let (new_pos, delta) = wrap_periodic($pos, $lo, $sz);
-                        $pos = new_pos;
-                        $img += delta;
-                    } else if $pos < $lo || $pos >= $hi {
-                        atoms.swap_remove(i);
-                        registry.swap_remove_all(i);
-                        removed += 1;
-                        continue 'outer;
-                    }
-                };
+            for d in 0..3 {
+                if periodic[d] {
+                    let (new_pos, delta) = wrap_periodic(atoms.pos[i][d], low[d], size[d]);
+                    atoms.pos[i][d] = new_pos;
+                    atoms.image[i][d] += delta;
+                } else if atoms.pos[i][d] < low[d] || atoms.pos[i][d] >= high[d] {
+                    atoms.swap_remove(i);
+                    registry.swap_remove_all(i);
+                    removed += 1;
+                    continue 'outer;
+                }
             }
-            handle_dim!(atoms.pos[i][0], atoms.image[i][0], periodic[0], low[0], high[0], size[0]);
-            handle_dim!(atoms.pos[i][1], atoms.image[i][1], periodic[1], low[1], high[1], size[1]);
-            handle_dim!(atoms.pos[i][2], atoms.image[i][2], periodic[2], low[2], high[2], size[2]);
         }
         // Update nlocal and invalidate ghost communication sendlists so that
         // `borders` performs a full rebuild instead of using stale indices.
@@ -565,19 +468,21 @@ mod tests {
             y_high: 5.0,
             z_low: 0.0,
             z_high: 2.0,
-            periodic_x: true,
-            periodic_y: false,
-            periodic_z: true,
+            boundary_x: BoundaryType::Periodic,
+            boundary_y: BoundaryType::Fixed,
+            boundary_z: BoundaryType::Periodic,
             ..Default::default()
         };
         let comm = make_comm([1, 1, 1], [0, 0, 0]);
-        let domain = CartesianDecomposition.decompose(&config, &comm);
+        let domain = decompose_domain(&config, &comm);
 
         assert_eq!(domain.boundaries_low, [0.0, 0.0, 0.0]);
         assert_eq!(domain.boundaries_high, [10.0, 5.0, 2.0]);
         assert_eq!(domain.sub_domain_low, [0.0, 0.0, 0.0]);
         assert_eq!(domain.sub_domain_high, [10.0, 5.0, 2.0]);
-        assert_eq!(domain.is_periodic, [true, false, true]);
+        assert!(domain.is_periodic(0));
+        assert!(!domain.is_periodic(1));
+        assert!(domain.is_periodic(2));
         assert!((domain.volume - 100.0).abs() < 1e-10);
     }
 
@@ -590,49 +495,29 @@ mod tests {
             y_high: 10.0,
             z_low: 0.0,
             z_high: 10.0,
-            periodic_x: true,
-            periodic_y: true,
-            periodic_z: true,
             ..Default::default()
         };
         // Simulate proc at position (1,0,0) in a 2x1x1 decomposition
         let comm = make_comm([2, 1, 1], [1, 0, 0]);
-        let domain = CartesianDecomposition.decompose(&config, &comm);
+        let domain = decompose_domain(&config, &comm);
 
         assert!((domain.sub_domain_low[0] - 5.0).abs() < 1e-10);
         assert!((domain.sub_domain_high[0] - 10.0).abs() < 1e-10);
         assert!((domain.sub_length[0] - 5.0).abs() < 1e-10);
     }
 
-    // ── Boundary type resolution tests ──────────────────────────────────────
+    // ── Boundary type tests ────────────────────────────────────────────────
 
     #[test]
-    fn backward_compat_periodic_flags() {
-        // Old-style config: only periodic_* flags, no boundary_* fields
+    fn boundary_types_array() {
         let config = DomainConfig {
-            periodic_x: true,
-            periodic_y: false,
-            periodic_z: true,
+            boundary_x: BoundaryType::Periodic,
+            boundary_y: BoundaryType::Fixed,
+            boundary_z: BoundaryType::ShrinkWrap,
             ..Default::default()
         };
-        let types = config.resolved_boundary_types();
-        assert_eq!(types, [BoundaryType::Periodic, BoundaryType::Fixed, BoundaryType::Periodic]);
-    }
-
-    #[test]
-    fn boundary_type_overrides_periodic() {
-        // boundary_z = shrink-wrap should override periodic_z = true
-        let config = DomainConfig {
-            periodic_x: true,
-            periodic_y: true,
-            periodic_z: true, // would be Periodic...
-            boundary_z: Some(BoundaryType::ShrinkWrap), // ...but overridden
-            ..Default::default()
-        };
-        let types = config.resolved_boundary_types();
-        assert_eq!(types[0], BoundaryType::Periodic);
-        assert_eq!(types[1], BoundaryType::Periodic);
-        assert_eq!(types[2], BoundaryType::ShrinkWrap);
+        let types = config.boundary_types();
+        assert_eq!(types, [BoundaryType::Periodic, BoundaryType::Fixed, BoundaryType::ShrinkWrap]);
     }
 
     #[test]
@@ -644,17 +529,18 @@ mod tests {
             y_high: 10.0,
             z_low: 0.0,
             z_high: 20.0,
-            periodic_x: true,
-            periodic_y: true,
-            periodic_z: false,
-            boundary_z: Some(BoundaryType::ShrinkWrap),
+            boundary_z: BoundaryType::ShrinkWrap,
             ..Default::default()
         };
         let comm = make_comm([1, 1, 1], [0, 0, 0]);
-        let domain = CartesianDecomposition.decompose(&config, &comm);
+        let domain = decompose_domain(&config, &comm);
 
-        assert_eq!(domain.is_periodic, [true, true, false]);
-        assert_eq!(domain.is_shrink_wrap, [false, false, true]);
+        assert!(domain.is_periodic(0));
+        assert!(domain.is_periodic(1));
+        assert!(!domain.is_periodic(2));
+        assert!(!domain.is_shrink_wrap(0));
+        assert!(!domain.is_shrink_wrap(1));
+        assert!(domain.is_shrink_wrap(2));
         assert_eq!(domain.boundary_type[2], BoundaryType::ShrinkWrap);
     }
 
@@ -667,33 +553,13 @@ mod tests {
             y_high = 1.0
             z_low = 0.0
             z_high = 1.0
-            periodic_x = true
-            periodic_y = true
-            periodic_z = false
+            boundary_x = "periodic"
+            boundary_y = "fixed"
             boundary_z = "shrink-wrap"
         "#;
         let config: DomainConfig = toml::from_str(toml_str).unwrap();
-        let types = config.resolved_boundary_types();
-        assert_eq!(types[2], BoundaryType::ShrinkWrap);
-    }
-
-    #[test]
-    fn toml_parse_backward_compat() {
-        // Config without boundary_* fields should still work
-        let toml_str = r#"
-            x_low = 0.0
-            x_high = 1.0
-            y_low = 0.0
-            y_high = 1.0
-            z_low = 0.0
-            z_high = 1.0
-            periodic_x = true
-            periodic_y = false
-            periodic_z = true
-        "#;
-        let config: DomainConfig = toml::from_str(toml_str).unwrap();
-        let types = config.resolved_boundary_types();
-        assert_eq!(types, [BoundaryType::Periodic, BoundaryType::Fixed, BoundaryType::Periodic]);
+        let types = config.boundary_types();
+        assert_eq!(types, [BoundaryType::Periodic, BoundaryType::Fixed, BoundaryType::ShrinkWrap]);
     }
 
     // ── Shrink-wrap update tests ────────────────────────────────────────────
@@ -709,7 +575,7 @@ mod tests {
         domain.sub_domain_high = [10.0, 10.0, 10.0];
         domain.size = [10.0, 10.0, 10.0];
         domain.sub_length = [10.0, 10.0, 10.0];
-        domain.is_shrink_wrap = [false, false, true]; // only z is shrink-wrap
+        domain.boundary_type = [BoundaryType::Periodic, BoundaryType::Periodic, BoundaryType::ShrinkWrap];
         domain.shrink_wrap_padding = 0.5;
 
         let positions = vec![
@@ -741,7 +607,7 @@ mod tests {
         domain.sub_domain_high = [10.0, 10.0, 8.5];
         domain.size = [10.0, 10.0, 8.0];
         domain.sub_length = [10.0, 10.0, 8.0];
-        domain.is_shrink_wrap = [false, false, true];
+        domain.boundary_type = [BoundaryType::Periodic, BoundaryType::Periodic, BoundaryType::ShrinkWrap];
         domain.shrink_wrap_padding = 0.5;
         domain.bounds_changed = false;
 
@@ -759,7 +625,7 @@ mod tests {
     #[test]
     fn shrink_wrap_no_atoms_is_noop() {
         let mut domain = Domain::new();
-        domain.is_shrink_wrap = [true, true, true];
+        domain.boundary_type = [BoundaryType::ShrinkWrap, BoundaryType::ShrinkWrap, BoundaryType::ShrinkWrap];
         domain.bounds_changed = false;
         let positions: Vec<[f64; 3]> = vec![];
 
@@ -776,7 +642,7 @@ mod tests {
         domain.sub_domain_high = [100.0, 100.0, 100.0];
         domain.size = [100.0, 100.0, 100.0];
         domain.sub_length = [100.0, 100.0, 100.0];
-        domain.is_shrink_wrap = [true, true, true];
+        domain.boundary_type = [BoundaryType::ShrinkWrap, BoundaryType::ShrinkWrap, BoundaryType::ShrinkWrap];
         domain.shrink_wrap_padding = 1.0;
 
         let positions = vec![
@@ -809,7 +675,7 @@ mod tests {
         domain.sub_domain_high = [10.0, 10.0, 10.0];
         domain.size = [10.0, 10.0, 10.0];
         domain.sub_length = [10.0, 10.0, 10.0];
-        domain.is_shrink_wrap = [false, false, true];
+        domain.boundary_type = [BoundaryType::Periodic, BoundaryType::Periodic, BoundaryType::ShrinkWrap];
         domain.shrink_wrap_padding = 0.0; // no explicit padding
         domain.ghost_cutoff = 2.0; // should use this as fallback
 

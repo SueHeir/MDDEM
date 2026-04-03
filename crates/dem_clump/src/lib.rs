@@ -474,7 +474,7 @@ fn integrate_bodies_final(atoms: Res<Atom>, mut bodies: ResMut<MultisphereBodySt
 fn pbc_multisphere_bodies(mut bodies: ResMut<MultisphereBodyStore>, domain: Res<Domain>) {
     for body in &mut bodies.bodies {
         for d in 0..3 {
-            if domain.is_periodic[d] {
+            if domain.is_periodic(d) {
                 let low = domain.boundaries_low[d];
                 let size = domain.size[d];
                 let high = low + size;

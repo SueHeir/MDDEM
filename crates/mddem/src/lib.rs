@@ -186,7 +186,7 @@ use sim_app::prelude::*;
 ///   (skipped if `Config` is already present)
 /// - [`CommunicationPlugin`](mddem_core::CommunicationPlugin) —
 ///   Unified MPI or single-process communication backend (selected by `mpi_backend` feature)
-/// - [`DomainPlugin`](mddem_core::DomainPlugin) — Cartesian domain decomposition
+/// - [`DomainPlugin`](mddem_core::DomainPlugin) — domain decomposition, PBC, and shrink-wrap
 /// - [`NeighborPlugin`](mddem_neighbor::NeighborPlugin) — sweep-and-prune neighbor lists
 /// - [`GroupPlugin`](mddem_core::GroupPlugin) — atom group definitions and filtering
 /// - [`RunPlugin`](mddem_core::RunPlugin) — run/cycle management
@@ -221,7 +221,7 @@ impl PluginGroup for CorePlugins {
 
         builder
             .add(mddem_core::CommunicationPlugin)
-            .add(mddem_core::DomainPlugin::default())
+            .add(mddem_core::DomainPlugin)
             .add(mddem_neighbor::NeighborPlugin {
                 style: mddem_neighbor::NeighborStyle::Bin,
             })

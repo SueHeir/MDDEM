@@ -67,9 +67,9 @@ mddem = { git = "https://github.com/SueHeir/MDDEM", default-features = false }
 x_high = 0.025
 y_high = 0.025
 z_high = 0.025
-periodic_x = true
-periodic_y = true
-periodic_z = true
+boundary_x = "periodic"
+boundary_y = "periodic"
+boundary_z = "periodic"
 
 [neighbor]
 skin_fraction = 1.1
@@ -113,9 +113,9 @@ fn main() {
 x_high = 10.06
 y_high = 10.06
 z_high = 10.06
-periodic_x = true
-periodic_y = true
-periodic_z = true
+boundary_x = "periodic"
+boundary_y = "periodic"
+boundary_z = "periodic"
 
 [neighbor]
 skin_fraction = 1.12

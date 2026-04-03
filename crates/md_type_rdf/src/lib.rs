@@ -369,21 +369,21 @@ pub fn accumulate_type_rdf(
                 let mut dy = atoms.pos[j][1] - atoms.pos[i][1];
                 let mut dz = atoms.pos[j][2] - atoms.pos[i][2];
 
-                if domain.is_periodic[0] {
+                if domain.is_periodic(0) {
                     if dx > half_lx {
                         dx -= lx;
                     } else if dx < -half_lx {
                         dx += lx;
                     }
                 }
-                if domain.is_periodic[1] {
+                if domain.is_periodic(1) {
                     if dy > half_ly {
                         dy -= ly;
                     } else if dy < -half_ly {
                         dy += ly;
                     }
                 }
-                if domain.is_periodic[2] {
+                if domain.is_periodic(2) {
                     if dz > half_lz {
                         dz -= lz;
                     } else if dz < -half_lz {

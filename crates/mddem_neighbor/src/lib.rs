@@ -558,7 +558,7 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
 
     // Compute bin grid, stencil, and PBC box using shared helper
     compute_bin_grid(&mut neighbor, &domain, comm.size());
-    neighbor.pbc_flags = domain.is_periodic;
+    neighbor.pbc_flags = domain.periodic_flags();
 
     if comm.rank() == 0 {
         println!(

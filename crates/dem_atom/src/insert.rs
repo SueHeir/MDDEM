@@ -162,7 +162,7 @@ struct PeriodicBox {
 impl PeriodicBox {
     fn from_domain(domain: &Domain) -> Self {
         PeriodicBox {
-            is_periodic: domain.is_periodic,
+            is_periodic: domain.periodic_flags(),
             box_size: domain.size,
         }
     }

@@ -17,9 +17,9 @@ y_low = -0.01
 y_high = 0.01
 z_low = 0.0
 z_high = 0.1
-periodic_x = false
-periodic_y = false
-periodic_z = false
+boundary_x = "fixed"
+boundary_y = "fixed"
+boundary_z = "fixed"
 
 [neighbor]
 skin_fraction = 1.1

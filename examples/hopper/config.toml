@@ -14,9 +14,9 @@ y_low = 0.0
 y_high = 0.02
 z_low = 0.0
 z_high = 0.08
-periodic_x = false
-periodic_y = true       # Periodic in y to simulate a 2D-like slice
-periodic_z = false
+boundary_x = "fixed"
+boundary_y = "periodic"       # Periodic in y to simulate a 2D-like slice
+boundary_z = "fixed"
 
 [neighbor]
 # skin_fraction: neighbor search radius multiplier [dimensionless, typically 1.0–1.5]

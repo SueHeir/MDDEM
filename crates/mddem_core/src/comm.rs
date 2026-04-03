@@ -423,7 +423,7 @@ fn pos_to_rank(pos: [i32; 3], decomp: [i32; 3]) -> i32 {
 pub fn comm_setup(comm: Res<CommResource>, mut topo: ResMut<CommTopology>, domain: Res<Domain>) {
     let decomp = comm.processor_decomposition();
     let pos = comm.processor_position();
-    let periodic = domain.is_periodic;
+    let periodic = domain.periodic_flags();
 
     for dim in 0..3 {
         // Forward neighbor (+1 in this dimension)

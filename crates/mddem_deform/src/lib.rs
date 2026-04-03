@@ -488,13 +488,10 @@ mod tests {
             sub_length: size,
             size,
             volume: size[0] * size[1] * size[2],
-            is_periodic: [false; 3],
             boundary_type: Default::default(),
-            is_shrink_wrap: [false; 3],
             shrink_wrap_padding: 0.0,
             bounds_changed: false,
             ghost_cutoff: 0.0,
-            pbc_strict: false,
         }
     }
 

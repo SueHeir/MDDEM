@@ -75,9 +75,9 @@ Simulation box geometry and boundary conditions.
 | `y_high` | float | `1.0` | m / σ | Box upper y bound |
 | `z_low` | float | `0.0` | m / σ | Box lower z bound |
 | `z_high` | float | `1.0` | m / σ | Box upper z bound |
-| `periodic_x` | bool | `false` | — | Periodic boundary in x |
-| `periodic_y` | bool | `false` | — | Periodic boundary in y |
-| `periodic_z` | bool | `false` | — | Periodic boundary in z |
+| `boundary_x` | string | `"periodic"` | — | Boundary type for x: `"periodic"`, `"fixed"`, or `"shrink-wrap"` |
+| `boundary_y` | string | `"periodic"` | — | Boundary type for y: `"periodic"`, `"fixed"`, or `"shrink-wrap"` |
+| `boundary_z` | string | `"periodic"` | — | Boundary type for z: `"periodic"`, `"fixed"`, or `"shrink-wrap"` |
 
 ### `[neighbor]`
 
