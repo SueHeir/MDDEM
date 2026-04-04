@@ -496,6 +496,7 @@ pub fn lj_force(
     let pair_table = &pair_table_res.0;
     let nlocal = atoms.nlocal as usize;
     let multi_type = pair_table.ntypes() > 1;
+    let newton = neighbor.newton;
 
     // Raw pointers for inner-loop performance (avoids bounds checks)
     let pos_ptr = atoms.pos.as_ptr();
@@ -551,21 +552,25 @@ pub fn lj_force(
                 let fz = -fpair * dz;
 
                 // Virial: W_αβ = Σ r_α × F_β (summed over all pairs)
-                vxx += dx * fx;
-                vyy += dy * fy;
-                vzz += dz * fz;
-                vxy += dx * fy;
-                vxz += dx * fz;
-                vyz += dy * fz;
+                // When newton=false each pair visited twice, so halve contribution
+                let vs = if newton { 1.0 } else { 0.5 };
+                vxx += dx * fx * vs;
+                vyy += dy * fy * vs;
+                vzz += dz * fz * vs;
+                vxy += dx * fy * vs;
+                vxz += dx * fz * vs;
+                vyz += dy * fz * vs;
 
                 // Newton's third law: equal and opposite forces
                 fi[0] += fx;
                 fi[1] += fy;
                 fi[2] += fz;
-                let fj = unsafe { &mut *force_ptr.add(j) };
-                fj[0] -= fx;
-                fj[1] -= fy;
-                fj[2] -= fz;
+                if newton {
+                    let fj = unsafe { &mut *force_ptr.add(j) };
+                    fj[0] -= fx;
+                    fj[1] -= fy;
+                    fj[2] -= fz;
+                }
             }
             unsafe { *force_ptr.add(i) = fi };
         }
@@ -615,10 +620,12 @@ pub fn lj_force(
                 fi[0] = (-fpair).mul_add(dx, fi[0]);
                 fi[1] = (-fpair).mul_add(dy, fi[1]);
                 fi[2] = (-fpair).mul_add(dz, fi[2]);
-                let fj = unsafe { &mut *force_ptr.add(j) };
-                fj[0] = fpair.mul_add(dx, fj[0]);
-                fj[1] = fpair.mul_add(dy, fj[1]);
-                fj[2] = fpair.mul_add(dz, fj[2]);
+                if newton {
+                    let fj = unsafe { &mut *force_ptr.add(j) };
+                    fj[0] = fpair.mul_add(dx, fj[0]);
+                    fj[1] = fpair.mul_add(dy, fj[1]);
+                    fj[2] = fpair.mul_add(dz, fj[2]);
+                }
             }
             unsafe { *force_ptr.add(i) = fi };
         }

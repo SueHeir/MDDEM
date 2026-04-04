@@ -312,6 +312,7 @@ fn compute_contact_analysis(
     mut contact_output: ResMut<ContactOutput>,
     mut fabric: ResMut<FabricTensorAccum>,
 ) {
+    let newton = neighbor.newton;
     let nlocal = atoms.nlocal as usize;
     let dem = registry.expect::<DemAtom>("compute_contact_analysis");
     let has_coordination = config.coordination;
@@ -371,10 +372,10 @@ fn compute_contact_analysis(
 
         // This pair is in contact (overlap > 0)
 
-        // Increment coordination for both atoms
+        // Increment coordination for both atoms (newton on) or just i (newton off)
         if let Some(ref mut ca) = ca {
             ca.coordination[i] += 1.0;
-            if j < nlocal {
+            if newton && j < nlocal {
                 ca.coordination[j] += 1.0;
             }
         }
@@ -389,17 +390,20 @@ fn compute_contact_analysis(
         // We sum the outer product n⊗n for each contact here and normalize
         // later in push_fabric_tensor_to_thermo by dividing by nc.
         if has_fabric {
-            fabric.fxx += nx * nx;
-            fabric.fyy += ny * ny;
-            fabric.fzz += nz * nz;
-            fabric.fxy += nx * ny;
-            fabric.fxz += nx * nz;
-            fabric.fyz += ny * nz;
-            fabric.nc += 1.0;
+            // When newton=false each pair visited twice, halve contribution
+            let vs = if newton { 1.0 } else { 0.5 };
+            fabric.fxx += nx * nx * vs;
+            fabric.fyy += ny * ny * vs;
+            fabric.fzz += nz * nz * vs;
+            fabric.fxy += nx * ny * vs;
+            fabric.fxz += nx * nz * vs;
+            fabric.fyz += ny * nz * vs;
+            fabric.nc += vs;
         }
 
         // Collect per-contact record if this is a dump step
-        if collect_records {
+        // When newton=false, each pair visited twice; only record when i < j
+        if collect_records && (newton || i < j) {
             // Contact point lies on the line segment between the two particle
             // centers, at the midpoint of the overlap region.  Starting from
             // the center of atom i, advance along the contact normal by

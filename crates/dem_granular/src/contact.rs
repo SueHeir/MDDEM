@@ -107,6 +107,7 @@ pub fn hertz_mindlin_contact_force(
     material_table: Res<MaterialTable>,
     mut virial: Option<ResMut<VirialStress>>,
 ) {
+    let newton = neighbor.newton;
     let mut dem = registry.expect_mut::<DemAtom>("hertz_mindlin_contact_force");
     let mut history =
         registry.expect_mut::<ContactHistoryStore>("hertz_mindlin_contact_force");
@@ -325,9 +326,11 @@ pub fn hertz_mindlin_contact_force(
         atoms.force[i][0] -= fn_x;
         atoms.force[i][1] -= fn_y;
         atoms.force[i][2] -= fn_z;
-        atoms.force[j][0] += fn_x;
-        atoms.force[j][1] += fn_y;
-        atoms.force[j][2] += fn_z;
+        if newton {
+            atoms.force[j][0] += fn_x;
+            atoms.force[j][1] += fn_y;
+            atoms.force[j][2] += fn_z;
+        }
 
         // ── Tangential force (skip in JKR adhesion-only regime) ──────────
         // No tangential friction when particles are not in geometric contact
@@ -336,7 +339,8 @@ pub fn hertz_mindlin_contact_force(
             // Virial contribution from normal only
             if let Some(ref mut v) = virial {
                 if v.active {
-                    v.add_pair(dx, dy, dz, -fn_x, -fn_y, -fn_z);
+                    let vs = if newton { 1.0 } else { 0.5 };
+                    v.add_pair(dx, dy, dz, -fn_x * vs, -fn_y * vs, -fn_z * vs);
                 }
             }
             continue;
@@ -406,15 +410,19 @@ pub fn hertz_mindlin_contact_force(
         atoms.force[i][0] += ft_x;
         atoms.force[i][1] += ft_y;
         atoms.force[i][2] += ft_z;
-        atoms.force[j][0] -= ft_x;
-        atoms.force[j][1] -= ft_y;
-        atoms.force[j][2] -= ft_z;
+        if newton {
+            atoms.force[j][0] -= ft_x;
+            atoms.force[j][1] -= ft_y;
+            atoms.force[j][2] -= ft_z;
+        }
         dem.torque[i][0] += ti_x;
         dem.torque[i][1] += ti_y;
         dem.torque[i][2] += ti_z;
-        dem.torque[j][0] += tj_x;
-        dem.torque[j][1] += tj_y;
-        dem.torque[j][2] += tj_z;
+        if newton {
+            dem.torque[j][0] += tj_x;
+            dem.torque[j][1] += tj_y;
+            dem.torque[j][2] += tj_z;
+        }
 
         // ── Rolling resistance torque ───────────────────────────────────
         // Relative angular velocity (rolling component)
@@ -472,9 +480,11 @@ pub fn hertz_mindlin_contact_force(
                 dem.torque[i][0] += tr_x;
                 dem.torque[i][1] += tr_y;
                 dem.torque[i][2] += tr_z;
-                dem.torque[j][0] -= tr_x;
-                dem.torque[j][1] -= tr_y;
-                dem.torque[j][2] -= tr_z;
+                if newton {
+                    dem.torque[j][0] -= tr_x;
+                    dem.torque[j][1] -= tr_y;
+                    dem.torque[j][2] -= tr_z;
+                }
             } else if roll_mag > 1e-30 {
                 // Constant torque model (existing behavior)
                 let tau_mag = mu_r * f_n_mag.abs() * r_eff;
@@ -485,9 +495,11 @@ pub fn hertz_mindlin_contact_force(
                 dem.torque[i][0] += tr_x;
                 dem.torque[i][1] += tr_y;
                 dem.torque[i][2] += tr_z;
-                dem.torque[j][0] -= tr_x;
-                dem.torque[j][1] -= tr_y;
-                dem.torque[j][2] -= tr_z;
+                if newton {
+                    dem.torque[j][0] -= tr_x;
+                    dem.torque[j][1] -= tr_y;
+                    dem.torque[j][2] -= tr_z;
+                }
             }
         }
 
@@ -521,9 +533,11 @@ pub fn hertz_mindlin_contact_force(
                 dem.torque[i][0] += tt_x;
                 dem.torque[i][1] += tt_y;
                 dem.torque[i][2] += tt_z;
-                dem.torque[j][0] -= tt_x;
-                dem.torque[j][1] -= tt_y;
-                dem.torque[j][2] -= tt_z;
+                if newton {
+                    dem.torque[j][0] -= tt_x;
+                    dem.torque[j][1] -= tt_y;
+                    dem.torque[j][2] -= tt_z;
+                }
             } else if twist_vel.abs() > 1e-30 {
                 // Constant torque model (existing behavior)
                 let tau = mu_tw * f_n_mag.abs() * r_eff;
@@ -534,16 +548,23 @@ pub fn hertz_mindlin_contact_force(
                 dem.torque[i][0] += tt_x;
                 dem.torque[i][1] += tt_y;
                 dem.torque[i][2] += tt_z;
-                dem.torque[j][0] -= tt_x;
-                dem.torque[j][1] -= tt_y;
-                dem.torque[j][2] -= tt_z;
+                if newton {
+                    dem.torque[j][0] -= tt_x;
+                    dem.torque[j][1] -= tt_y;
+                    dem.torque[j][2] -= tt_z;
+                }
             }
         }
 
         // Virial: force on i from j = (-fn + ft)
+        // When newton=false, each pair is visited twice so halve virial contribution
         if let Some(ref mut v) = virial {
             if v.active {
-                v.add_pair(dx, dy, dz, -fn_x + ft_x, -fn_y + ft_y, -fn_z + ft_z);
+                let vs = if newton { 1.0 } else { 0.5 };
+                let vfx = (-fn_x + ft_x) * vs;
+                let vfy = (-fn_y + ft_y) * vs;
+                let vfz = (-fn_z + ft_z) * vs;
+                v.add_pair(dx, dy, dz, vfx, vfy, vfz);
             }
         }
 
@@ -571,8 +592,9 @@ pub fn hertz_mindlin_contact_force(
     // In a correct Newton's 3rd law implementation, the sum of all forces
     // from pair interactions must be zero (each pair contributes +F to one atom
     // and -F to the other). A nonzero sum means a pair was counted asymmetrically.
+    // Skip this check when newton=false (forces only written to i).
     #[cfg(debug_assertions)]
-    {
+    if newton {
         let total = atoms.len();
         let mut sum_fx = 0.0;
         let mut sum_fy = 0.0;
@@ -604,6 +626,7 @@ pub fn hooke_contact_force(
     material_table: Res<MaterialTable>,
     mut virial: Option<ResMut<VirialStress>>,
 ) {
+    let newton = neighbor.newton;
     let mut dem = registry.expect_mut::<DemAtom>("hooke_contact_force");
     let mut history = registry.expect_mut::<ContactHistoryStore>("hooke_contact_force");
     let bond_store = registry.get::<BondStore>();
@@ -733,9 +756,11 @@ pub fn hooke_contact_force(
         atoms.force[i][0] -= fn_x;
         atoms.force[i][1] -= fn_y;
         atoms.force[i][2] -= fn_z;
-        atoms.force[j][0] += fn_x;
-        atoms.force[j][1] += fn_y;
-        atoms.force[j][2] += fn_z;
+        if newton {
+            atoms.force[j][0] += fn_x;
+            atoms.force[j][1] += fn_y;
+            atoms.force[j][2] += fn_z;
+        }
 
         // Tangential force
         let vt_x = vr_x - v_n * nx;
@@ -799,15 +824,19 @@ pub fn hooke_contact_force(
         atoms.force[i][0] += ft_x;
         atoms.force[i][1] += ft_y;
         atoms.force[i][2] += ft_z;
-        atoms.force[j][0] -= ft_x;
-        atoms.force[j][1] -= ft_y;
-        atoms.force[j][2] -= ft_z;
+        if newton {
+            atoms.force[j][0] -= ft_x;
+            atoms.force[j][1] -= ft_y;
+            atoms.force[j][2] -= ft_z;
+        }
         dem.torque[i][0] += ti_x;
         dem.torque[i][1] += ti_y;
         dem.torque[i][2] += ti_z;
-        dem.torque[j][0] += tj_x;
-        dem.torque[j][1] += tj_y;
-        dem.torque[j][2] += tj_z;
+        if newton {
+            dem.torque[j][0] += tj_x;
+            dem.torque[j][1] += tj_y;
+            dem.torque[j][2] += tj_z;
+        }
 
         // Rolling/twisting relative angular velocity
         let or_x = omega_ix - omega_jx;
@@ -860,9 +889,11 @@ pub fn hooke_contact_force(
                 dem.torque[i][0] += tr_x;
                 dem.torque[i][1] += tr_y;
                 dem.torque[i][2] += tr_z;
-                dem.torque[j][0] -= tr_x;
-                dem.torque[j][1] -= tr_y;
-                dem.torque[j][2] -= tr_z;
+                if newton {
+                    dem.torque[j][0] -= tr_x;
+                    dem.torque[j][1] -= tr_y;
+                    dem.torque[j][2] -= tr_z;
+                }
             } else if roll_mag > 1e-30 {
                 let tau_mag = mu_r * f_n_mag.abs() * r_eff;
                 let inv_roll = tau_mag / roll_mag;
@@ -872,9 +903,11 @@ pub fn hooke_contact_force(
                 dem.torque[i][0] += tr_x;
                 dem.torque[i][1] += tr_y;
                 dem.torque[i][2] += tr_z;
-                dem.torque[j][0] -= tr_x;
-                dem.torque[j][1] -= tr_y;
-                dem.torque[j][2] -= tr_z;
+                if newton {
+                    dem.torque[j][0] -= tr_x;
+                    dem.torque[j][1] -= tr_y;
+                    dem.torque[j][2] -= tr_z;
+                }
             }
         }
 
@@ -904,9 +937,11 @@ pub fn hooke_contact_force(
                 dem.torque[i][0] += tt_x;
                 dem.torque[i][1] += tt_y;
                 dem.torque[i][2] += tt_z;
-                dem.torque[j][0] -= tt_x;
-                dem.torque[j][1] -= tt_y;
-                dem.torque[j][2] -= tt_z;
+                if newton {
+                    dem.torque[j][0] -= tt_x;
+                    dem.torque[j][1] -= tt_y;
+                    dem.torque[j][2] -= tt_z;
+                }
             } else if twist_vel.abs() > 1e-30 {
                 let tau = mu_tw * f_n_mag.abs() * r_eff;
                 let sign_tw = if twist_vel > 0.0 { -1.0 } else { 1.0 };
@@ -916,16 +951,22 @@ pub fn hooke_contact_force(
                 dem.torque[i][0] += tt_x;
                 dem.torque[i][1] += tt_y;
                 dem.torque[i][2] += tt_z;
-                dem.torque[j][0] -= tt_x;
-                dem.torque[j][1] -= tt_y;
-                dem.torque[j][2] -= tt_z;
+                if newton {
+                    dem.torque[j][0] -= tt_x;
+                    dem.torque[j][1] -= tt_y;
+                    dem.torque[j][2] -= tt_z;
+                }
             }
         }
 
         // Virial
         if let Some(ref mut v) = virial {
             if v.active {
-                v.add_pair(dx, dy, dz, -fn_x + ft_x, -fn_y + ft_y, -fn_z + ft_z);
+                let vs = if newton { 1.0 } else { 0.5 };
+                let vfx = (-fn_x + ft_x) * vs;
+                let vfy = (-fn_y + ft_y) * vs;
+                let vfz = (-fn_z + ft_z) * vs;
+                v.add_pair(dx, dy, dz, vfx, vfy, vfz);
             }
         }
 

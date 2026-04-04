@@ -20,7 +20,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{Atom, AtomDataRegistry, CommState, Config, Domain, ParticleSimScheduleSet, ScheduleSetupSet};
+use crate::{Atom, AtomDataRegistry, CommState, Config, Domain, Neighbor, ParticleSimScheduleSet, ScheduleSetupSet};
 
 #[cfg(feature = "mpi_backend")]
 use std::sync::Mutex;
@@ -312,6 +312,11 @@ impl CommBackend for MpiCommBackend {
 
 }
 
+/// Run condition: returns true when Newton's third law optimization is enabled.
+fn newton_on(neighbor: Res<Neighbor>) -> bool {
+    neighbor.newton
+}
+
 // ── Unified CommunicationPlugin ──────────────────────────────────────────────
 
 /// Plugin that sets up communication infrastructure: processor grid, ghost
@@ -369,7 +374,10 @@ processors_z = 1"#,
                 forward_comm_borders.run_if(in_state(CommState::CommunicateOnly)),
                 ParticleSimScheduleSet::PreNeighbor,
             )
-            .add_update_system(reverse_send_force.label("reverse_send_force"), ParticleSimScheduleSet::PostForce);
+            .add_update_system(
+                reverse_send_force.label("reverse_send_force").run_if(newton_on),
+                ParticleSimScheduleSet::PostForce,
+            );
 
         #[cfg(feature = "mpi_backend")]
         app.add_update_system(

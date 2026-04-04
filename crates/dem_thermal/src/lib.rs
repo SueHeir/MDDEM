@@ -302,7 +302,9 @@ pub fn compute_heat_conduction(
 
         // Accumulate flux antisymmetrically to conserve energy
         thermal.heat_flux[i] += q;
-        thermal.heat_flux[j] -= q;
+        if neighbor.newton {
+            thermal.heat_flux[j] -= q;
+        }
     }
 }
 
