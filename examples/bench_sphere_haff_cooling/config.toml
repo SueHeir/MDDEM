@@ -21,7 +21,6 @@ boundary_z = "periodic"
 [neighbor]
 skin_fraction = 1.1
 bin_size = 0.004
-rebuild_on_pbc_wrap = true
 
 [dem]
 contact_model = "hertz"

@@ -26,7 +26,6 @@ boundary_z = "periodic"
 [neighbor]
 skin_fraction = 1.1
 bin_size = 0.004            # ~4x sub-sphere diameter
-rebuild_on_pbc_wrap = true
 
 # --- Material: softened glass ---
 [dem]

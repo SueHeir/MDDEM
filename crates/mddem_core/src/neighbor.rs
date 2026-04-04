@@ -465,7 +465,7 @@ pub fn neighbor_read_input(
 /// - `max_cutoff = 2 * max_skin * skin_fraction` (largest pairwise neighbor distance)
 /// - `ghost_cutoff = max_cutoff + displacement_buffer` (communication distance for ghosts)
 /// - Bin grid dimensions, stencil offsets, and PBC flags
-pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor>, mut domain: ResMut<Domain>, mut atoms: ResMut<Atom>, comm: Res<CommResource>) {
+pub fn neighbor_setup(_config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor>, mut domain: ResMut<Domain>, atoms: ResMut<Atom>, comm: Res<CommResource>) {
     // Compute max neighbor cutoff = (skin_i + skin_j) * skin_fraction = 2 * max_skin * skin_fraction
     // Use global reduction: at PostSetup, atoms may only be on rank 0 (before exchange).
     let local_max_skin = atoms.cutoff_radius.iter().cloned().fold(0.0f64, f64::max);

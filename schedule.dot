@@ -13,39 +13,35 @@ digraph schedule {
         label="Setup: Setup";
         style=filled; fillcolor=lightblue;
         setup_2 [label="domain::domain_read_input", style=filled];
-        setup_3 [label="mddem_neighbor::neighbor_read_input", style=filled];
+        setup_3 [label="neighbor::neighbor_read_input", style=filled];
         setup_4 [label="run::run_read_input", style=filled];
         setup_5 [label="dem_atom::set_dem_ntypes", style=filled];
         setup_6 [label="insert::dem_insert_atoms", style=filled];
-        setup_7 [label="dem_clump::clump_insert_atoms\n[clump_insert_atoms]", style=filled];
-        setup_8 [label="dem_clump::extend_ghost_cutoff_for_clumps\n[extend_ghost_cutoff_for_clumps]", style=filled];
     }
 
     subgraph cluster_setup_PostSetup {
         label="Setup: PostSetup";
         style=filled; fillcolor=lightblue;
-        setup_9 [label="comm::comm_setup\nrun_if: first_stage_only()", style="filled,dashed"];
-        setup_10 [label="mddem_neighbor::neighbor_setup\n[neighbor_setup]", style=filled];
-        setup_11 [label="group::setup_groups", style=filled];
-        setup_12 [label="mddem_print::setup_thermo", style=filled];
-        setup_13 [label="mddem_print::read_restart\nrun_if: first_stage_only()", style="filled,dashed"];
-        setup_14 [label="insert::calculate_delta_time", style=filled];
+        setup_7 [label="comm::comm_setup\nrun_if: first_stage_only()", style="filled,dashed"];
+        setup_8 [label="neighbor::neighbor_setup\n[neighbor_setup]", style=filled];
+        setup_9 [label="group::setup_groups", style=filled];
+        setup_10 [label="mddem_print::setup_thermo", style=filled];
+        setup_11 [label="mddem_print::read_restart\nrun_if: first_stage_only()", style="filled,dashed"];
+        setup_12 [label="insert::calculate_delta_time", style=filled];
     }
 
     setup_1 -> setup_2 [color=blue, style=bold];
-    setup_8 -> setup_9 [color=blue, style=bold];
+    setup_6 -> setup_7 [color=blue, style=bold];
     setup_0 -> setup_1 [color=blue, style=bold];
     setup_2 -> setup_3 [color=blue, style=bold];
     setup_3 -> setup_4 [color=blue, style=bold];
     setup_4 -> setup_5 [color=blue, style=bold];
     setup_5 -> setup_6 [color=blue, style=bold];
-    setup_6 -> setup_7 [color=blue, style=bold];
     setup_7 -> setup_8 [color=blue, style=bold];
+    setup_8 -> setup_9 [color=blue, style=bold];
     setup_9 -> setup_10 [color=blue, style=bold];
     setup_10 -> setup_11 [color=blue, style=bold];
     setup_11 -> setup_12 [color=blue, style=bold];
-    setup_12 -> setup_13 [color=blue, style=bold];
-    setup_13 -> setup_14 [color=blue, style=bold];
     subgraph cluster_PreInitialIntegration {
         label="PreInitialIntegration";
         style=filled; fillcolor=lightyellow;
@@ -55,128 +51,107 @@ digraph schedule {
     subgraph cluster_InitialIntegration {
         label="InitialIntegration";
         style=filled; fillcolor=lightyellow;
-        update_1 [label="rotational::initial_rotation", style=filled];
-        update_2 [label="dem_clump::integrate_bodies_initial\n[integrate_bodies_initial]", style=filled];
+        update_1 [label="mddem_verlet::initial_integration", style=filled];
+        update_2 [label="rotational::initial_rotation", style=filled];
     }
 
     subgraph cluster_PostInitialIntegration {
         label="PostInitialIntegration";
         style=filled; fillcolor=lightyellow;
-        update_3 [label="mddem_neighbor::decide_rebuild\n[decide_rebuild]", style=filled];
+        update_3 [label="neighbor::decide_rebuild\n[decide_rebuild]\nrun_if: in_state(CommunicateOnly)", style="filled,dashed"];
         update_4 [label="atom::zero_all_forces", style=filled];
-        update_5 [label="dem_clump::pbc_multisphere_bodies\n[pbc_multisphere_bodies]", style=filled];
-        update_6 [label="atom::remove_ghost_atoms", style=filled];
-        update_7 [label="dem_clump::update_clump_positions\n[update_clump_positions_pre_exchange]", style=filled];
+        update_5 [label="atom::remove_ghost_atoms\nrun_if: in_state(FullRebuild)", style="filled,dashed"];
     }
 
     subgraph cluster_PreExchange {
         label="PreExchange";
         style=filled; fillcolor=lightyellow;
-        update_8 [label="domain::shrink_wrap\n[shrink_wrap]", style=filled];
-        update_9 [label="domain::pbc\n[pbc]", style=filled];
-    }
-
-    subgraph cluster_Exchange {
-        label="Exchange";
-        style=filled; fillcolor=lightyellow;
-        update_10 [label="dem_clump::snap_subspheres_to_body_com\n[snap_subspheres_to_body_com]", style=filled];
-        update_11 [label="dem_clump::restore_subsphere_positions\n[restore_subsphere_positions]", style=filled];
-        update_12 [label="dem_clump::exchange_bodies\n[exchange_bodies]", style=filled];
+        update_6 [label="domain::shrink_wrap\n[shrink_wrap]", style=filled];
+        update_7 [label="granular_temp::print_granular_temperature", style=filled];
+        update_8 [label="domain::pbc\n[pbc]\nrun_if: in_state(FullRebuild)", style="filled,dashed"];
     }
 
     subgraph cluster_PreNeighbor {
         label="PreNeighbor";
         style=filled; fillcolor=lightyellow;
-        update_13 [label="mddem_neighbor::sort_atoms_by_bin\n[sort_atoms]", style=filled];
-        update_14 [label="comm::borders", style=filled];
+        update_9 [label="comm::forward_comm_borders\nrun_if: in_state(CommunicateOnly)", style="filled,dashed"];
+        update_10 [label="neighbor::sort_atoms_by_bin\n[sort_atoms]", style=filled];
+        update_11 [label="comm::borders\nrun_if: in_state(FullRebuild)", style="filled,dashed"];
     }
 
     subgraph cluster_Neighbor {
         label="Neighbor";
         style=filled; fillcolor=lightyellow;
-        update_15 [label="mddem_neighbor::bin_neighbor_list", style=filled];
+        update_12 [label="neighbor::bin_neighbor_list\nrun_if: in_state(FullRebuild)", style="filled,dashed"];
     }
 
     subgraph cluster_PreForce {
         label="PreForce";
         style=filled; fillcolor=lightyellow;
-        update_16 [label="group::rebuild_groups", style=filled];
-        update_17 [label="virial::zero_virial_stress", style=filled];
+        update_13 [label="group::rebuild_groups", style=filled];
+        update_14 [label="virial::zero_virial_stress", style=filled];
     }
 
     subgraph cluster_Force {
         label="Force";
         style=filled; fillcolor=lightyellow;
-        update_18 [label="contact::hertz_mindlin_contact_force\n[hertz_mindlin_contact]", style=filled];
+        update_15 [label="contact::hertz_mindlin_contact_force\n[hertz_mindlin_contact]", style=filled];
     }
 
     subgraph cluster_PostForce {
         label="PostForce";
         style=filled; fillcolor=lightyellow;
-        update_19 [label="comm::reverse_send_force\n[reverse_send_force]", style=filled];
-        update_20 [label="mddem_print::output_virial_to_thermo", style=filled];
-        update_21 [label="dem_clump::aggregate_clump_forces\n[aggregate_clump_forces]", style=filled];
+        update_16 [label="comm::reverse_send_force\n[reverse_send_force]", style=filled];
+        update_17 [label="mddem_print::output_virial_to_thermo", style=filled];
     }
 
     subgraph cluster_FinalIntegration {
         label="FinalIntegration";
         style=filled; fillcolor=lightyellow;
-        update_22 [label="rotational::final_rotation", style=filled];
-        update_23 [label="dem_clump::integrate_bodies_final\n[integrate_bodies_final]", style=filled];
+        update_18 [label="mddem_verlet::final_integration", style=filled];
+        update_19 [label="rotational::final_rotation", style=filled];
     }
 
     subgraph cluster_PostFinalIntegration {
         label="PostFinalIntegration";
         style=filled; fillcolor=lightyellow;
-        update_24 [label="mddem_print::print_vtp", style=filled];
-        update_25 [label="mddem_print::print_thermo", style=filled];
-        update_26 [label="mddem_print::dump_atoms", style=filled];
-        update_27 [label="mddem_print::write_restart", style=filled];
-        update_28 [label="mddem_print::check_stage_end_save", style=filled];
-        update_29 [label="dem_clump::update_clump_positions\n[update_clump_positions]", style=filled];
-        update_30 [label="bench_clump_haff_cooling::measure_cooling", style=filled];
-        update_31 [label="run::update_cycle\n[update_cycle]", style=filled];
+        update_20 [label="mddem_print::print_vtp", style=filled];
+        update_21 [label="mddem_print::print_thermo", style=filled];
+        update_22 [label="mddem_print::dump_atoms", style=filled];
+        update_23 [label="mddem_print::write_restart", style=filled];
+        update_24 [label="mddem_print::check_stage_end_save", style=filled];
+        update_25 [label="run::update_cycle\n[update_cycle]", style=filled];
     }
 
     update_1 -> update_2 [color=blue, style=bold];
     update_3 -> update_4 [color=blue, style=bold];
     update_4 -> update_5 [color=blue, style=bold];
-    update_5 -> update_6 [color=blue, style=bold];
     update_6 -> update_7 [color=blue, style=bold];
-    update_8 -> update_9 [color=blue, style=bold];
-    update_10 -> update_11 [color=blue, style=bold];
-    update_11 -> update_12 [color=blue, style=bold];
-    update_13 -> update_14 [color=blue, style=bold];
-    update_16 -> update_17 [color=blue, style=bold];
-    update_19 -> update_20 [color=blue, style=bold];
-    update_20 -> update_21 [color=blue, style=bold];
-    update_22 -> update_23 [color=blue, style=bold];
-    update_24 -> update_25 [color=blue, style=bold];
-    update_25 -> update_26 [color=blue, style=bold];
-    update_26 -> update_27 [color=blue, style=bold];
-    update_27 -> update_28 [color=blue, style=bold];
-    update_28 -> update_29 [color=blue, style=bold];
-    update_29 -> update_30 [color=blue, style=bold];
-    update_30 -> update_31 [color=blue, style=bold];
-    update_5 -> update_7 [color=red, style=dashed, label="after"];
-    update_8 -> update_9 [color=red, style=dashed, label="before"];
-    update_10 -> update_12 [color=red, style=dashed, label="before"];
-    update_18 -> update_21 [color=red, style=dashed, label="after"];
-    update_19 -> update_21 [color=red, style=dashed, label="after"];
-    update_28 -> update_31 [color=red, style=dashed, label="before"];
-    update_0 -> update_1 [color=blue, style=bold];
-    update_2 -> update_3 [color=blue, style=bold];
     update_7 -> update_8 [color=blue, style=bold];
     update_9 -> update_10 [color=blue, style=bold];
+    update_10 -> update_11 [color=blue, style=bold];
+    update_13 -> update_14 [color=blue, style=bold];
+    update_16 -> update_17 [color=blue, style=bold];
+    update_18 -> update_19 [color=blue, style=bold];
+    update_20 -> update_21 [color=blue, style=bold];
+    update_21 -> update_22 [color=blue, style=bold];
+    update_22 -> update_23 [color=blue, style=bold];
+    update_23 -> update_24 [color=blue, style=bold];
+    update_24 -> update_25 [color=blue, style=bold];
+    update_6 -> update_8 [color=red, style=dashed, label="before"];
+    update_24 -> update_25 [color=red, style=dashed, label="before"];
+    update_0 -> update_1 [color=blue, style=bold];
+    update_2 -> update_3 [color=blue, style=bold];
+    update_5 -> update_6 [color=blue, style=bold];
+    update_8 -> update_9 [color=blue, style=bold];
+    update_11 -> update_12 [color=blue, style=bold];
     update_12 -> update_13 [color=blue, style=bold];
     update_14 -> update_15 [color=blue, style=bold];
     update_15 -> update_16 [color=blue, style=bold];
     update_17 -> update_18 [color=blue, style=bold];
-    update_18 -> update_19 [color=blue, style=bold];
-    update_21 -> update_22 [color=blue, style=bold];
-    update_23 -> update_24 [color=blue, style=bold];
-    update_31 -> update_0 [color=green, style=bold, label="run loop", constraint=false];
-    setup_14 -> update_0 [color=blue, style=bold, label="start run"];
+    update_19 -> update_20 [color=blue, style=bold];
+    update_25 -> update_0 [color=green, style=bold, label="run loop", constraint=false];
+    setup_12 -> update_0 [color=blue, style=bold, label="start run"];
     subgraph cluster_legend {
         label="Legend";
         style=filled; fillcolor=white;
