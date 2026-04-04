@@ -62,7 +62,7 @@
 //! | [`sim_app`] | Application framework: [`App`](sim_app::App), [`Plugin`](sim_app::Plugin) trait, ECS-style resources |
 //! | [`mddem_core`] | Core simulation types: [`Atom`](mddem_core::Atom), [`Config`](mddem_core::Config), domain, communication, regions |
 //! | [`sim_scheduler`] | System scheduler with [`ScheduleSet`](sim_scheduler::ScheduleSet) ordering |
-//! | [`mddem_neighbor`] | Sweep-and-prune neighbor list construction |
+//! | `neighbor` (in `mddem_core`) | Bin-based neighbor list construction |
 //! | [`mddem_verlet`] | Velocity Verlet time integration |
 //! | [`mddem_print`] | Thermo output, dump files (CSV/binary/VTP), restart files |
 //! | [`mddem_derive`] | Derive macros: `#[derive(AtomData)]`, `#[derive(StageEnum)]` |
@@ -165,9 +165,6 @@ pub use mddem_deform;
 /// General-purpose fixes: gravity, addforce, setforce, freeze, movelinear, viscous.
 pub use mddem_fixes;
 
-/// Sweep-and-prune neighbor list construction.
-pub use mddem_neighbor;
-
 /// Thermo output, dump files (CSV/binary/VTP), and restart file I/O.
 pub use mddem_print;
 
@@ -187,7 +184,7 @@ use sim_app::prelude::*;
 /// - [`CommunicationPlugin`](mddem_core::CommunicationPlugin) —
 ///   Unified MPI or single-process communication backend (selected by `mpi_backend` feature)
 /// - [`DomainPlugin`](mddem_core::DomainPlugin) — domain decomposition, PBC, and shrink-wrap
-/// - [`NeighborPlugin`](mddem_neighbor::NeighborPlugin) — sweep-and-prune neighbor lists
+/// - [`NeighborPlugin`](mddem_core::NeighborPlugin) — bin-based neighbor lists
 /// - [`GroupPlugin`](mddem_core::GroupPlugin) — atom group definitions and filtering
 /// - [`RunPlugin`](mddem_core::RunPlugin) — run/cycle management
 /// - [`PrintPlugin`](mddem_print::PrintPlugin) — thermo output, dump files, restart files
@@ -222,9 +219,7 @@ impl PluginGroup for CorePlugins {
         builder
             .add(mddem_core::CommunicationPlugin)
             .add(mddem_core::DomainPlugin)
-            .add(mddem_neighbor::NeighborPlugin {
-                style: mddem_neighbor::NeighborStyle::Bin,
-            })
+            .add(mddem_core::NeighborPlugin)
             .add(mddem_core::GroupPlugin)
             .add(mddem_core::RunPlugin)
             .add(mddem_print::PrintPlugin)
@@ -345,7 +340,6 @@ pub mod prelude {
     // Core framework re-exports (glob)
     pub use sim_app::prelude::*;
     pub use mddem_core::*;
-    pub use mddem_neighbor::*;
     pub use mddem_print::*;
     // Re-export the ParticleSimScheduleSet enum explicitly so downstream users
     // can access it without ambiguity with the ScheduleSet trait from sim_scheduler.

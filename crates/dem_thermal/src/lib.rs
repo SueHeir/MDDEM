@@ -63,7 +63,7 @@ use serde::Deserialize;
 use dem_atom::DemAtom;
 use dem_wall::Walls;
 use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, Config, ParticleSimScheduleSet, ScheduleSetupSet};
-use mddem_neighbor::Neighbor;
+use mddem_core::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -174,7 +174,7 @@ pub struct ThermalPlugin;
 
 impl Plugin for ThermalPlugin {
     fn dependencies(&self) -> Vec<std::any::TypeId> {
-        sim_app::type_ids![dem_atom::DemAtomPlugin, mddem_neighbor::NeighborPlugin]
+        sim_app::type_ids![dem_atom::DemAtomPlugin, mddem_core::NeighborPlugin]
     }
 
     fn default_config(&self) -> Option<&str> {
@@ -527,7 +527,7 @@ mod tests {
     use dem_atom::DemAtom;
     use dem_wall::{WallMotion, WallPlane, Walls};
     use mddem_core::{Atom, AtomDataRegistry};
-    use mddem_neighbor::Neighbor;
+    use mddem_core::Neighbor;
     use mddem_test_utils::push_dem_test_atom;
 
     fn setup_two_atoms(

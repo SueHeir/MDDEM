@@ -10,7 +10,8 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{Atom, AtomDataRegistry, CommBackend, CommResource, Config, ParticleSimScheduleSet, ScheduleSetupSet};
+use crate::{Atom, AtomDataRegistry, CommBackend, CommResource, CommState, Config, ParticleSimScheduleSet, ScheduleSetupSet};
+use sim_scheduler::prelude::CurrentState;
 
 fn default_one_f64() -> f64 {
     1.0
@@ -251,7 +252,10 @@ boundary_z = "periodic"
                 shrink_wrap.label("shrink_wrap").before("pbc"),
                 ParticleSimScheduleSet::PreExchange,
             )
-            .add_update_system(pbc.label("pbc"), ParticleSimScheduleSet::PreExchange);
+            .add_update_system(
+                pbc.label("pbc").run_if(in_state(CommState::FullRebuild)),
+                ParticleSimScheduleSet::PreExchange,
+            );
     }
 }
 
@@ -404,7 +408,14 @@ fn wrap_periodic(mut pos: f64, low: f64, size: f64) -> (f64, i32) {
 
 /// Apply periodic boundary conditions: wrap positions on periodic axes,
 /// remove out-of-bounds atoms on fixed/shrink-wrap axes.
-pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataRegistry>) {
+///
+/// Gated by `run_if(in_state(CommState::FullRebuild))` — only runs on full rebuild steps.
+pub fn pbc(
+    mut atoms: ResMut<Atom>,
+    domain: Res<Domain>,
+    registry: Res<AtomDataRegistry>,
+    mut comm_state: ResMut<CurrentState<CommState>>,
+) {
     let low = domain.boundaries_low;
     let high = domain.boundaries_high;
     let size = domain.size;
@@ -439,11 +450,10 @@ pub fn pbc(mut atoms: ResMut<Atom>, domain: Res<Domain>, registry: Res<AtomDataR
                 }
             }
         }
-        // Update nlocal and invalidate ghost communication sendlists so that
-        // `borders` performs a full rebuild instead of using stale indices.
+        // Update nlocal and force full rebuild since sendlists are stale.
         if removed > 0 {
             atoms.nlocal = (nlocal_before - removed) as u32;
-            atoms.communicate_only = false;
+            comm_state.0 = CommState::FullRebuild;
         }
     }
 }

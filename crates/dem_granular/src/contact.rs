@@ -38,7 +38,7 @@ use sim_scheduler::prelude::*;
 
 use dem_atom::{self, DemAtom, MaterialTable};
 use mddem_core::{register_atom_data, Atom, AtomDataRegistry, BondStore, ParticleSimScheduleSet, VirialStress, VirialStressPlugin};
-use mddem_neighbor::Neighbor;
+use mddem_core::Neighbor;
 
 use crate::tangential::ContactHistoryStore;
 use crate::{LARGE_OVERLAP_WARN_THRESHOLD, MAX_OVERLAP_WARNINGS, SQRT_5_3, TANGENTIAL_EPSILON};
@@ -953,7 +953,7 @@ mod tests {
     use super::*;
     use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry};
-    use mddem_neighbor::Neighbor;
+    use mddem_core::Neighbor;
     use mddem_test_utils::{make_material_table, push_dem_test_atom};
 
     fn push_test_atom_with_history(

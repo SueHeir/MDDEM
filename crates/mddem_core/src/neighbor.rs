@@ -1,20 +1,14 @@
 //! Neighbor list construction for particle simulations.
 //!
-//! This crate provides three neighbor-finding strategies, each with different
-//! performance characteristics:
-//!
-//! | Strategy | Complexity | Best for |
-//! |---|---|---|
-//! | [`BruteForce`](NeighborStyle::BruteForce) | O(N²) | Tiny systems (< 100 atoms), debugging |
-//! | [`SweepAndPrune`](NeighborStyle::SweepAndPrune) | O(N log N) | Small-to-medium systems without binning |
-//! | [`Bin`](NeighborStyle::Bin) | O(N) expected | Production runs, large systems |
-//!
-//! All strategies produce a **half neighbor list** in CSR (Compressed Sparse Row)
-//! format: each local atom `i` stores its neighbor indices `j > i` (or ghost atoms)
-//! in a flat array, with offsets delimiting each atom's neighbors. Use
-//! [`Neighbor::pairs()`] to iterate over `(i, j)` pairs efficiently.
+//! Uses spatial binning with a precomputed stencil of neighbor cells for O(N)
+//! expected neighbor finding. Produces a **half neighbor list** in CSR
+//! (Compressed Sparse Row) format: each local atom `i` stores its neighbor
+//! indices `j > i` (or ghost atoms) in a flat array, with offsets delimiting
+//! each atom's neighbors. Use [`Neighbor::pairs()`] to iterate over `(i, j)`
+//! pairs efficiently.
 //!
 //! # Rebuild strategies
+//! 
 //!
 //! Neighbor lists are rebuilt based on configurable criteria:
 //!
@@ -32,7 +26,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, Domain, ParticleSimScheduleSet, ScheduleSetupSet};
+use crate::{Atom, AtomDataRegistry, CommResource, CommState, Config, Domain, ParticleSimScheduleSet, ScheduleSetupSet};
 
 fn default_one_f64() -> f64 {
     1.0
@@ -66,10 +60,6 @@ pub struct NeighborConfig {
     /// Sort atoms by spatial bin every N steps for cache locality (0 = disabled).
     #[serde(default = "default_sort_every")]
     pub sort_every: usize,
-    /// When true, PBC boundary crossings force a full neighbor rebuild.
-    /// Required for DEM (contact forces are discontinuous; missed contacts cause energy spikes).
-    #[serde(default)]
-    pub rebuild_on_pbc_wrap: bool,
 }
 
 impl Default for NeighborConfig {
@@ -80,28 +70,11 @@ impl Default for NeighborConfig {
             every: 0,
             check: true,
             sort_every: 1000,
-            rebuild_on_pbc_wrap: false,
         }
     }
 }
 
-/// Algorithm used to build the neighbor list.
-///
-/// Choose based on system size and whether spatial binning overhead is worthwhile.
-pub enum NeighborStyle {
-    /// Check all N*(N-1)/2 pairs. O(N²) time, zero setup cost.
-    /// Only suitable for very small systems or correctness testing.
-    BruteForce,
-    /// Sort atoms along the x-axis, then sweep to prune distant pairs.
-    /// O(N log N) from the sort, with a linear sweep. No spatial grid needed.
-    SweepAndPrune,
-    /// Spatial binning with CSR (Compressed Sparse Row) layout and a precomputed
-    /// stencil of neighbor cells. O(N) expected time for uniform distributions.
-    /// Includes cache-friendly sorted position arrays and optional atom reordering.
-    Bin,
-}
-
-/// Neighbor list state: pair lists, CSR indices, bin grid, and rebuild tracking.
+/// Neighbor list state: CSR indices, bin grid, and rebuild tracking.
 ///
 /// The primary output is the CSR neighbor list stored in [`neighbor_offsets`](Self::neighbor_offsets)
 /// and [`neighbor_indices`](Self::neighbor_indices). Use [`pairs()`](Self::pairs) to iterate
@@ -110,15 +83,11 @@ pub struct Neighbor {
     /// Multiplier on pairwise cutoff: pair cutoff = `(r_i + r_j) * skin_fraction`.
     /// Values > 1.0 add a "skin" buffer to reduce rebuild frequency.
     pub skin_fraction: f64,
-    /// Legacy pair list used by brute-force and sweep-and-prune (not used by bin strategy).
-    pub neighbor_list: Vec<(usize, usize)>,
     /// CSR row offsets: `neighbor_offsets[i]..neighbor_offsets[i+1]` gives the range
     /// of neighbor indices for local atom `i`. Length = `nlocal + 1`.
     pub neighbor_offsets: Vec<u32>,
     /// CSR column indices: flat array of neighbor atom indices (local or ghost).
     pub neighbor_indices: Vec<u32>,
-    /// Scratch space for sweep-and-prune: `(atom_index, x_position)` sorted by x.
-    pub sweep_and_prune: Vec<(usize, f64)>,
     /// User-configured minimum bin size (may be increased to match cutoff).
     pub bin_min_size: f64,
     /// Actual bin dimensions in each axis `[bx, by, bz]`, computed from domain / bin count.
@@ -256,10 +225,8 @@ impl Neighbor {
     pub fn new() -> Self {
         Neighbor {
             skin_fraction: 1.0,
-            neighbor_list: Vec::new(),
             neighbor_offsets: Vec::new(),
             neighbor_indices: Vec::new(),
-            sweep_and_prune: Vec::new(),
             bin_min_size: 1.0,
             bin_size: [1.0; 3],
             bin_count: [1, 1, 1],
@@ -404,21 +371,16 @@ fn recompute_bins(neighbor: &mut Neighbor, domain: &Domain, comm_size: i32) {
 
 /// Plugin that registers neighbor list construction and rebuild systems.
 ///
-/// Add this plugin to your [`App`] to enable neighbor list building. The chosen
-/// [`NeighborStyle`] determines which build algorithm runs each timestep.
+/// Uses spatial binning with CSR layout for O(N) expected neighbor finding.
 ///
 /// # Systems registered
 ///
 /// - **Setup**: [`neighbor_read_input`] (reads `[neighbor]` config) and
 ///   [`neighbor_setup`] (computes bin grid, ghost cutoff).
-/// - **Update**: [`decide_rebuild`] (displacement check), plus the selected
-///   neighbor build system ([`brute_force_neighbor_list`],
-///   [`sweep_and_prune_neighbor_list`], or [`bin_neighbor_list`]).
-/// - **Bin only**: [`sort_atoms_by_bin`] for cache-locality reordering.
-pub struct NeighborPlugin {
-    /// Which neighbor-finding algorithm to use.
-    pub style: NeighborStyle,
-}
+/// - **Update**: [`decide_rebuild`] (displacement check),
+///   [`sort_atoms_by_bin`] (cache-locality reordering),
+///   [`bin_neighbor_list`] (bin-based neighbor construction).
+pub struct NeighborPlugin;
 
 impl Plugin for NeighborPlugin {
     fn provides(&self) -> Vec<&str> {
@@ -445,29 +407,27 @@ sort_every = 1000"#,
         Config::load::<NeighborConfig>(app, "neighbor");
 
         app.add_resource(Neighbor::new())
+            .add_resource(CurrentState(CommState::FullRebuild))
             .add_setup_system(neighbor_read_input, ScheduleSetupSet::Setup)
-            .add_setup_system(neighbor_setup.label("neighbor_setup"), ScheduleSetupSet::PostSetup)
-            .add_update_system(
-                decide_rebuild.label("decide_rebuild").before(mddem_core::remove_ghost_atoms),
+            .add_setup_system(neighbor_setup.label("neighbor_setup"), ScheduleSetupSet::PostSetup);
+        
+        app.add_update_system(
+                decide_rebuild
+                    .label("decide_rebuild")
+                    .before(crate::remove_ghost_atoms)
+                    .run_if(in_state(CommState::CommunicateOnly)),
                 ParticleSimScheduleSet::PostInitialIntegration,
             );
-        match self.style {
-            NeighborStyle::BruteForce => {
-                app.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
-            }
-            NeighborStyle::SweepAndPrune => {
-                app.add_update_system(sweep_and_prune_neighbor_list, ParticleSimScheduleSet::Neighbor);
-            }
-            NeighborStyle::Bin => {
-                app.add_update_system(
-                    sort_atoms_by_bin
-                        .label("sort_atoms")
-                        .before(mddem_core::borders),
-                    ParticleSimScheduleSet::PreNeighbor,
-                );
-                app.add_update_system(bin_neighbor_list, ParticleSimScheduleSet::Neighbor);
-            }
-        }
+        app.add_update_system(
+            sort_atoms_by_bin
+                .label("sort_atoms")
+                .before(crate::borders),
+            ParticleSimScheduleSet::PreNeighbor,
+        );
+        app.add_update_system(
+            bin_neighbor_list.run_if(in_state(CommState::FullRebuild)),
+            ParticleSimScheduleSet::Neighbor,
+        );
     }
 }
 
@@ -534,7 +494,6 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
     neighbor.ghost_cutoff = ghost_cut;
     neighbor.cached_max_cutoff = max_cutoff;
     domain.ghost_cutoff = ghost_cut;
-    atoms.rebuild_on_pbc_wrap = config.rebuild_on_pbc_wrap;
     if comm.rank() == 0 {
         println!("Neighbor: ghost_cutoff={:.4} (pair_cutoff={:.4} + buffer={:.4})",
             ghost_cut, max_cutoff, 2.0 * displacement_buffer);
@@ -567,29 +526,6 @@ pub fn neighbor_setup(config: Res<NeighborConfig>, mut neighbor: ResMut<Neighbor
             neighbor.bin_stencil_forward.len()
         );
     }
-}
-
-/// Helper: build merged CSR neighbor list from neighbor_list pairs
-fn build_csr_from_pairs(neighbor: &mut Neighbor, nlocal: usize) {
-    let prev = neighbor.neighbor_indices.len();
-    neighbor.neighbor_offsets.clear();
-    neighbor.neighbor_indices.clear();
-    neighbor.neighbor_indices.reserve(prev + prev / 4);
-
-    // Sort pairs by i for CSR construction
-    let mut pairs = neighbor.neighbor_list.clone();
-    pairs.sort_unstable_by_key(|&(i, _)| i);
-
-    let mut pair_idx = 0;
-    for i in 0..nlocal {
-        neighbor.neighbor_offsets.push(neighbor.neighbor_indices.len() as u32);
-        while pair_idx < pairs.len() && pairs[pair_idx].0 == i {
-            let j = pairs[pair_idx].1;
-            neighbor.neighbor_indices.push(j as u32);
-            pair_idx += 1;
-        }
-    }
-    neighbor.neighbor_offsets.push(neighbor.neighbor_indices.len() as u32);
 }
 
 /// Helper: save current positions for displacement-based rebuild check.
@@ -654,15 +590,15 @@ fn displacement_exceeded(atoms: &Atom, neighbor: &Neighbor) -> bool {
 
 /// Helper: check if a rebuild is needed based on atom count change,
 /// step count, and displacement since last build.
-fn needs_rebuild(atoms: &Atom, neighbor: &Neighbor) -> bool {
+fn needs_rebuild(atoms: &Atom, neighbor: &Neighbor, comm_state: &CurrentState<CommState>) -> bool {
     let nlocal = atoms.nlocal as usize;
     // Always rebuild on first call or local atom count change
     if neighbor.last_build_pos.len() != nlocal || nlocal == 0 {
         return true;
     }
-    // If communicate_only is false, a full rebuild was requested (first step,
+    // If state is FullRebuild, a full rebuild was requested (first step,
     // or decide_rebuild detected displacement exceeded threshold).
-    if !atoms.communicate_only {
+    if comm_state.0 == CommState::FullRebuild {
         return true;
     }
 
@@ -679,131 +615,29 @@ fn needs_rebuild(atoms: &Atom, neighbor: &Neighbor) -> bool {
 }
 
 /// Runs at PostInitialIntegration before remove_ghost_atoms.
-/// When communicate_only is true (neighbor list still valid), checks displacement
-/// to decide if a full rebuild is needed this step. If so, sets communicate_only = false
-/// so that remove_ghost_atoms / exchange / full borders all run.
+/// Gated by `run_if(in_state(CommState::CommunicateOnly))` — only checks when
+/// the neighbor list is still considered valid.
+///
+/// Checks displacement to decide if a full rebuild is needed this step.
+/// If so, sets CommState to FullRebuild so that remove_ghost_atoms / exchange /
+/// full borders all run.
 ///
 /// Uses all_reduce to ensure ALL ranks agree — if any rank needs a rebuild,
 /// all ranks do the full rebuild (required for MPI send/recv pattern matching).
 pub fn decide_rebuild(
-    mut atoms: ResMut<Atom>,
-    neighbor: Res<Neighbor>,
+    atoms: Res<Atom>,
+    mut neighbor: ResMut<Neighbor>,
     comm: Res<CommResource>,
-    domain: Res<Domain>,
+    mut comm_state: ResMut<CurrentState<CommState>>,
 ) {
-    if !atoms.communicate_only {
-        return; // already going to do full rebuild
-    }
-    let mut local_needs = if needs_rebuild(&atoms, &neighbor) { 1.0 } else { 0.0 };
-    // When rebuild_on_pbc_wrap is set (DEM), detect any atom about to cross a
-    // periodic boundary. After initial_integration moved atoms but before pbc()
-    // wraps them, atoms outside the box are exactly the ones that will wrap.
-    // Stale ghost placement after PBC wrap causes missed contacts in DEM.
-    if local_needs == 0.0 && atoms.rebuild_on_pbc_wrap {
-        let low = domain.boundaries_low;
-        let high = domain.boundaries_high;
-        for i in 0..atoms.nlocal as usize {
-            if atoms.pos[i][0] < low[0] || atoms.pos[i][0] >= high[0]
-                || atoms.pos[i][1] < low[1] || atoms.pos[i][1] >= high[1]
-                || atoms.pos[i][2] < low[2] || atoms.pos[i][2] >= high[2]
-            {
-                local_needs = 1.0;
-                break;
-            }
-        }
-    }
+    let local_needs = if needs_rebuild(&atoms, &neighbor, &comm_state) { 1.0 } else { 0.0 };
     // Any rank needing rebuild forces all ranks to rebuild
     let global_needs = comm.all_reduce_sum_f64(local_needs);
     if global_needs > 0.0 {
-        atoms.communicate_only = false;
-    }
-}
-
-/// Sweep-and-prune neighbor list builder. O(N log N) from sorting atoms by x-coordinate.
-///
-/// Sorts all atoms by x-position, then sweeps forward: for each atom `i`, checks
-/// atoms `j > i` in sorted order until the x-gap exceeds the cutoff, pruning
-/// the search space. Full 3D distance is checked for remaining candidates.
-///
-/// Produces both a legacy pair list and a CSR neighbor list.
-pub fn sweep_and_prune_neighbor_list(
-    mut atoms: ResMut<Atom>,
-    mut neighbor: ResMut<Neighbor>,
-    _domain: Res<Domain>,
-    _comm: Res<CommResource>,
-) {
-    if !needs_rebuild(&atoms, &neighbor) {
+        comm_state.0 = CommState::FullRebuild;
+    } else {
         neighbor.steps_since_build += 1;
-        atoms.communicate_only = true;
-        return;
     }
-    atoms.communicate_only = true;
-
-    save_build_positions(&atoms, &mut neighbor);
-    neighbor.sweep_and_prune.clear();
-    neighbor.neighbor_list.clear();
-
-    for j in 0..atoms.len() {
-        neighbor.sweep_and_prune.push((j, atoms.pos[j][0]));
-    }
-    neighbor
-        .sweep_and_prune
-        .sort_by(|a, b| a.1.partial_cmp(&b.1).expect("NaN in atom x-position during sweep-and-prune sort"));
-
-    let skin_fraction = neighbor.skin_fraction;
-    for i in 0..neighbor.sweep_and_prune.len() {
-        let index = neighbor.sweep_and_prune[i].0;
-        let px = atoms.pos[index][0];
-        let py = atoms.pos[index][1];
-        let pz = atoms.pos[index][2];
-        let r = atoms.cutoff_radius[index];
-        for j in (i + 1)..neighbor.sweep_and_prune.len() {
-            if (neighbor.sweep_and_prune[j].1 - px) > (r * 2.0 * skin_fraction) {
-                break;
-            }
-            let index2 = neighbor.sweep_and_prune[j].0;
-            if atoms.tag[index] == atoms.tag[index2]
-                || (atoms.is_ghost[index] && atoms.is_ghost[index2])
-            {
-                continue;
-            }
-            let r2 = atoms.cutoff_radius[index2];
-            let dx = atoms.pos[index2][0] - px;
-            let dy = atoms.pos[index2][1] - py;
-            let dz = atoms.pos[index2][2] - pz;
-            let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-            if distance < (r + r2) * skin_fraction {
-                neighbor.neighbor_list.push((index, index2));
-            }
-        }
-    }
-    let nlocal = atoms.nlocal as usize;
-    build_csr_from_pairs(&mut neighbor, nlocal);
-}
-
-/// Brute-force neighbor list builder. O(N²) — checks all local-vs-all pairs.
-///
-/// Simple reference implementation: iterates over all `(i, j)` pairs with `i < j`,
-/// skipping self-interactions (same tag). Suitable only for small systems or testing.
-/// Does not use displacement-based rebuild skipping.
-pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor>) {
-    neighbor.neighbor_list.clear();
-    let nlocal = atoms.len() - atoms.nghost as usize;
-    for i in 0..nlocal {
-        for j in (i + 1)..atoms.len() {
-            if atoms.tag[i] == atoms.tag[j] {
-                continue;
-            }
-            let dx = atoms.pos[j][0] - atoms.pos[i][0];
-            let dy = atoms.pos[j][1] - atoms.pos[i][1];
-            let dz = atoms.pos[j][2] - atoms.pos[i][2];
-            let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-            if distance < (atoms.cutoff_radius[i] + atoms.cutoff_radius[j]) * neighbor.skin_fraction {
-                neighbor.neighbor_list.push((i, j));
-            }
-        }
-    }
-    build_csr_from_pairs(&mut neighbor, nlocal);
 }
 
 /// Reorder local atoms by spatial bin for improved cache locality.
@@ -816,13 +650,13 @@ pub fn brute_force_neighbor_list(atoms: Res<Atom>, mut neighbor: ResMut<Neighbor
 /// Sorting is triggered either periodically (every `sort_every` steps) or when
 /// a neighbor rebuild is needed. The permutation is applied to all atom arrays
 /// (via [`AtomDataRegistry`]) and ghost `origin_index` values are updated.
-pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>, comm: Res<CommResource>, registry: Res<AtomDataRegistry>, mut domain: ResMut<Domain>) {
+pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>, comm: Res<CommResource>, registry: Res<AtomDataRegistry>, mut domain: ResMut<Domain>, mut comm_state: ResMut<CurrentState<CommState>>) {
     // Recompute bin grid if domain bounds changed (e.g., shrink-wrap).
     // Must happen before sorting since sorting depends on bin parameters.
     if domain.bounds_changed {
         recompute_bins(&mut neighbor, &domain, comm.size());
         domain.bounds_changed = false;
-        atoms.communicate_only = false;
+        comm_state.0 = CommState::FullRebuild;
     }
     // Increment sort_counter first so it stays synchronized across all MPI ranks,
     // even if some ranks skip sorting due to nlocal == 0 or other conditions.
@@ -840,13 +674,13 @@ pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>
             let global_did_sort = comm.all_reduce_sum_f64(0.0);
             if global_did_sort > 0.0 {
                 neighbor.last_build_pos.clear();
-                atoms.communicate_only = false;
+                comm_state.0 = CommState::FullRebuild;
             }
         }
         return;
     }
 
-    let rebuild_needed = needs_rebuild(&atoms, &neighbor);
+    let rebuild_needed = needs_rebuild(&atoms, &neighbor, &comm_state);
     if !periodic_sort && !rebuild_needed {
         return;
     }
@@ -921,7 +755,7 @@ pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>
         let global_did_sort = comm.all_reduce_sum_f64(local_did_sort);
         if global_did_sort > 0.0 {
             neighbor.last_build_pos.clear();
-            atoms.communicate_only = false;
+            comm_state.0 = CommState::FullRebuild;
         }
     }
 }
@@ -941,29 +775,14 @@ pub fn sort_atoms_by_bin(mut atoms: ResMut<Atom>, mut neighbor: ResMut<Neighbor>
 /// All inner loops use `unsafe` unchecked indexing for performance; safety invariants
 /// are documented inline and validated by the CSR construction logic.
 pub fn bin_neighbor_list(
-    mut atoms: ResMut<Atom>,
+    atoms: Res<Atom>,
     mut neighbor: ResMut<Neighbor>,
-    mut domain: ResMut<Domain>,
-    comm: Res<CommResource>,
+    mut comm_state: ResMut<CurrentState<CommState>>,
 ) {
-    // Recompute bin grid if domain bounds changed (e.g., shrink-wrap).
-    // This is a fallback — sort_atoms_by_bin handles this for the Bin style,
-    // but BruteForce/SweepAndPrune callers won't have sort_atoms_by_bin.
-    if domain.bounds_changed {
-        recompute_bins(&mut neighbor, &domain, comm.size());
-        domain.bounds_changed = false;
-        atoms.communicate_only = false;
-    }
-
     let nlocal = atoms.nlocal as usize;
     let total = atoms.len();
-    if !needs_rebuild(&atoms, &neighbor) {
-        neighbor.steps_since_build += 1;
-        atoms.communicate_only = true;
-        return;
-    }
-    atoms.communicate_only = true;
 
+    comm_state.0 = CommState::CommunicateOnly;
     save_build_positions(&atoms, &mut neighbor);
 
     let ny = neighbor.bin_count[1];
@@ -1186,56 +1005,10 @@ pub fn bin_neighbor_list(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mddem_core::Atom;
+    use crate::Atom;
     
     fn push_atom(atom: &mut Atom, tag: u32, pos: [f64; 3], radius: f64) {
         atom.push_test_atom(tag, pos, radius, 1.0);
-    }
-
-    #[test]
-    fn brute_force_finds_close_pair() {
-        let mut app = App::new();
-        let mut atom = Atom::new();
-        push_atom(&mut atom, 0, [0.0, 0.0, 0.0], 0.5);
-        push_atom(&mut atom, 1, [0.5, 0.0, 0.0], 0.5);
-        atom.nlocal = 2;
-        atom.natoms = 2;
-
-        let mut neighbor = Neighbor::new();
-        neighbor.skin_fraction = 1.0;
-
-        app.add_resource(atom);
-        app.add_resource(neighbor);
-        app.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
-        app.organize_systems();
-        app.run();
-
-        let n = app.get_resource_ref::<Neighbor>().unwrap();
-        assert_eq!(n.neighbor_list.len(), 1);
-        let (i, j) = n.neighbor_list[0];
-        assert!(i == 0 && j == 1);
-    }
-
-    #[test]
-    fn brute_force_misses_distant_pair() {
-        let mut app = App::new();
-        let mut atom = Atom::new();
-        push_atom(&mut atom, 0, [0.0, 0.0, 0.0], 0.1);
-        push_atom(&mut atom, 1, [5.0, 0.0, 0.0], 0.1);
-        atom.nlocal = 2;
-        atom.natoms = 2;
-
-        let mut neighbor = Neighbor::new();
-        neighbor.skin_fraction = 1.0;
-
-        app.add_resource(atom);
-        app.add_resource(neighbor);
-        app.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
-        app.organize_systems();
-        app.run();
-
-        let n = app.get_resource_ref::<Neighbor>().unwrap();
-        assert_eq!(n.neighbor_list.len(), 0);
     }
 
     #[test]
@@ -1247,7 +1020,7 @@ mod tests {
         atom.nlocal = 2;
         atom.natoms = 2;
 
-        let mut domain = mddem_core::Domain::new();
+        let mut domain = crate::Domain::new();
         domain.sub_domain_low = [0.0, 0.0, 0.0];
         domain.sub_domain_high = [2.0, 2.0, 2.0];
         domain.sub_length = [2.0, 2.0, 2.0];
@@ -1260,8 +1033,9 @@ mod tests {
         app.add_resource(neighbor);
         app.add_resource(domain);
         app.add_resource(NeighborConfig::default());
-        app.add_resource(mddem_core::CommResource(Box::new(
-            mddem_core::SingleProcessComm::new(),
+        app.add_resource(CurrentState(CommState::FullRebuild));
+        app.add_resource(crate::CommResource(Box::new(
+            crate::SingleProcessComm::new(),
         )));
         app.add_setup_system(neighbor_setup, ScheduleSetupSet::PostSetup);
         app.add_update_system(bin_neighbor_list, ParticleSimScheduleSet::Neighbor);
@@ -1306,33 +1080,7 @@ mod tests {
         assert!(pairs2.is_empty());
     }
 
-    #[test]
-    fn sweep_and_prune_finds_close_pair() {
-        let mut app = App::new();
-        let mut atom = Atom::new();
-        push_atom(&mut atom, 0, [0.0, 0.0, 0.0], 0.5);
-        push_atom(&mut atom, 1, [0.5, 0.0, 0.0], 0.5);
-        atom.nlocal = 2;
-        atom.natoms = 2;
-
-        let mut neighbor = Neighbor::new();
-        neighbor.skin_fraction = 1.0;
-
-        app.add_resource(atom);
-        app.add_resource(neighbor);
-        app.add_resource(mddem_core::Domain::new());
-        app.add_resource(mddem_core::CommResource(Box::new(
-            mddem_core::SingleProcessComm::new(),
-        )));
-        app.add_update_system(sweep_and_prune_neighbor_list, ParticleSimScheduleSet::Neighbor);
-        app.organize_systems();
-        app.run();
-
-        let n = app.get_resource_ref::<Neighbor>().unwrap();
-        assert_eq!(n.neighbor_list.len(), 1);
-    }
-
-    // ── Brute-force vs bin-based neighbor list comparison ──────────────────
+    // ── Reference vs bin-based neighbor list comparison ──────────────────
 
     /// Reference O(N²) all-pairs neighbor finder that doesn't use ghost atoms
     /// or any accelerated algorithm. Pure distance-based cutoff check.
@@ -1360,64 +1108,9 @@ mod tests {
     }
 
     #[test]
-    fn brute_force_matches_reference_all_pairs() {
-        // Create a system of 20 particles at pseudo-random positions
-        // and verify brute_force_neighbor_list matches our reference.
-        let n = 20;
-        let skin_fraction = 1.0;
-        let radius = 0.5;
-
-        let mut atom = Atom::new();
-        // Place atoms in a pseudo-random but deterministic pattern
-        for i in 0..n {
-            let x = (i as f64 * 0.37).sin() * 2.0 + 3.0;
-            let y = (i as f64 * 0.73).cos() * 2.0 + 3.0;
-            let z = (i as f64 * 1.13).sin() * 2.0 + 3.0;
-            push_atom(&mut atom, i as u32, [x, y, z], radius);
-        }
-        atom.nlocal = n as u32;
-        atom.natoms = n as u64;
-
-        // Reference calculation
-        let ref_pairs = reference_all_pairs(
-            &atom.pos[..n],
-            &atom.cutoff_radius[..n],
-            skin_fraction,
-            n,
-        );
-
-        // Build via brute_force_neighbor_list
-        let mut app = App::new();
-        let mut neighbor = Neighbor::new();
-        neighbor.skin_fraction = skin_fraction;
-        app.add_resource(atom);
-        app.add_resource(neighbor);
-        app.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
-        app.organize_systems();
-        app.run();
-
-        let neigh = app.get_resource_ref::<Neighbor>().unwrap();
-        let mut bf_pairs: Vec<(usize, usize)> = neigh.neighbor_list.clone();
-        // Normalize: ensure (min, max) ordering
-        for p in bf_pairs.iter_mut() {
-            if p.0 > p.1 {
-                *p = (p.1, p.0);
-            }
-        }
-        bf_pairs.sort();
-        bf_pairs.dedup();
-
-        assert_eq!(
-            bf_pairs, ref_pairs,
-            "Brute-force neighbor list doesn't match reference.\nBF: {:?}\nRef: {:?}",
-            bf_pairs, ref_pairs
-        );
-    }
-
-    #[test]
-    fn bin_neighbor_list_matches_brute_force() {
+    fn bin_neighbor_list_matches_reference() {
         // Create a system and verify that bin-based neighbor list finds
-        // exactly the same pairs as brute-force.
+        // exactly the same pairs as the reference all-pairs calculation.
         let n = 30;
         let skin_fraction = 1.0;
         let radius = 0.3;
@@ -1434,30 +1127,6 @@ mod tests {
         let cutoffs: Vec<f64> = vec![radius; n];
         let ref_pairs = reference_all_pairs(&positions, &cutoffs, skin_fraction, n);
 
-        // Brute-force neighbor list
-        let mut app_bf = App::new();
-        let mut atom_bf = Atom::new();
-        for i in 0..n {
-            push_atom(&mut atom_bf, i as u32, positions[i], radius);
-        }
-        atom_bf.nlocal = n as u32;
-        atom_bf.natoms = n as u64;
-        let mut neighbor_bf = Neighbor::new();
-        neighbor_bf.skin_fraction = skin_fraction;
-        app_bf.add_resource(atom_bf);
-        app_bf.add_resource(neighbor_bf);
-        app_bf.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
-        app_bf.organize_systems();
-        app_bf.run();
-
-        let neigh_bf = app_bf.get_resource_ref::<Neighbor>().unwrap();
-        let mut bf_pairs: Vec<(usize, usize)> = neigh_bf.neighbor_list.clone();
-        for p in bf_pairs.iter_mut() {
-            if p.0 > p.1 { *p = (p.1, p.0); }
-        }
-        bf_pairs.sort();
-        bf_pairs.dedup();
-
         // Bin-based neighbor list
         let mut app_bin = App::new();
         let mut atom_bin = Atom::new();
@@ -1467,7 +1136,7 @@ mod tests {
         atom_bin.nlocal = n as u32;
         atom_bin.natoms = n as u64;
 
-        let mut domain = mddem_core::Domain::new();
+        let mut domain = crate::Domain::new();
         domain.sub_domain_low = [0.0, 0.0, 0.0];
         domain.sub_domain_high = [4.0, 4.0, 4.0];
         domain.sub_length = [4.0, 4.0, 4.0];
@@ -1480,8 +1149,9 @@ mod tests {
         app_bin.add_resource(neighbor_bin);
         app_bin.add_resource(domain);
         app_bin.add_resource(NeighborConfig::default());
-        app_bin.add_resource(mddem_core::CommResource(Box::new(
-            mddem_core::SingleProcessComm::new(),
+        app_bin.add_resource(CurrentState(CommState::FullRebuild));
+        app_bin.add_resource(crate::CommResource(Box::new(
+            crate::SingleProcessComm::new(),
         )));
         app_bin.add_setup_system(neighbor_setup, ScheduleSetupSet::PostSetup);
         app_bin.add_update_system(bin_neighbor_list, ParticleSimScheduleSet::Neighbor);
@@ -1508,8 +1178,7 @@ mod tests {
         bin_pairs.sort();
         bin_pairs.dedup();
 
-        // Verify: bin-based should find at least all pairs that brute-force finds
-        // (bin-based might find more if there are edge effects, but shouldn't miss any)
+        // Verify: bin-based should find all pairs that reference finds
         for pair in &ref_pairs {
             assert!(
                 bin_pairs.contains(pair),
@@ -1517,104 +1186,5 @@ mod tests {
                 pair
             );
         }
-
-        // Also verify brute-force matches reference
-        assert_eq!(
-            bf_pairs, ref_pairs,
-            "Brute-force doesn't match reference for N=30 system"
-        );
-    }
-
-    #[test]
-    fn no_spurious_pairs_in_brute_force() {
-        // Verify that brute-force doesn't include pairs beyond the cutoff.
-        // Place two atoms far apart (distance 5.0) with small radii (0.1).
-        // Cutoff = (0.1 + 0.1) * 1.0 = 0.2. Distance 5.0 >> 0.2.
-        let mut atom = Atom::new();
-        push_atom(&mut atom, 0, [0.0, 0.0, 0.0], 0.1);
-        push_atom(&mut atom, 1, [5.0, 0.0, 0.0], 0.1);
-        push_atom(&mut atom, 2, [0.15, 0.0, 0.0], 0.1); // close to atom 0
-        atom.nlocal = 3;
-        atom.natoms = 3;
-
-        let ref_pairs = reference_all_pairs(
-            &atom.pos[..3],
-            &atom.cutoff_radius[..3],
-            1.0,
-            3,
-        );
-
-        let mut app = App::new();
-        let mut neighbor = Neighbor::new();
-        neighbor.skin_fraction = 1.0;
-        app.add_resource(atom);
-        app.add_resource(neighbor);
-        app.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
-        app.organize_systems();
-        app.run();
-
-        let neigh = app.get_resource_ref::<Neighbor>().unwrap();
-        let mut bf_pairs: Vec<(usize, usize)> = neigh.neighbor_list.clone();
-        for p in bf_pairs.iter_mut() {
-            if p.0 > p.1 { *p = (p.1, p.0); }
-        }
-        bf_pairs.sort();
-        bf_pairs.dedup();
-
-        // Should only find (0, 2), not (0, 1) or (1, 2)
-        assert_eq!(
-            bf_pairs, ref_pairs,
-            "Spurious pairs detected.\nBF: {:?}\nRef: {:?}",
-            bf_pairs, ref_pairs
-        );
-        assert_eq!(ref_pairs.len(), 1, "Should find exactly 1 pair: (0,2)");
-        assert_eq!(ref_pairs[0], (0, 2));
-    }
-
-    #[test]
-    fn varied_cutoff_radii_neighbor_list() {
-        // Test with different cutoff radii per atom.
-        // Atom 0: radius=0.5 at origin
-        // Atom 1: radius=0.1 at (0.5, 0, 0) -- cutoff = 0.6 > 0.5 ✓ neighbor
-        // Atom 2: radius=0.1 at (0.7, 0, 0) -- cutoff = 0.6 < 0.7 ✗ not neighbor
-        let mut atom = Atom::new();
-        push_atom(&mut atom, 0, [0.0, 0.0, 0.0], 0.5);
-        push_atom(&mut atom, 1, [0.5, 0.0, 0.0], 0.1);
-        push_atom(&mut atom, 2, [0.7, 0.0, 0.0], 0.1);
-        atom.nlocal = 3;
-        atom.natoms = 3;
-
-        let ref_pairs = reference_all_pairs(
-            &atom.pos[..3],
-            &atom.cutoff_radius[..3],
-            1.0,
-            3,
-        );
-
-        let mut app = App::new();
-        let mut neighbor = Neighbor::new();
-        neighbor.skin_fraction = 1.0;
-        app.add_resource(atom);
-        app.add_resource(neighbor);
-        app.add_update_system(brute_force_neighbor_list, ParticleSimScheduleSet::Neighbor);
-        app.organize_systems();
-        app.run();
-
-        let neigh = app.get_resource_ref::<Neighbor>().unwrap();
-        let mut bf_pairs: Vec<(usize, usize)> = neigh.neighbor_list.clone();
-        for p in bf_pairs.iter_mut() {
-            if p.0 > p.1 { *p = (p.1, p.0); }
-        }
-        bf_pairs.sort();
-        bf_pairs.dedup();
-
-        assert_eq!(bf_pairs, ref_pairs);
-        // (0,1): dist=0.5, cutoff=0.6 ✓
-        // (0,2): dist=0.7, cutoff=0.6 ✗
-        // (1,2): dist=0.2, cutoff=0.2 ✗ (exactly at boundary, not less than)
-        assert!(
-            ref_pairs.contains(&(0, 1)),
-            "Should find pair (0,1)"
-        );
     }
 }

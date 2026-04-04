@@ -11,9 +11,10 @@ use rand_distr::{Distribution, Normal};
 use serde::Deserialize;
 
 use mddem_core::{
-    Atom, AtomDataRegistry, CommResource, Config, Domain, Region, RunConfig, RunState,
+    Atom, AtomDataRegistry, CommResource, CommState, Config, Domain, Region, RunConfig, RunState,
     ParticleSimScheduleSet, ScheduleSetupSet, StageOverrides,
 };
+use sim_scheduler::prelude::CurrentState;
 
 use crate::{DemAtom, MaterialTable, RadiusSpec};
 
@@ -1175,6 +1176,7 @@ pub fn dem_rate_insert(
     registry: Res<AtomDataRegistry>,
     run_state: Res<RunState>,
     mut rate_state: ResMut<RateInsertState>,
+    mut comm_state: ResMut<CurrentState<CommState>>,
 ) {
     if rate_state.entries.is_empty() || comm.rank() != 0 {
         return;
@@ -1369,7 +1371,7 @@ pub fn dem_rate_insert(
 
         if inserted > 0 {
             // Force full ghost rebuild since atom count changed
-            atom.communicate_only = false;
+            comm_state.0 = CommState::FullRebuild;
         }
         if inserted > 0 && attempts >= max_attempts {
             eprintln!(

@@ -20,7 +20,7 @@ use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{Atom, AtomDataRegistry, Config, Domain, ParticleSimScheduleSet, ScheduleSetupSet};
+use crate::{Atom, AtomDataRegistry, CommState, Config, Domain, ParticleSimScheduleSet, ScheduleSetupSet};
 
 #[cfg(feature = "mpi_backend")]
 use std::sync::Mutex;
@@ -361,11 +361,21 @@ processors_z = 1"#,
 
         app.add_setup_system(comm_read_input.run_if(first_stage_only()), ScheduleSetupSet::PreSetup)
             .add_setup_system(comm_setup.run_if(first_stage_only()), ScheduleSetupSet::PostSetup)
-            .add_update_system(borders, ParticleSimScheduleSet::PreNeighbor)
+            .add_update_system(
+                borders.run_if(in_state(CommState::FullRebuild)),
+                ParticleSimScheduleSet::PreNeighbor,
+            )
+            .add_update_system(
+                forward_comm_borders.run_if(in_state(CommState::CommunicateOnly)),
+                ParticleSimScheduleSet::PreNeighbor,
+            )
             .add_update_system(reverse_send_force.label("reverse_send_force"), ParticleSimScheduleSet::PostForce);
 
         #[cfg(feature = "mpi_backend")]
-        app.add_update_system(exchange.label("exchange"), ParticleSimScheduleSet::Exchange);
+        app.add_update_system(
+            exchange.label("exchange").run_if(in_state(CommState::FullRebuild)),
+            ParticleSimScheduleSet::Exchange,
+        );
 
         app.add_cleanup(finalize_mpi);
     }
@@ -627,10 +637,27 @@ fn forward_comm(
 
 // ── Unified borders ──────────────────────────────────────────────────────────
 
+/// Lightweight ghost position update: forward-comm only (no full rebuild).
+///
+/// Gated by `run_if(in_state(CommState::CommunicateOnly))`.
+/// Recomputes per-atom periodic offsets for self-sends, so ghost
+/// positions stay correct even when atoms cross PBC boundaries between rebuilds.
+pub fn forward_comm_borders(
+    comm: Res<CommResource>,
+    topo: Res<CommTopology>,
+    mut atoms: ResMut<Atom>,
+    domain: Res<Domain>,
+    registry: Res<AtomDataRegistry>,
+    mut buffers: ResMut<CommBuffers>,
+) {
+    let mut send_buff = std::mem::take(&mut buffers.border_send_buff);
+    forward_comm(&mut atoms, &registry, &topo, &**comm, &domain, &mut send_buff);
+    buffers.border_send_buff = send_buff;
+}
+
 /// Build ghost atoms by scanning near-boundary locals and sending them to neighbors.
 ///
-/// On subsequent steps when `communicate_only` is set, performs a lightweight
-/// `forward_comm` instead (updating ghost positions without full rebuild).
+/// Gated by `run_if(in_state(CommState::FullRebuild))`.
 pub fn borders(
     comm: Res<CommResource>,
     mut topo: ResMut<CommTopology>,
@@ -640,15 +667,6 @@ pub fn borders(
     mut buffers: ResMut<CommBuffers>,
 ) {
     let mut send_buff = std::mem::take(&mut buffers.border_send_buff);
-
-    // Fast path: forward_comm when communicate_only (ghost layout unchanged).
-    // forward_comm recomputes per-atom periodic offsets for self-sends, so ghost
-    // positions stay correct even when atoms cross PBC boundaries between rebuilds.
-    if atoms.communicate_only {
-        forward_comm(&mut atoms, &registry, &topo, &**comm, &domain, &mut send_buff);
-        buffers.border_send_buff = send_buff;
-        return;
-    }
 
     // Full ghost rebuild: remove old ghosts first
     if atoms.nghost > 0 {
@@ -860,9 +878,6 @@ pub fn exchange(
     registry: Res<AtomDataRegistry>,
     mut buffers: ResMut<CommBuffers>,
 ) {
-    if atoms.communicate_only {
-        return;
-    }
     let decomp = comm.processor_decomposition();
 
     // Reuse persistent exchange buffers (only need 2: lo and hi per dimension)

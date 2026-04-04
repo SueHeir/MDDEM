@@ -34,7 +34,7 @@
 
 use sim_app::prelude::*;
 use mddem_core::{Atom, CommResource, Config, Domain, ParticleSimScheduleSet, ScheduleSetupSet, StageOverrides};
-use mddem_neighbor::Neighbor;
+use mddem_core::Neighbor;
 use sim_scheduler::prelude::*;
 use serde::Deserialize;
 

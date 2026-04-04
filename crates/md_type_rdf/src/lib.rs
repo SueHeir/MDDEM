@@ -74,7 +74,7 @@ use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState, ParticleSimScheduleSet};
-use mddem_neighbor::Neighbor;
+use mddem_core::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────
 

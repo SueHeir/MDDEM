@@ -27,7 +27,7 @@ use sim_scheduler::prelude::*;
 
 use dem_atom::{DemAtom, MaterialTable};
 use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, ParticleSimScheduleSet};
-use mddem_neighbor::Neighbor;
+use mddem_core::Neighbor;
 
 use crate::{SQRT_5_3, TANGENTIAL_EPSILON};
 
@@ -334,7 +334,7 @@ mod tests {
     use super::*;
     use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry};
-    use mddem_neighbor::Neighbor;
+    use mddem_core::Neighbor;
     use mddem_test_utils::{make_material_table, push_dem_test_atom};
 
     fn push_test_atom_with_history(

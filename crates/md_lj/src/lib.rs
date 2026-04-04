@@ -66,7 +66,7 @@ use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 use mddem_core::{Atom, CommResource, Config, Domain, MixingRule, PairCoeffTable, ParticleSimScheduleSet, ScheduleSetupSet, VirialStressPlugin};
-use mddem_neighbor::Neighbor;
+use mddem_core::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -291,7 +291,7 @@ pub struct LJForcePlugin;
 
 impl Plugin for LJForcePlugin {
     fn dependencies(&self) -> Vec<std::any::TypeId> {
-        sim_app::type_ids![mddem_neighbor::NeighborPlugin]
+        sim_app::type_ids![mddem_core::NeighborPlugin]
     }
 
     fn default_config(&self) -> Option<&str> {
@@ -663,7 +663,6 @@ mod tests {
         app.add_resource(LJPairTable(table));
 
         let mut neighbor = Neighbor::new();
-        neighbor.neighbor_list.push((0, 1));
         neighbor.neighbor_offsets = vec![0, 1, 1];
         neighbor.neighbor_indices = vec![1];
         app.add_resource(neighbor);

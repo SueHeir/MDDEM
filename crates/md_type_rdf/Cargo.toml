@@ -12,5 +12,4 @@ categories = ["simulation", "science"]
 mddem_core = { path = "../mddem_core", version = "0.1.3", default-features = false }
 sim_app = { path = "../sim_app", version = "0.1.3" }
 sim_scheduler = { path = "../sim_scheduler", version = "0.1.3" }
-mddem_neighbor = { path = "../mddem_neighbor", version = "0.1.3" }
 serde = { version = "1", features = ["derive"] }

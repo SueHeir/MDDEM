@@ -17,7 +17,7 @@ use std::{
 
 use sim_app::prelude::*;
 use sim_scheduler::prelude::*;
-use crate::ParticleSimScheduleSet;
+use crate::{CommState, ParticleSimScheduleSet};
 
 /// Number of `f64`s packed/unpacked for one atom's base fields
 /// (tag, origin_index, cutoff_radius, atom_type, pos×3, vel×3, force×3, mass, image×3).
@@ -317,15 +317,6 @@ pub struct Atom {
 
     pub dt: f64,
 
-    /// When true, ghost ordering is stable (single-process deterministic iteration),
-    /// so the neighbor list remains valid across ghost rebuilds. In MPI mode this
-    /// stays false, forcing neighbor rebuild every step.
-    pub communicate_only: bool,
-
-    /// When true, PBC boundary crossings force a full ghost + neighbor rebuild.
-    /// Required for DEM where stale ghost placement causes missed contacts.
-    pub rebuild_on_pbc_wrap: bool,
-
     pub tag: Vec<u32>,
     pub atom_type: Vec<u32>,
     pub origin_index: Vec<i32>,
@@ -358,8 +349,6 @@ macro_rules! impl_atom_new {
                 nghost: 0,
                 ntypes: 1,
                 dt: 1.0,
-                communicate_only: false,
-                rebuild_on_pbc_wrap: false,
                 $( $field: Vec::new(), )*
             }
         }
@@ -521,17 +510,17 @@ impl Plugin for AtomPlugin {
     fn build(&self, app: &mut App) {
         app.add_resource(Atom::new())
             .add_resource(AtomDataRegistry::new())
-            .add_update_system(remove_ghost_atoms, ParticleSimScheduleSet::PostInitialIntegration)
+            .add_update_system(
+                remove_ghost_atoms.run_if(in_state(CommState::FullRebuild)),
+                ParticleSimScheduleSet::PostInitialIntegration,
+            )
             .add_update_system(zero_all_forces, ParticleSimScheduleSet::PostInitialIntegration);
     }
 }
 
 /// Truncate ghost atoms before the next communication phase.
-/// Skipped when `communicate_only` is set (ghosts are updated in-place).
+/// Gated by `run_if(in_state(CommState::FullRebuild))` — only runs on full rebuild steps.
 pub fn remove_ghost_atoms(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) {
-    if atoms.communicate_only {
-        return;
-    }
     atoms.truncate_to_nlocal();
     registry.truncate_all(atoms.nlocal as usize);
     atoms.nghost = 0;

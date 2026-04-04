@@ -22,7 +22,7 @@ use sim_scheduler::prelude::*;
 
 use dem_atom::{DemAtom, MaterialTable};
 use mddem_core::{Atom, AtomDataRegistry, BondStore, ParticleSimScheduleSet};
-use mddem_neighbor::Neighbor;
+use mddem_core::Neighbor;
 
 use crate::{LARGE_OVERLAP_WARN_THRESHOLD, MAX_OVERLAP_WARNINGS, SQRT_5_3};
 
@@ -163,7 +163,7 @@ mod tests {
     use super::*;
     use dem_atom::DemAtom;
     use mddem_core::{Atom, AtomDataRegistry};
-    use mddem_neighbor::Neighbor;
+    use mddem_core::Neighbor;
     use mddem_test_utils::{make_material_table, push_dem_test_atom};
 
     #[test]

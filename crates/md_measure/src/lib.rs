@@ -60,7 +60,7 @@ use serde::Deserialize;
 
 use md_lj::LJTailCorrections;
 use mddem_core::{Atom, CommResource, Config, Domain, Input, RunState, ParticleSimScheduleSet, ScheduleSetupSet, VirialStress};
-use mddem_neighbor::Neighbor;
+use mddem_core::Neighbor;
 
 // ── Config ──────────────────────────────────────────────────────────────────
 

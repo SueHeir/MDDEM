@@ -60,7 +60,7 @@ use serde::Deserialize;
 
 use dem_atom::DemAtom;
 use mddem_core::{register_atom_data, Atom, AtomData, AtomDataRegistry, CommResource, Config, Input, RunState, ParticleSimScheduleSet};
-use mddem_neighbor::Neighbor;
+use mddem_core::Neighbor;
 use mddem_print::{DumpRegistry, Thermo};
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -608,7 +608,7 @@ fn dump_contact_csv(
 mod tests {
     use super::*;
     use mddem_core::Atom;
-    use mddem_neighbor::Neighbor;
+    use mddem_core::Neighbor;
 
     /// Helper: create a neighbor list from atom positions using brute force.
     fn build_neighbor_list(atoms: &Atom) -> Neighbor {

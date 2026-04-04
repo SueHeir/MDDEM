@@ -68,7 +68,7 @@ use sim_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use mddem_core::{compute_ke, Atom, AtomDataRegistry, CommResource, Config, GroupRegistry, Input, RunConfig, RunState, ParticleSimScheduleSet, ScheduleSetupSet, VirialStress};
-use mddem_neighbor::Neighbor;
+use mddem_core::Neighbor;
 
 // ── Thermo config ───────────────────────────────────────────────────────────
 
