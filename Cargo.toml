@@ -54,6 +54,10 @@ path = "examples/bench_rod_haff_cooling/main.rs"
 name = "bench_sphere_haff_cooling"
 path = "examples/bench_sphere_haff_cooling/main.rs"
 
+[[example]]
+name = "bond_fiber_tensile"
+path = "examples/bond_fiber_tensile/main.rs"
+
 [profile.release]
 opt-level = 3
 lto = "fat"

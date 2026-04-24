@@ -1,0 +1,100 @@
+# ── BPM fiber tensile test ───────────────────────────────────────────────────
+# 11-sphere fiber (10 bonds) pulled along x. Measure σ(ε) to recover
+# Young's modulus E set in [bonds].
+#
+# Run: cargo run --release --example bond_fiber_tensile --no-default-features -- \
+#        examples/bond_fiber_tensile/config.toml
+
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[domain]
+# Box wide enough for fiber + 10% stretch on the +x side.
+x_low  = -0.015
+x_high =  0.020
+y_low  = -0.005
+y_high =  0.005
+z_low  = -0.005
+z_high =  0.005
+boundary_x = "fixed"
+boundary_y = "fixed"
+boundary_z = "fixed"
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.005
+every = 1
+
+[dem]
+contact_model = "hertz"
+
+# Only needed because CSV insertion requires a material. Contact forces are
+# skipped for bonded pairs, so these parameters don't affect the result.
+[[dem.materials]]
+name = "bpm"
+youngs_mod = 1.0e9
+poisson_ratio = 0.25
+restitution = 0.9
+friction = 0.0
+
+# 11 particles loaded from fiber.csv (columns x, y, z in metres).
+[[particles.insert]]
+source = "file"
+file = "examples/bond_fiber_tensile/fiber.csv"
+format = "csv"
+material = "bpm"
+radius = 0.001
+density = 2500.0
+columns = { x = 0, y = 1, z = 2 }
+
+# ── Bond parameters ──────────────────────────────────────────────────────────
+# Material mode: E = 1 GPa, G = 400 MPa (ν = 0.25).
+# Bond radius equals particle radius (ratio 1.0).
+[bonds]
+auto_bond = true
+bond_tolerance = 1.001
+bond_radius_ratio = 1.0
+youngs_modulus = 1.0e9
+shear_modulus  = 4.0e8
+# Critical damping for all four channels → fast settling, no overshoot.
+beta_normal  = 1.0
+beta_shear   = 1.0
+beta_twist   = 1.0
+beta_bending = 1.0
+
+# ── Groups ───────────────────────────────────────────────────────────────────
+# Static groups: membership locked at setup so "right_end" keeps atom 10 even
+# after it moves outside the region.
+[[group]]
+name = "left_end"
+region = { type = "block", min = [-0.0105, -5e-4, -5e-4], max = [-0.0095, 5e-4, 5e-4] }
+dynamic = false
+
+[[group]]
+name = "right_end"
+region = { type = "block", min = [ 0.0095, -5e-4, -5e-4], max = [ 0.0105, 5e-4, 5e-4] }
+dynamic = false
+
+# ── Fixes ────────────────────────────────────────────────────────────────────
+# Pin the left end.
+[[freeze]]
+group = "left_end"
+
+# Pull the right end at constant velocity. Strain rate ε̇ = v / L₀ = 0.1 / 0.02 = 5 /s.
+# Quasi-static: ε̇ · (L / c) ≈ 5 · (0.02/632) ≈ 1.6e-4 ≪ 1 (c = √(E/ρ) ≈ 632 m/s).
+[[move_linear]]
+group = "right_end"
+vx = 0.1
+vy = 0.0
+vz = 0.0
+
+[output]
+dir = "examples/bond_fiber_tensile"
+
+[run]
+# 30 000 steps · dt = 1e-7 s = 3 ms, pulls to ε ≈ (0.1 · 3e-3)/0.02 = 1.5% strain.
+steps = 30000
+thermo = 500
+dt = 1e-7

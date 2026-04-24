@@ -1,65 +1,184 @@
 # dem_bond
 
-Elastic bond force models for DEM simulations in MDDEM.
+Bonded Particle Model (BPM) force plugin for MDDEM.
 
 ## Overview
 
-`dem_bond` adds bonded interactions between particle pairs. Each bond resists relative motion along three independent channels: normal (stretch/compression), tangential (sliding), and bending (rotation).
+`dem_bond` treats each bond between two particles as a **solid cylindrical
+beam** and resists four independent deformation channels: axial stretch /
+compression, transverse shear, twist (torsion about the bond axis), and
+bending (rotation perpendicular to the bond axis). Bond stiffness can be
+derived from material properties (Young's / shear modulus + bond radius) or
+supplied directly; damping is specified as a critical-damping ratio; and
+breakage uses beam-stress failure criteria.
 
-## Key Types
+The implementation follows the Fortran reference in
+`fortran_bpm_info/fortran-codes-main/Bonded_Network/demcfd.f90` (subroutine
+`bonds`). Plastic deformation is **not** currently implemented.
 
-- **BondConfig**: Deserialized TOML configuration for bond stiffness, damping, and breakage thresholds
-- **BondHistoryStore**: Tracks accumulated tangential displacement and relative rotation per bond (implements `AtomData` for MPI)
-- **BondHistoryEntry**: Per-bond storage of `delta_t` (tangential displacement) and `delta_theta` (rotation angle)
-- **BondMetrics**: Aggregates step-wise bond strain and breakage counts for output
-- **DemBondPlugin**: Main plugin that registers resources and integrates force computation
+## Bond geometry
 
-## Force Model
+For each bond, the cross-section is a solid cylinder of radius
 
-| Channel | Force Equation | Notes |
-|---------|---|---|
-| **Normal** | `F_n = (k_n·δ + γ_n·v_n)·n̂` | δ = bond stretch, v_n = normal velocity |
-| **Tangential** | `F_t = −(k_t·Δs + γ_t·v_t)` | Δs = accumulated displacement, history tracked |
-| **Bending** | `M = −(k_bend·Δθ + γ_bend·ω_rel)` | Δθ = relative rotation, damped by angular velocity |
-
-Bonds can break on normal strain (`|δ/r₀| > threshold`) or tangential displacement (`|Δs| > threshold`).
-
-## TOML Configuration
-
-```toml
-[bonds]
-auto_bond = true              # bond touching particles at setup
-bond_tolerance = 1.001        # auto-bond tolerance multiplier
-normal_stiffness = 1e7        # k_n (N/m)
-normal_damping = 10.0         # γ_n (N·s/m)
-tangential_stiffness = 5e6    # k_t (N/m)
-tangential_damping = 5.0      # γ_t (N·s/m)
-bending_stiffness = 1e4       # k_bend (N·m/rad)
-bending_damping = 1.0         # γ_bend (N·m·s/rad)
-break_normal_stretch = 0.1    # break on 10% strain (optional)
-break_shear = 0.0005          # break on displacement (optional)
-# file = "bonds.lammps"       # load from LAMMPS data file
-# format = "lammps_data"      # file format
+```
+r_b = bond_radius_ratio · min(R_i, R_j)
 ```
 
-## Usage Example
+giving
 
-Enable bonding in your TOML config:
+| quantity | expression         | meaning                        |
+|----------|--------------------|--------------------------------|
+| `A`      | `π r_b²`           | cross-sectional area           |
+| `J`      | `½ π r_b⁴`         | polar second moment (torsion)  |
+| `I`      | `¼ π r_b⁴ = ½ J`   | second moment for bending      |
+| `L`      | `r₀`               | equilibrium bond length        |
+
+## Four-channel force model
+
+| Channel               | Stiffness (material mode) | Force / moment                                              |
+|-----------------------|----------------------------|-------------------------------------------------------------|
+| Normal                | `K_n   = E · A / L`        | `F_n = (K_n · δ + γ_n · v_n) n̂`                           |
+| Shear                 | `K_t   = G · A / L`        | `F_t = −K_t · Δs − γ_t · v_t`                              |
+| Twist (torsion)       | `K_tor = G · J / L`        | `M_tor = −K_tor · (Δθ · n̂) n̂ − γ_tor · (ω_rel · n̂) n̂` |
+| Bending               | `K_bend = E · I / L`       | `M_bend = −K_bend · (Δθ − (Δθ · n̂) n̂) − γ_bend · (ω_rel − (ω_rel · n̂) n̂)` |
+
+with `δ = |r_ij| − r₀`, `n̂` = unit bond axis from *i* to *j*, `Δs` the
+accumulated shear displacement (re-projected ⊥ to `n̂` each step), and `Δθ`
+the accumulated relative rotation angle (split into twist / bending parts
+on-the-fly each step).
+
+The shear force is applied at the bond mid-point (`L/2` from each centre),
+which produces a lever-arm torque `τ = ±(L/2) n̂ × F_t` on both particles.
+
+## Damping
+
+Per-channel damping uses a critical-damping ratio `β ∈ [0, 1]`:
+
+```
+γ   = 2 β √(m* · K_eff)        (force channels:   normal, shear)
+γ_M = 2 β √(I_rot* · K_eff)    (moment channels:  twist, bending)
+```
+
+with reduced mass `m* = m_i m_j / (m_i + m_j)` and reduced moment of inertia
+`I_rot* = I_i I_j / (I_i + I_j)`. For a solid sphere `I_i = ⅖ m_i R_i²`.
+Each channel accepts an optional raw-`γ` override that replaces the β-based
+formula.
+
+## Breakage (beam-stress criterion)
+
+A bond breaks when either the tensile or shear failure stress is exceeded
+at the extreme fibre of the beam:
+
+```
+σ = F_n / A  +  2 |M_bend| r_b / J        →  break if σ > σ_max
+τ = |F_t| / A  +  |M_tor| r_b / J         →  break if τ > τ_max
+```
+
+Broken bonds are removed from both partners' bond lists after the force loop.
+Without `sigma_max` / `tau_max` the bonds are unbreakable.
+
+## Configuration
+
+Two ways to set stiffness — **material mode** (paper-standard beam theory)
+or **direct mode** (scalar N/m and N·m/rad knobs). Material mode wins per
+channel when `youngs_modulus` / `shear_modulus` is set.
 
 ```toml
 [bonds]
 auto_bond = true
-normal_stiffness = 1e7
-tangential_stiffness = 5e6
-break_normal_stretch = 0.1
+bond_tolerance = 1.001
+bond_radius_ratio = 1.0
+
+# Material mode:
+youngs_modulus = 1.0e9     # E (Pa) → K_n, K_bend
+shear_modulus  = 4.0e8     # G (Pa) → K_t, K_tor
+
+# (Direct overrides — used when the corresponding modulus is not set)
+# normal_stiffness  = 0.0   # N/m
+# shear_stiffness   = 0.0   # N/m
+# twist_stiffness   = 0.0   # N·m/rad
+# bending_stiffness = 0.0   # N·m/rad
+
+# Critical-damping ratios:
+beta_normal  = 1.0
+beta_shear   = 1.0
+beta_twist   = 1.0
+beta_bending = 1.0
+
+# (Raw-γ overrides — bypass the β-based formula)
+# normal_damping  = 0.0
+# shear_damping   = 0.0
+# twist_damping   = 0.0
+# bending_damping = 0.0
+
+# Beam-stress breakage (omit to leave bonds unbreakable):
+sigma_max = 5.0e7           # Pa, tensile + bending
+tau_max   = 3.0e7           # Pa, shear + torsion
+
+# Load bonds from a LAMMPS data file instead of auto-bonding:
+# file = "bonds.lammps"
+# format = "lammps_data"
 ```
 
-Add the plugin to your app:
+## Usage
 
 ```rust
-use dem_bond::DemBondPlugin;
+use mddem::prelude::*;
 
-app.add_plugins(DemBondPlugin);
+let mut app = App::new();
+app.add_plugins(CorePlugins)
+    .add_plugins(GranularDefaultPlugins)
+    .add_plugins(DemBondPlugin);
+app.start();
 ```
 
-Bonds will be created at setup (auto-bonding or file-based), and forces computed each timestep with optional breakage tracking.
+Granular contact forces are automatically skipped between bonded pairs
+(via `BondStore::are_excluded`), so the bond is the sole interaction on
+those neighbours until it breaks.
+
+## Key types
+
+- **`BondConfig`** — deserialised `[bonds]` section
+- **`BondHistoryStore`** — per-atom list of `BondHistoryEntry` (shear
+  displacement `delta_t` and rotation angle `delta_theta`); implements
+  `AtomData` for MPI communication and atom reordering
+- **`BondMetrics`** — step-level strain average and cumulative bonds-broken
+  count, published to thermo as `bond_strain` and `bonds_broken`
+- **`DemBondPlugin`** — registers resources, auto-bonding / file-loading
+  setup systems, and the per-step force computation
+
+## Validation: fiber tensile test
+
+`examples/bond_fiber_tensile/` pulls an 11-sphere fiber (10 bonds) at
+constant velocity and fits σ vs ε to recover the input Young's modulus.
+
+Setup: radius 1 mm, density 2500 kg/m³, bond radius = particle radius,
+`E = 1 GPa`, `G = 400 MPa` (ν = 0.25), critical damping on all four
+channels, left end frozen, right end pulled at `v_x = 0.1 m/s`
+(strain rate ≈ 5 /s, fully quasi-static).
+
+Result on 30 000 steps (`dt = 1e-7 s`, ε from 0 → 1.5%):
+
+| quantity                 | value                      |
+|--------------------------|----------------------------|
+| E input                  | 1.00000 × 10⁹ Pa           |
+| E fit (σ / ε slope)      | 1.00005 × 10⁹ Pa           |
+| relative error           | 0.005 %                    |
+| ε_local / ε_global       | 1.000086 (uniform strain)  |
+
+The match confirms that (a) `K_n = E·A/L` is applied correctly per bond,
+(b) load propagates cleanly through the 10-bond chain, and (c) strain
+distributes uniformly at quasi-static loading.
+
+```bash
+cargo run --release --example bond_fiber_tensile --no-default-features -- \
+    examples/bond_fiber_tensile/config.toml
+python3 examples/bond_fiber_tensile/validate.py
+```
+
+## What's next
+
+- 3-point bend (validates `K_bend = E·I/L` independently)
+- Torsion test (validates `K_tor = G·J/L`)
+- Plastic deformation (Fortran `plastic_bond_*` — softened stiffness past
+  yield, persistent max-stress history)
