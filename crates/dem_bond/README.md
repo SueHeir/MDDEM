@@ -176,6 +176,28 @@ cargo run --release --example bond_fiber_tensile --no-default-features -- \
 python3 examples/bond_fiber_tensile/validate.py
 ```
 
+### Overlap variant — contact-suppression check
+
+`examples/bond_fiber_tensile_overlap/` re-runs the test with the spheres
+only **1 radius apart** (center-to-center) — every adjacent pair overlaps
+by 1 mm. Hertz contact forces between bonded pairs would be on the order
+of hundreds of newtons per pair if not suppressed. All 19 neighbour
+candidates (10 direct bonds + 9 shared-neighbour "1-3" pairs) are skipped
+by `BondStore::are_excluded`, so the result is identical: E fit within
+0.005 %.
+
+| variant             | bond length L | K_n        | E fit            | error   |
+|---------------------|---------------|------------|------------------|---------|
+| touching (`2 r`)    | 2.000 mm      | 1.571 MN/m | 1.00005 × 10⁹ Pa | 0.005 % |
+| overlapping (`1 r`) | 1.000 mm      | 3.142 MN/m | 1.00005 × 10⁹ Pa | 0.005 % |
+
+```bash
+cargo run --release --example bond_fiber_tensile --no-default-features -- \
+    examples/bond_fiber_tensile_overlap/config.toml
+python3 examples/bond_fiber_tensile/validate.py \
+    examples/bond_fiber_tensile_overlap/data/fiber_tensile.csv
+```
+
 ## What's next
 
 - 3-point bend (validates `K_bend = E·I/L` independently)

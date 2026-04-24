@@ -1,0 +1,100 @@
+# ── BPM fiber tensile test — OVERLAP variant ────────────────────────────────
+# Same test as bond_fiber_tensile, but adjacent spheres are only 1 radius apart
+# (50 % overlap). If Hertz contact forces were not suppressed between bonded
+# pairs, they would dominate the bond force and the fitted Young's modulus
+# would be completely wrong. Expected result: E still recovered to <<1 %.
+#
+# Run: cargo run --release --example bond_fiber_tensile --no-default-features -- \
+#        examples/bond_fiber_tensile_overlap/config.toml
+
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[domain]
+# Fiber spans [-5 mm, +5 mm]; +x end stretches to ~+5.2 mm at 3 % strain.
+x_low  = -0.008
+x_high =  0.012
+y_low  = -0.005
+y_high =  0.005
+z_low  = -0.005
+z_high =  0.005
+boundary_x = "fixed"
+boundary_y = "fixed"
+boundary_z = "fixed"
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.005
+every = 1
+
+[dem]
+contact_model = "hertz"
+
+# Contact forces between bonded pairs are suppressed, but these parameters
+# would give Hertz forces of hundreds of Newtons if that suppression failed —
+# that is exactly what this test is checking.
+[[dem.materials]]
+name = "bpm"
+youngs_mod = 1.0e9
+poisson_ratio = 0.25
+restitution = 0.9
+friction = 0.0
+
+[[particles.insert]]
+source = "file"
+file = "examples/bond_fiber_tensile_overlap/fiber.csv"
+format = "csv"
+material = "bpm"
+radius = 0.001
+density = 2500.0
+columns = { x = 0, y = 1, z = 2 }
+
+# ── Bond parameters ──────────────────────────────────────────────────────────
+# bond_tolerance = 0.6 → threshold 0.6·(R_i + R_j) = 1.2 mm, so only immediate
+# neighbours (1 mm apart) auto-bond; i↔i+2 pairs (2 mm apart) do not.
+# Bond geometry is unchanged: r_b = R = 1 mm, but L = r₀ = 1 mm (half the
+# touching case), so K_n = E·A/L = π · 10⁶ N/m — twice the touching stiffness.
+[bonds]
+auto_bond = true
+bond_tolerance = 0.6
+bond_radius_ratio = 1.0
+youngs_modulus = 1.0e9
+shear_modulus  = 4.0e8
+beta_normal  = 1.0
+beta_shear   = 1.0
+beta_twist   = 1.0
+beta_bending = 1.0
+
+# ── Groups ───────────────────────────────────────────────────────────────────
+[[group]]
+name = "left_end"
+region = { type = "block", min = [-0.0055, -5e-4, -5e-4], max = [-0.0045, 5e-4, 5e-4] }
+dynamic = false
+
+[[group]]
+name = "right_end"
+region = { type = "block", min = [ 0.0045, -5e-4, -5e-4], max = [ 0.0055, 5e-4, 5e-4] }
+dynamic = false
+
+# ── Fixes ────────────────────────────────────────────────────────────────────
+[[freeze]]
+group = "left_end"
+
+# v_x = 0.1 m/s, L₀ = 0.01 m → strain rate ε̇ = 10 /s (still quasi-static;
+# c = √(E/ρ) ≈ 632 m/s, ε̇ · L/c ≈ 1.6e-4 ≪ 1).
+[[move_linear]]
+group = "right_end"
+vx = 0.1
+vy = 0.0
+vz = 0.0
+
+[output]
+dir = "examples/bond_fiber_tensile_overlap"
+
+[run]
+# 30 000 steps · dt = 1e-7 s = 3 ms → ε ≈ 3 % (L₀ is half, so same v pulls twice as much strain).
+steps = 30000
+thermo = 500
+dt = 1e-7

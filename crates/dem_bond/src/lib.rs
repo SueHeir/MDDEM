@@ -119,7 +119,7 @@ use sim_scheduler::prelude::*;
 use serde::Deserialize;
 
 use dem_atom::DemAtom;
-use mddem_core::{Atom, AtomData, AtomDataRegistry, BondEntry, BondStore, CommResource, Config, ParticleSimScheduleSet, ScheduleSetupSet, VirialStress, VirialStressPlugin};
+use mddem_core::{Atom, AtomData, AtomDataRegistry, BondEntry, BondStore, CommResource, Config, Domain, ParticleSimScheduleSet, ScheduleSetupSet, VirialStress, VirialStressPlugin};
 use mddem_print::Thermo;
 
 // ── BondConfig ──────────────────────────────────────────────────────────────
@@ -140,6 +140,13 @@ pub struct BondConfig {
     /// Bond radius as a multiple of `min(R_i, R_j)`. Default: `1.0`.
     #[serde(default = "default_bond_radius_ratio")]
     pub bond_radius_ratio: f64,
+    /// Multiplier applied to the maximum bond length when extending MPI
+    /// `ghost_cutoff` at setup. Must cover bonded-pair reach (1×) plus
+    /// shared-neighbour 1-3 exclusion (2×) plus a safety margin for stretch.
+    /// Default: `2.5` — enough for 1-3 exclusion + 25 % bond stretch.
+    /// Set to `0.0` to disable the extension (single-process / MPI-1×1×1 only).
+    #[serde(default = "default_ghost_cutoff_multiplier")]
+    pub ghost_cutoff_multiplier: f64,
 
     // ── Material-mode inputs ────────────────────────────────────────────────
     /// Young's modulus *E* (Pa). If set, normal & bending stiffness derive from `E`.
@@ -209,6 +216,7 @@ pub struct BondConfig {
 
 fn default_bond_tolerance() -> f64 { 1.001 }
 fn default_bond_radius_ratio() -> f64 { 1.0 }
+fn default_ghost_cutoff_multiplier() -> f64 { 2.5 }
 
 impl Default for BondConfig {
     fn default() -> Self {
@@ -216,6 +224,7 @@ impl Default for BondConfig {
             auto_bond: false,
             bond_tolerance: 1.001,
             bond_radius_ratio: 1.0,
+            ghost_cutoff_multiplier: 2.5,
             youngs_modulus: None,
             shear_modulus: None,
             normal_stiffness: 0.0,
@@ -334,6 +343,12 @@ pub struct BondMetrics {
     pub bonds_broken_this_step: usize,
     /// Cumulative number of bonds broken since the start of the simulation.
     pub total_bonds_broken: usize,
+    /// Number of bonds skipped this step because the partner atom was not
+    /// present as a local or ghost. Non-zero means `ghost_cutoff` is too
+    /// small — bump `ghost_cutoff_multiplier` in `[bonds]`.
+    pub missing_partner_skips: usize,
+    /// Whether a rank-0 warning has already been printed; prevents flooding.
+    pub warned_missing_partner: bool,
 }
 
 // ── Plugin ──────────────────────────────────────────────────────────────────
@@ -348,6 +363,7 @@ impl Plugin for DemBondPlugin {
 # auto_bond = false
 # bond_tolerance = 1.001
 # bond_radius_ratio = 1.0
+# ghost_cutoff_multiplier = 2.5   # MPI: extends ghost skin to cover bond + 1-3 reach
 #
 # Material mode (paper-standard beam theory):
 # youngs_modulus = 1.0e9
@@ -384,11 +400,28 @@ impl Plugin for DemBondPlugin {
         app.add_resource(BondMetrics::default());
         mddem_core::register_atom_data!(app, BondHistoryStore::new());
         app.add_setup_system(
-            auto_bond_touching.run_if(first_stage_only()),
+            auto_bond_touching
+                .label("auto_bond_touching")
+                .run_if(first_stage_only()),
             ScheduleSetupSet::PostSetup,
         );
         app.add_setup_system(
-            load_bonds_from_file.run_if(first_stage_only()),
+            load_bonds_from_file
+                .label("load_bonds_from_file")
+                .run_if(first_stage_only()),
+            ScheduleSetupSet::PostSetup,
+        );
+        // ghost_cutoff must cover bond length (bonded partners across ranks)
+        // AND 2× bond length (shared-neighbour 1-3 exclusion at rank boundaries).
+        // Must run AFTER bonds are created and BEFORE neighbor_setup bakes the
+        // ghost_cutoff into the bin grid / borders skin.
+        app.add_setup_system(
+            extend_ghost_cutoff_for_bonds
+                .label("extend_ghost_cutoff_for_bonds")
+                .after("auto_bond_touching")
+                .after("load_bonds_from_file")
+                .before("neighbor_setup")
+                .run_if(first_stage_only()),
             ScheduleSetupSet::PostSetup,
         );
         app.add_setup_system(
@@ -545,6 +578,62 @@ pub fn load_bonds_from_file(
     }
 }
 
+/// Extends `Domain::ghost_cutoff` so bonded partners (and their 1-3
+/// shared neighbours) remain visible as ghosts when atoms migrate across
+/// MPI rank boundaries.
+///
+/// Without this, a bond spanning a rank boundary silently "disappears"
+/// from the force loop: `bond_force` can't resolve the partner tag into a
+/// local/ghost index, so the bond term is skipped and the atom drifts free.
+///
+/// Runs in `ScheduleSetupSet::PostSetup`, ordered **after**
+/// `auto_bond_touching` / `load_bonds_from_file` (so bonds exist) and
+/// **before** `neighbor_setup` (which locks `ghost_cutoff` into the bin
+/// grid and border skin).
+pub fn extend_ghost_cutoff_for_bonds(
+    registry: Res<AtomDataRegistry>,
+    bond_config: Res<BondConfig>,
+    mut domain: ResMut<Domain>,
+    comm: Res<CommResource>,
+) {
+    if bond_config.ghost_cutoff_multiplier <= 0.0 {
+        return;
+    }
+
+    // Global max r0 across all ranks (bonds currently only exist on the
+    // rank(s) that auto-bonded or loaded them at setup).
+    let local_max_r0 = {
+        let bond_store = match registry.get::<BondStore>() {
+            Some(bs) => bs,
+            None => return,
+        };
+        let mut m = 0.0f64;
+        for list in &bond_store.bonds {
+            for b in list {
+                if b.r0 > m { m = b.r0; }
+            }
+        }
+        m
+    };
+    // all_reduce_max via negated min (only min is in the CommBackend trait).
+    let global_max_r0 = -comm.all_reduce_min_f64(-local_max_r0);
+    if global_max_r0 <= 0.0 {
+        return;
+    }
+
+    let required = global_max_r0 * bond_config.ghost_cutoff_multiplier;
+    if required > domain.ghost_cutoff {
+        let old = domain.ghost_cutoff;
+        domain.ghost_cutoff = required;
+        if comm.rank() == 0 {
+            println!(
+                "DemBond: extended ghost_cutoff {:.6} → {:.6} (max r₀ = {:.6} × multiplier {:.2})",
+                old, required, global_max_r0, bond_config.ghost_cutoff_multiplier
+            );
+        }
+    }
+}
+
 /// Seed [`BondHistoryStore`] entries for every bond that does not already have one.
 pub fn init_bond_history(registry: Res<AtomDataRegistry>) {
     let bond_store = registry.get::<BondStore>();
@@ -626,7 +715,10 @@ pub fn bond_force(
             let bond = &bonds.bonds[i][b_idx];
             let j = match tag_to_index.get(&bond.partner_tag) {
                 Some(&idx) => idx,
-                None => continue,
+                None => {
+                    metrics.missing_partner_skips += 1;
+                    continue;
+                }
             };
             // Process each bond once: lower tag owns the computation.
             if atoms.tag[i] >= bond.partner_tag { continue; }
@@ -851,16 +943,33 @@ pub fn zero_bond_metrics(mut metrics: ResMut<BondMetrics>) {
     metrics.strain_sum = 0.0;
     metrics.bond_count = 0;
     metrics.bonds_broken_this_step = 0;
+    metrics.missing_partner_skips = 0;
 }
 
 /// Write bond metrics to thermo output after force computation.
+///
+/// Also emits a one-shot rank-0 warning if any bond this step could not find
+/// its partner (ghost_cutoff too small to span the rank boundary).
 pub fn output_bond_metrics(
-    metrics: Res<BondMetrics>,
+    mut metrics: ResMut<BondMetrics>,
     comm: Res<CommResource>,
     mut thermo: Option<ResMut<Thermo>>,
 ) {
     let strain_sum = comm.all_reduce_sum_f64(metrics.strain_sum);
     let bond_count = comm.all_reduce_sum_f64(metrics.bond_count as f64);
+    let missing_global = comm.all_reduce_sum_f64(metrics.missing_partner_skips as f64);
+
+    if missing_global > 0.0 && !metrics.warned_missing_partner && comm.rank() == 0 {
+        eprintln!(
+            "WARNING: DemBond skipped {} bond(s) this step because the partner \
+             was not present as a local/ghost atom on the owning rank. \
+             Ghost cutoff is too small to span a bond across a rank boundary. \
+             Increase [bonds].ghost_cutoff_multiplier (default 2.5) or reduce \
+             MPI decomposition along the bonded direction.",
+            missing_global as usize
+        );
+        metrics.warned_missing_partner = true;
+    }
 
     if let Some(ref mut thermo) = thermo {
         if bond_count > 0.0 {
@@ -869,6 +978,7 @@ pub fn output_bond_metrics(
             thermo.set("bond_strain", 0.0);
         }
         thermo.set("bonds_broken", metrics.total_bonds_broken as f64);
+        thermo.set("bond_missing", missing_global);
     }
 }
 
@@ -1227,6 +1337,100 @@ format = "lammps_data"
         let cfg: BondConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.file.as_deref(), Some("data.lammps"));
         assert_eq!(cfg.format.as_deref(), Some("lammps_data"));
+    }
+
+    #[test]
+    fn extend_ghost_cutoff_respects_max_bond_r0() {
+        // Registry with a BondStore carrying a known max r0; Domain starts with
+        // a tiny ghost_cutoff. The system should bump it to r0 × multiplier.
+        let mut app = App::new();
+
+        let mut bond_store = BondStore::new();
+        bond_store.bonds.push(vec![
+            BondEntry { partner_tag: 2, bond_type: 0, r0: 0.002 },
+        ]);
+        bond_store.bonds.push(vec![
+            BondEntry { partner_tag: 1, bond_type: 0, r0: 0.002 },
+            BondEntry { partner_tag: 3, bond_type: 0, r0: 0.005 }, // max
+        ]);
+        bond_store.bonds.push(vec![
+            BondEntry { partner_tag: 2, bond_type: 0, r0: 0.005 },
+        ]);
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(bond_store);
+
+        let mut domain = mddem_core::Domain::new();
+        domain.ghost_cutoff = 0.001; // deliberately too small
+
+        app.add_resource(registry);
+        app.add_resource(domain);
+        app.add_resource(BondConfig {
+            ghost_cutoff_multiplier: 2.5,
+            ..BondConfig::default()
+        });
+        app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
+        app.add_update_system(extend_ghost_cutoff_for_bonds, ParticleSimScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let domain = app.get_resource_ref::<mddem_core::Domain>().unwrap();
+        // max r0 = 0.005, multiplier = 2.5 → required = 0.0125
+        assert!(
+            (domain.ghost_cutoff - 0.0125).abs() < 1e-12,
+            "expected ghost_cutoff ≈ 0.0125, got {}",
+            domain.ghost_cutoff
+        );
+    }
+
+    #[test]
+    fn extend_ghost_cutoff_disabled_when_multiplier_zero() {
+        let mut app = App::new();
+
+        let mut bond_store = BondStore::new();
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 2, bond_type: 0, r0: 0.005 }]);
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(bond_store);
+
+        let mut domain = mddem_core::Domain::new();
+        domain.ghost_cutoff = 0.001;
+
+        app.add_resource(registry);
+        app.add_resource(domain);
+        app.add_resource(BondConfig { ghost_cutoff_multiplier: 0.0, ..BondConfig::default() });
+        app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
+        app.add_update_system(extend_ghost_cutoff_for_bonds, ParticleSimScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let domain = app.get_resource_ref::<mddem_core::Domain>().unwrap();
+        assert_eq!(domain.ghost_cutoff, 0.001);
+    }
+
+    #[test]
+    fn extend_ghost_cutoff_never_shrinks() {
+        let mut app = App::new();
+
+        let mut bond_store = BondStore::new();
+        bond_store.bonds.push(vec![BondEntry { partner_tag: 2, bond_type: 0, r0: 0.002 }]);
+
+        let mut registry = AtomDataRegistry::new();
+        registry.register(bond_store);
+
+        let mut domain = mddem_core::Domain::new();
+        domain.ghost_cutoff = 0.05; // already larger than 0.002 × 2.5 = 0.005
+
+        app.add_resource(registry);
+        app.add_resource(domain);
+        app.add_resource(BondConfig { ghost_cutoff_multiplier: 2.5, ..BondConfig::default() });
+        app.add_resource(CommResource(Box::new(SingleProcessComm::new())));
+        app.add_update_system(extend_ghost_cutoff_for_bonds, ParticleSimScheduleSet::Force);
+        app.organize_systems();
+        app.run();
+
+        let domain = app.get_resource_ref::<mddem_core::Domain>().unwrap();
+        assert_eq!(domain.ghost_cutoff, 0.05, "must not shrink an already-larger cutoff");
     }
 
     #[test]

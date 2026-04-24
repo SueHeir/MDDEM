@@ -284,4 +284,127 @@ mod tests {
         assert_eq!(store.bonds.len(), 1);
         assert_eq!(store.bonds[0][0].partner_tag, 5);
     }
+
+    /// Simulates one dimension of the MPI exchange: pack atom + its bonds on
+    /// "rank A", swap-remove, ship the buffer, unpack onto "rank B". Verifies
+    /// that bond records travel with the migrating atom, the sender keeps its
+    /// remaining bonds in a consistent index layout, and no f64s are left over
+    /// in the buffer.
+    #[test]
+    fn migration_preserves_bonds_across_ranks() {
+        use crate::{Atom, AtomDataRegistry};
+
+        // ── Rank A: two atoms bonded to each other ────────────────────────
+        let mut atoms_a = Atom::new();
+        atoms_a.push_test_atom(10, [0.0, 0.0, 0.0], 0.5, 1.0);
+        atoms_a.push_test_atom(20, [1.0, 0.0, 0.0], 0.5, 1.0);
+        atoms_a.nlocal = 2;
+
+        let mut registry_a = AtomDataRegistry::new();
+        let mut store_a = BondStore::new();
+        store_a.bonds.push(vec![BondEntry { partner_tag: 20, bond_type: 1, r0: 1.0 }]);
+        store_a.bonds.push(vec![BondEntry { partner_tag: 10, bond_type: 1, r0: 1.0 }]);
+        registry_a.register(store_a);
+
+        // ── Migrate atom 0 (tag 10) to rank B ─────────────────────────────
+        let migrate_idx = 0;
+        let mut buf = Vec::new();
+        atoms_a.pack_exchange(migrate_idx, &mut buf);
+        registry_a.pack_all(migrate_idx, &mut buf);
+        atoms_a.swap_remove(migrate_idx);
+        registry_a.swap_remove_all(migrate_idx);
+        atoms_a.nlocal -= 1;
+
+        // Rank A now has only tag 20 (swapped into index 0), and its bond to
+        // tag 10 must still be present and at the same index.
+        assert_eq!(atoms_a.tag[0], 20);
+        let store_a_after = registry_a.expect::<BondStore>("rankA after");
+        assert_eq!(store_a_after.bonds.len(), 1);
+        assert_eq!(store_a_after.bonds[0][0].partner_tag, 10);
+        drop(store_a_after);
+
+        // ── Rank B: starts empty, receives the migrating atom ─────────────
+        let mut atoms_b = Atom::new();
+        atoms_b.nlocal = 0;
+        let mut registry_b = AtomDataRegistry::new();
+        registry_b.register(BondStore::new());
+
+        let mut pos = 0;
+        pos += atoms_b.unpack_atom(&buf[pos..], false);
+        pos += registry_b.unpack_all(&buf[pos..]);
+        atoms_b.nlocal = 1;
+
+        assert_eq!(pos, buf.len(), "must consume the entire exchange buffer");
+        assert_eq!(atoms_b.tag[0], 10);
+
+        let store_b = registry_b.expect::<BondStore>("rankB");
+        assert_eq!(store_b.bonds.len(), 1, "rank B has one atom's bond list");
+        assert_eq!(store_b.bonds[0].len(), 1, "migrated atom kept its bond");
+        assert_eq!(store_b.bonds[0][0].partner_tag, 20);
+        assert_eq!(store_b.bonds[0][0].bond_type, 1);
+        assert!((store_b.bonds[0][0].r0 - 1.0).abs() < 1e-15);
+    }
+
+    /// Same migration, but with multiple bonds on one atom plus a bond-free
+    /// passenger atom — exercises the per-atom bond-count prefix.
+    #[test]
+    fn migration_preserves_multi_bond_and_empty() {
+        use crate::{Atom, AtomDataRegistry};
+
+        let mut atoms = Atom::new();
+        atoms.push_test_atom(10, [0.0, 0.0, 0.0], 0.5, 1.0);
+        atoms.push_test_atom(20, [1.0, 0.0, 0.0], 0.5, 1.0);
+        atoms.push_test_atom(30, [2.0, 0.0, 0.0], 0.5, 1.0);
+        atoms.push_test_atom(40, [3.0, 0.0, 0.0], 0.5, 1.0);
+        atoms.nlocal = 4;
+
+        let mut registry = AtomDataRegistry::new();
+        let mut store = BondStore::new();
+        // Atom 0 (tag 10): bonded to 20 and 30
+        store.bonds.push(vec![
+            BondEntry { partner_tag: 20, bond_type: 1, r0: 1.0 },
+            BondEntry { partner_tag: 30, bond_type: 2, r0: 2.0 },
+        ]);
+        store.bonds.push(vec![BondEntry { partner_tag: 10, bond_type: 1, r0: 1.0 }]);
+        store.bonds.push(vec![BondEntry { partner_tag: 10, bond_type: 2, r0: 2.0 }]);
+        store.bonds.push(Vec::new()); // tag 40 is unbonded
+        registry.register(store);
+
+        // Migrate atoms 0 and 3 together (one with bonds, one without).
+        let mut buf = Vec::new();
+        for idx in [3usize, 0usize] {
+            // Iterate high→low so swap_remove is safe
+            atoms.pack_exchange(idx, &mut buf);
+            registry.pack_all(idx, &mut buf);
+            atoms.swap_remove(idx);
+            registry.swap_remove_all(idx);
+            atoms.nlocal -= 1;
+        }
+
+        // Decode on a fresh "rank B".
+        let mut atoms_b = Atom::new();
+        let mut registry_b = AtomDataRegistry::new();
+        registry_b.register(BondStore::new());
+        let mut pos = 0;
+        for _ in 0..2 {
+            pos += atoms_b.unpack_atom(&buf[pos..], false);
+            pos += registry_b.unpack_all(&buf[pos..]);
+            atoms_b.nlocal += 1;
+        }
+        assert_eq!(pos, buf.len());
+        assert_eq!(atoms_b.nlocal, 2);
+
+        // The receiving rank's bond lists must match the order of unpack.
+        let store_b = registry_b.expect::<BondStore>("rankB");
+        assert_eq!(store_b.bonds.len(), 2);
+        // First unpack was atom tag 40 (no bonds).
+        assert_eq!(atoms_b.tag[0], 40);
+        assert!(store_b.bonds[0].is_empty());
+        // Second unpack was atom tag 10 (two bonds).
+        assert_eq!(atoms_b.tag[1], 10);
+        assert_eq!(store_b.bonds[1].len(), 2);
+        let partners: Vec<u32> = store_b.bonds[1].iter().map(|b| b.partner_tag).collect();
+        assert!(partners.contains(&20));
+        assert!(partners.contains(&30));
+    }
 }
