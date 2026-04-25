@@ -29,23 +29,30 @@
 //! **Shear force** (history-dependent, Δs re-projected ⊥ to current n̂ each step):
 //!
 //! ```text
-//! F_t = −K_t · Δs  −  γ_t · v_t
+//! F_t  = K_t · Δs  +  γ_t · v_t
 //! ```
 //!
-//! Shear is evaluated at the contact mid-point; the resulting force produces a
-//! lever-arm torque on both particles (`τ = ±(L/2) n̂ × F_t`).
+//! applied as **+F_t on atom i (lower tag) and −F_t on atom j** — so when the
+//! higher-tag atom slides below the lower-tag atom (v_t · ẑ < 0), the lower-tag
+//! atom is pulled downward and the higher-tag atom is pulled back up,
+//! damping the relative transverse motion. Shear is evaluated at the
+//! bond mid-point; the resulting force produces a lever-arm torque on both
+//! particles (`τ_shear = (L/2) n̂ × F_t`).
 //!
 //! **Twist moment** (along n̂, Δθ component along n̂):
 //!
 //! ```text
-//! M_tor = −K_tor · (Δθ · n̂) n̂  −  γ_tor · (ω_rel · n̂) n̂
+//! M_tor  = K_tor · (Δθ · n̂) n̂  +  γ_tor · (ω_rel · n̂) n̂
 //! ```
 //!
 //! **Bending moment** (⊥ to n̂, Δθ with n̂ component removed):
 //!
 //! ```text
-//! M_bend = −K_bend · (Δθ − (Δθ · n̂) n̂)  −  γ_bend · (ω_rel − (ω_rel · n̂) n̂)
+//! M_bend = K_bend · (Δθ − (Δθ · n̂) n̂)  +  γ_bend · (ω_rel − (ω_rel · n̂) n̂)
 //! ```
+//!
+//! Both moments applied as **+M on atom i, −M on atom j**, which damps
+//! relative rotation (matches LIGGGHTS/Fortran BPM convention).
 //!
 //! ## Damping
 //!
@@ -814,10 +821,15 @@ pub fn bond_force(
                 h.delta_t[2] += v_t[2] * dt;
             }
             let ds = hist.history[i][h_idx].delta_t;
+            // Bond-internal shear force (same sign convention as Fortran:
+            // grows with +Δs and +v_t). Applied as +f_t on atom i (lower tag)
+            // and −f_t on atom j: when atom j slides below atom i, +Δs is
+            // negative, so f_t points downward on atom i (pulls it toward
+            // atom j) and upward on atom j (pulls it back into alignment).
             let f_t = [
-                -(k_t * ds[0] + gamma_t * v_t[0]),
-                -(k_t * ds[1] + gamma_t * v_t[1]),
-                -(k_t * ds[2] + gamma_t * v_t[2]),
+                k_t * ds[0] + gamma_t * v_t[0],
+                k_t * ds[1] + gamma_t * v_t[1],
+                k_t * ds[2] + gamma_t * v_t[2],
             ];
 
             // Rotation kinematics
@@ -838,15 +850,22 @@ pub fn bond_force(
             let dth_twist = [dth_n_s*nhat[0], dth_n_s*nhat[1], dth_n_s*nhat[2]];
             let dth_bend  = [dth[0] - dth_twist[0], dth[1] - dth_twist[1], dth[2] - dth_twist[2]];
 
+            // Bond-internal twist and bending moments (positive sign: the
+            // magnitudes grow with ω_rel and Δθ_rel). Applied as +m on atom i
+            // (lower tag) and −m on atom j (higher tag), matching the Fortran
+            // reference. This damps relative rotation: atom j receives a
+            // torque −γ·ω_rel that opposes its rotation, while atom i receives
+            // +γ·ω_rel that accelerates it toward the same rotation — in both
+            // cases reducing the *relative* angular velocity.
             let m_tor = [
-                -(k_tor * dth_twist[0] + gamma_tor * w_n[0]),
-                -(k_tor * dth_twist[1] + gamma_tor * w_n[1]),
-                -(k_tor * dth_twist[2] + gamma_tor * w_n[2]),
+                k_tor * dth_twist[0] + gamma_tor * w_n[0],
+                k_tor * dth_twist[1] + gamma_tor * w_n[1],
+                k_tor * dth_twist[2] + gamma_tor * w_n[2],
             ];
             let m_bend = [
-                -(k_bend * dth_bend[0] + gamma_bend * w_t[0]),
-                -(k_bend * dth_bend[1] + gamma_bend * w_t[1]),
-                -(k_bend * dth_bend[2] + gamma_bend * w_t[2]),
+                k_bend * dth_bend[0] + gamma_bend * w_t[0],
+                k_bend * dth_bend[1] + gamma_bend * w_t[1],
+                k_bend * dth_bend[2] + gamma_bend * w_t[2],
             ];
 
             // Beam-stress breakage.
@@ -1165,9 +1184,11 @@ mod tests {
 
         let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
         let dem = registry.expect::<DemAtom>("test");
-        // Expect moment predominantly along x, and opposing relative ω on i.
-        assert!(dem.torque[0][0] < 0.0, "twist on atom 0 opposes +ω_x, got {}", dem.torque[0][0]);
-        assert!(dem.torque[1][0] > 0.0, "twist on atom 1 is opposite of atom 0");
+        // Atom 1 has +ω_x; the bond opposes its relative rotation by applying
+        // a −x torque on atom 1 (slow it down) and a +x torque on atom 0
+        // (speed it up in the same direction → damps *relative* rotation).
+        assert!(dem.torque[1][0] < 0.0, "twist on atom 1 opposes +ω_x, got {}", dem.torque[1][0]);
+        assert!(dem.torque[0][0] > 0.0, "twist on atom 0 is opposite of atom 1");
         // y/z components should be ~0 for pure twist
         assert!(dem.torque[0][1].abs() < 1e-10);
         assert!(dem.torque[0][2].abs() < 1e-10);
@@ -1185,8 +1206,11 @@ mod tests {
 
         let registry = app.get_resource_ref::<AtomDataRegistry>().unwrap();
         let dem = registry.expect::<DemAtom>("test");
-        assert!(dem.torque[0][1] < 0.0, "bending on atom 0 opposes +ω_y, got {}", dem.torque[0][1]);
-        assert!(dem.torque[1][1] > 0.0, "bending on atom 1 is opposite of atom 0");
+        // Atom 1 has +ω_y (perpendicular to bond axis = bending).
+        // Atom 1 gets a −y torque opposing its rotation; atom 0 gets +y
+        // to rotate in sync, damping the relative rotation.
+        assert!(dem.torque[1][1] < 0.0, "bending on atom 1 opposes +ω_y, got {}", dem.torque[1][1]);
+        assert!(dem.torque[0][1] > 0.0, "bending on atom 0 is opposite of atom 1");
         // No twist moment for pure perpendicular ω
         assert!(dem.torque[0][0].abs() < 1e-10);
     }

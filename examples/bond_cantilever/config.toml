@@ -1,0 +1,99 @@
+# ── BPM cantilever test — validates [[pin]] as a hard constraint ────────────
+# 10-sphere bonded chain anchored at x = 0 by [[pin]]. The pinned atom's
+# position is captured at setup and restored every step, so bond forces on
+# its neighbour (tag 1) are evaluated against the exact initial position.
+#
+# The chain bends and oscillates under gravity (-z) and settles to a
+# steady-state deflection via critical bond damping. A broken pin would
+# make the bond force on tag 1 feed back unstably; with [[pin]] this
+# converges smoothly.
+#
+# Single-process run:
+#   cargo run --release --example bond_cantilever --no-default-features -- \
+#       examples/bond_cantilever/config.toml
+#
+# 2-rank MPI run:
+#   cargo build --release --example bond_cantilever
+#   mpiexec -n 2 target/release/examples/bond_cantilever \
+#       examples/bond_cantilever/config_mpi2.toml
+
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[domain]
+x_low  = -0.002
+x_high =  0.020
+y_low  = -0.005
+y_high =  0.005
+z_low  = -0.010
+z_high =  0.005
+boundary_x = "fixed"
+boundary_y = "fixed"
+boundary_z = "fixed"
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.005
+every = 1
+
+[dem]
+contact_model = "hertz"
+
+[[dem.materials]]
+name = "bpm"
+youngs_mod = 1.0e9
+poisson_ratio = 0.25
+restitution = 0.9
+friction = 0.0
+
+[[particles.insert]]
+source = "file"
+file = "examples/bond_cantilever/chain.csv"
+format = "csv"
+material = "bpm"
+radius = 0.001
+density = 2500.0
+columns = { x = 0, y = 1, z = 2 }
+
+[bonds]
+auto_bond = true
+bond_tolerance = 1.001
+bond_radius_ratio = 1.0
+ghost_cutoff_multiplier = 2.5
+youngs_modulus = 1.0e9
+shear_modulus  = 4.0e8
+beta_normal  = 1.0
+beta_shear   = 1.0
+beta_twist   = 1.0
+beta_bending = 1.0
+
+# Gravity in -z: chain bends downward under its own weight.
+[gravity]
+gx = 0.0
+gy = 0.0
+gz = -9.81
+
+# The anchor — left end of the chain at x = 0.
+[[group]]
+name = "anchor"
+region = { type = "block", min = [-0.0011, -5e-4, -5e-4], max = [0.0011, 5e-4, 5e-4] }
+dynamic = false
+
+# [[pin]] is the hard constraint: pos, vel, force, AND (via DemAtom)
+# omega, torque, ang_mom are all restored every step at PreInitialIntegration
+# and PostForce. Bond force on the anchor's neighbour (tag 1) sees the
+# anchor at its exact starting position with zero rotation.
+[[pin]]
+group = "anchor"
+
+[output]
+dir = "examples/bond_cantilever"
+
+[run]
+# 100 000 steps · dt = 1e-7 = 10 ms, enough for ~2–3 flexural periods plus
+# settling to static deflection under critical damping.
+steps = 100000
+thermo = 2000
+dt = 1e-7

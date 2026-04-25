@@ -1,0 +1,71 @@
+# ── BPM MPI bond-migration test — 2-rank MPI configuration ──────────────────
+# Identical to config.toml except the domain is split across 2 MPI ranks in x.
+# Rank 0 owns x ∈ [0, 0.005], rank 1 owns x ∈ [0.005, 0.01]. The 3-atom chain
+# starts straddling the rank-boundary plane (x = 0.005) and drifts through
+# the periodic domain, so every atom crosses the boundary repeatedly.
+#
+# Run:
+#   cargo build --release --example bond_mpi_drift
+#   mpiexec -n 2 target/release/examples/bond_mpi_drift \
+#       examples/bond_mpi_drift/config_mpi2.toml
+
+[comm]
+processors_x = 2
+processors_y = 1
+processors_z = 1
+
+[domain]
+x_low  = 0.0
+x_high = 0.01
+y_low  = -0.005
+y_high =  0.005
+z_low  = -0.005
+z_high =  0.005
+boundary_x = "periodic"
+boundary_y = "fixed"
+boundary_z = "fixed"
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.005
+every = 1
+
+[dem]
+contact_model = "hertz"
+
+[[dem.materials]]
+name = "bpm"
+youngs_mod = 1.0e9
+poisson_ratio = 0.25
+restitution = 0.9
+friction = 0.0
+
+[[particles.insert]]
+source = "file"
+file = "examples/bond_mpi_drift/cluster.csv"
+format = "csv"
+material = "bpm"
+radius = 0.001
+density = 2500.0
+velocity_x = 1.0
+columns = { x = 0, y = 1, z = 2 }
+
+[bonds]
+auto_bond = true
+bond_tolerance = 1.001
+bond_radius_ratio = 1.0
+ghost_cutoff_multiplier = 2.5
+youngs_modulus = 1.0e9
+shear_modulus  = 4.0e8
+beta_normal  = 1.0
+beta_shear   = 1.0
+beta_twist   = 1.0
+beta_bending = 1.0
+
+[output]
+dir = "examples/bond_mpi_drift"
+
+[run]
+steps = 200000
+thermo = 2000
+dt = 1e-7

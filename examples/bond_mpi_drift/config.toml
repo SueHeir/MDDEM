@@ -1,0 +1,87 @@
+# ── BPM MPI bond-migration test ─────────────────────────────────────────────
+# Small bonded chain drifting through a periodic domain. Verifies that bonds
+# survive migration across rank boundaries — at each step `bond_missing`
+# (from DemBond thermo) must be 0, and `bond_count` must equal the total
+# number of bonds (2 for this 3-atom chain).
+#
+# Single-process:
+#   cargo run --release --example bond_mpi_drift --no-default-features -- \
+#       examples/bond_mpi_drift/config.toml
+#
+# MPI (2 ranks along x):
+#   cargo build --release --example bond_mpi_drift
+#   mpiexec -n 2 target/release/examples/bond_mpi_drift \
+#       examples/bond_mpi_drift/config.toml
+
+[comm]
+# Single-process sanity configuration. For an MPI run across a rank boundary,
+# use config_mpi2.toml which sets processors_x = 2.
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[domain]
+x_low  = 0.0
+x_high = 0.01
+y_low  = -0.005
+y_high =  0.005
+z_low  = -0.005
+z_high =  0.005
+boundary_x = "periodic"
+boundary_y = "fixed"
+boundary_z = "fixed"
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.005
+every = 1
+
+[dem]
+contact_model = "hertz"
+
+[[dem.materials]]
+name = "bpm"
+youngs_mod = 1.0e9
+poisson_ratio = 0.25
+restitution = 0.9
+friction = 0.0
+
+# 3 atoms loaded from cluster.csv; they all get vx = 1 m/s → drift through
+# the 10 mm periodic domain once every 10 ms (~100 000 steps at dt = 1e-7).
+# Combined with the 2-rank split in x, each atom crosses a rank boundary
+# every 5 ms / ~50 000 steps.
+[[particles.insert]]
+source = "file"
+file = "examples/bond_mpi_drift/cluster.csv"
+format = "csv"
+material = "bpm"
+radius = 0.001
+density = 2500.0
+velocity_x = 1.0
+columns = { x = 0, y = 1, z = 2 }
+
+# ── Bond parameters ──────────────────────────────────────────────────────────
+# Material-mode beam theory: E = 1 GPa, G = 400 MPa.
+# ghost_cutoff_multiplier = 2.5 (default) → ghost skin covers 2× bond length
+# for 1-3 exclusion + 25 % stretch margin across rank boundaries.
+[bonds]
+auto_bond = true
+bond_tolerance = 1.001
+bond_radius_ratio = 1.0
+ghost_cutoff_multiplier = 2.5
+youngs_modulus = 1.0e9
+shear_modulus  = 4.0e8
+beta_normal  = 1.0
+beta_shear   = 1.0
+beta_twist   = 1.0
+beta_bending = 1.0
+
+[output]
+dir = "examples/bond_mpi_drift"
+
+[run]
+# 200 000 steps · dt = 1e-7 s = 20 ms → chain laps the periodic domain twice
+# (each lap = 4 rank crossings for the straddled chain).
+steps = 200000
+thermo = 2000
+dt = 1e-7

@@ -58,6 +58,14 @@ path = "examples/bench_sphere_haff_cooling/main.rs"
 name = "bond_fiber_tensile"
 path = "examples/bond_fiber_tensile/main.rs"
 
+[[example]]
+name = "bond_mpi_drift"
+path = "examples/bond_mpi_drift/main.rs"
+
+[[example]]
+name = "bond_cantilever"
+path = "examples/bond_cantilever/main.rs"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
