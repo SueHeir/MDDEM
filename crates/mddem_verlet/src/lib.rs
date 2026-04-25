@@ -26,6 +26,11 @@ use sim_scheduler::prelude::*;
 
 use mddem_core::{Atom, ParticleSimScheduleSet};
 
+#[cfg(feature = "gpu")]
+pub mod gpu;
+#[cfg(feature = "gpu")]
+pub use gpu::*;
+
 /// Registers initial and final integration systems for translational Velocity Verlet.
 ///
 /// When `stage` is `None` (the default), systems run every stage.

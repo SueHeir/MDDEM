@@ -1,0 +1,40 @@
+# GPU smoke test: small enough to finish quickly, large enough to exercise
+# block-sized kernel launches. Single MPI rank.
+
+[comm]
+processors_x = 1
+processors_y = 1
+processors_z = 1
+
+[neighbor]
+skin_fraction = 1.1
+bin_size = 0.005
+
+[domain]
+x_low = 0.0
+x_high = 0.025
+y_low = 0.0
+y_high = 0.025
+z_low = 0.0
+z_high = 0.025
+boundary_x = "periodic"
+boundary_y = "periodic"
+boundary_z = "periodic"
+
+[[dem.materials]]
+name = "glass"
+youngs_mod = 8.7e9
+poisson_ratio = 0.3
+restitution = 0.95
+friction = 0.4
+
+[[particles.insert]]
+material = "glass"
+count = 500
+radius = 0.001
+density = 2500.0
+velocity = 0.5
+
+[run]
+thermo = 50
+steps = 200

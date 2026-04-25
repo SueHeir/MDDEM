@@ -21,10 +21,16 @@ repository = "https://github.com/SueHeir/MDDEM"
 [features]
 default = ["mpi_backend"]
 mpi_backend = ["mddem/mpi_backend", "dep:libffi-sys"]
+gpu = ["mddem/gpu"]
 
 [[example]]
 name = "granular_basic"
 path = "examples/granular_basic/main.rs"
+
+[[example]]
+name = "granular_basic_gpu"
+path = "examples/granular_basic_gpu/main.rs"
+required-features = ["gpu"]
 
 [[example]]
 name = "granular_gas_benchmark"

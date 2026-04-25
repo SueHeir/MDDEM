@@ -9,9 +9,14 @@ description = "Velocity Verlet translational integration for MDDEM simulations"
 keywords = ["verlet", "integration", "dem", "simulation"]
 categories = ["simulation", "science"]
 
+[features]
+default = []
+gpu = ["dep:mddem_gpu"]
+
 [dependencies]
 mddem_core = { path = "../mddem_core", version = "0.1.3", default-features = false }
 sim_app = { path = "../sim_app", version = "0.1.3" }
 sim_scheduler = { path = "../sim_scheduler", version = "0.1.3" }
+mddem_gpu = { path = "../mddem_gpu", version = "0.1.3", optional = true }
 
 [dev-dependencies]

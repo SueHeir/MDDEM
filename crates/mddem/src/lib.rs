@@ -261,6 +261,49 @@ impl PluginGroup for LJDefaultPlugins {
     }
 }
 
+/// GPU plugin group: replaces the GPU-eligible CPU systems with their cubecl
+/// equivalents. Add **after** the CPU plugin groups so the CPU systems exist
+/// to be removed by the per-domain GPU plugins.
+///
+/// # Usage
+/// ```rust,ignore
+/// use mddem::prelude::*;
+///
+/// let mut app = App::new();
+/// app.add_plugins(CorePlugins)
+///    .add_plugins(GranularDefaultPlugins)
+///    .add_plugins(GpuDefaultPlugins::new(BackendKind::Wgpu));
+/// app.start();
+/// ```
+///
+/// On consumer GPUs (Metal / Vulkan / DX12) use `BackendKind::Wgpu` (f32 only).
+/// For native f64 on machines without CUDA, use `BackendKind::Cpu` (cubecl
+/// MLIR runtime).
+#[cfg(feature = "gpu")]
+pub struct GpuDefaultPlugins {
+    pub backend: mddem_gpu::BackendKind,
+}
+
+#[cfg(feature = "gpu")]
+impl GpuDefaultPlugins {
+    pub fn new(backend: mddem_gpu::BackendKind) -> Self {
+        Self { backend }
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl PluginGroup for GpuDefaultPlugins {
+    fn build(self) -> PluginGroupBuilder {
+        PluginGroupBuilder::start::<Self>()
+            .add(mddem_gpu::GpuRuntimePlugin::new(self.backend))
+            .add(mddem_core::AtomGpuPlugin)
+            .add(dem_atom::DemAtomGpuPlugin)
+            .add(mddem_core::ZeroForcesGpuPlugin)
+            .add(mddem_verlet::VelocityVerletGpuPlugin)
+            .add(dem_granular::RotationalDynamicsGpuPlugin)
+    }
+}
+
 /// The MDDEM prelude — import everything you need for a typical simulation.
 ///
 /// ```rust,ignore
@@ -309,6 +352,10 @@ impl PluginGroup for LJDefaultPlugins {
 pub mod prelude {
     // Plugin groups defined in this crate
     pub use crate::{CorePlugins, LJDefaultPlugins};
+    #[cfg(feature = "gpu")]
+    pub use crate::GpuDefaultPlugins;
+    #[cfg(feature = "gpu")]
+    pub use mddem_gpu::{BackendKind, GpuRuntime, GpuRuntimePlugin, Precision};
 
     // DEM plugins and config types
     pub use dem_atom::{DemAtomPlugin, DemConfig, MaterialTable};
@@ -331,7 +378,7 @@ pub mod prelude {
 
     // Shared infrastructure plugins
     pub use mddem_deform::{DeformConfig, DeformPlugin, DeformState};
-    pub use mddem_fixes::{AddForceDef, FixesPlugin, FixesRegistry, FreezeDef, GravityConfig, GravityPlugin, MoveLinearDef, SetForceDef, ViscousDef};
+    pub use mddem_fixes::{AddForceDef, FixesPlugin, FixesRegistry, FreezeDef, GravityConfig, GravityPlugin, MoveLinearDef, PinDef, PinState, SetForceDef, ViscousDef};
     pub use mddem_velocity_distribution::VelocityDistributionPlugin;
 
     // Derive macros

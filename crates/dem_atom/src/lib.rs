@@ -44,9 +44,13 @@
 
 pub mod insert;
 pub mod radius;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 
 pub use insert::*;
 pub use radius::*;
+#[cfg(feature = "gpu")]
+pub use gpu::*;
 
 use std::f64::consts::PI;
 

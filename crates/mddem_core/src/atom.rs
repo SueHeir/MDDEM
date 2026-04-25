@@ -526,7 +526,7 @@ pub fn remove_ghost_atoms(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistr
     atoms.nghost = 0;
 }
 
-fn zero_all_forces(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) {
+pub fn zero_all_forces(mut atoms: ResMut<Atom>, registry: Res<AtomDataRegistry>) {
     let n = atoms.len();
     atoms.force[..n].fill([0.0; 3]);
     registry.zero_all(n);

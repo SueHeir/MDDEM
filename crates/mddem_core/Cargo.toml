@@ -12,12 +12,14 @@ categories = ["simulation", "science"]
 [features]
 default = ["mpi_backend"]
 mpi_backend = ["sim_mpi/mpi_backend"]
+gpu = ["dep:mddem_gpu"]
 
 [dependencies]
 sim_scheduler = { path = "../sim_scheduler", version = "0.1.3" }
 sim_app = { path = "../sim_app", version = "0.1.3" }
 sim_mpi = { path = "../sim_mpi", version = "0.1.3", default-features = false }
 mddem_derive = { path = "../mddem_derive", version = "0.1.3" }
+mddem_gpu = { path = "../mddem_gpu", version = "0.1.3", optional = true }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 rand = "0.9"

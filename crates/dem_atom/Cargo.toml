@@ -9,11 +9,16 @@ description = "Per-atom DEM data (radius, density) with pack/unpack and Material
 keywords = ["dem", "atom", "material", "simulation"]
 categories = ["simulation", "science"]
 
+[features]
+default = []
+gpu = ["dep:mddem_gpu"]
+
 [dependencies]
 mddem_core = { path = "../mddem_core", version = "0.1.3", default-features = false }
 sim_app = { path = "../sim_app", version = "0.1.3" }
 sim_scheduler = { path = "../sim_scheduler", version = "0.1.3" }
 mddem_derive = { path = "../mddem_derive" }
+mddem_gpu = { path = "../mddem_gpu", version = "0.1.3", optional = true }
 serde = { version = "1", features = ["derive"] }
 rand = "0.9"
 rand_distr = "0.5.1"

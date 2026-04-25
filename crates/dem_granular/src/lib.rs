@@ -70,11 +70,15 @@ pub mod granular_temp;
 pub mod normal;
 pub mod rotational;
 pub mod tangential;
+#[cfg(feature = "gpu")]
+pub mod rotational_gpu;
 
 pub use granular_temp::GranularTempPlugin;
 pub use normal::HertzNormalForcePlugin;
 pub use rotational::RotationalDynamicsPlugin;
 pub use tangential::MindlinTangentialForcePlugin;
+#[cfg(feature = "gpu")]
+pub use rotational_gpu::*;
 
 pub mod contact;
 

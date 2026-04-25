@@ -9,12 +9,17 @@ description = "Granular physics for MDDEM: Hertz normal contact, Mindlin tangent
 keywords = ["dem", "hertz", "granular", "contact"]
 categories = ["simulation", "science"]
 
+[features]
+default = []
+gpu = ["dep:mddem_gpu"]
+
 [dependencies]
 mddem_core = { path = "../mddem_core", version = "0.1.3", default-features = false }
 sim_app = { path = "../sim_app", version = "0.1.3" }
 sim_scheduler = { path = "../sim_scheduler", version = "0.1.3" }
 dem_atom = { path = "../dem_atom", version = "0.1.3" }
 mddem_verlet = { path = "../mddem_verlet", version = "0.1.3" }
+mddem_gpu = { path = "../mddem_gpu", version = "0.1.3", optional = true }
 
 [dev-dependencies]
 mddem_test_utils = { path = "../mddem_test_utils", version = "0.1.3" }

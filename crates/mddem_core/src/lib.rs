@@ -17,6 +17,8 @@ pub mod run;
 pub mod schedule;
 pub mod neighbor;
 pub mod virial;
+#[cfg(feature = "gpu")]
+pub mod atom_gpu;
 
 /// Internal state controlling the communication/rebuild path each timestep.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -42,6 +44,8 @@ pub use run::*;
 pub use schedule::*;
 pub use neighbor::*;
 pub use virial::*;
+#[cfg(feature = "gpu")]
+pub use atom_gpu::*;
 
 // Re-export toml so downstream users can build Config tables programmatically.
 pub use toml;
