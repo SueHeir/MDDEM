@@ -22,7 +22,7 @@ Both tiers can be mixed freely. The [hopper](examples/hopper/) example uses TOML
 
 ## Motivation
 
-MDDEM began as a Rust reimplementation of LAMMPS communication patterns, motivated by a desire to **explore whether a scheduler with dependency injection could work for particle simulations**. 
+MDDEM began as a Rust reimplementation of LAMMPS communication patterns, motivated by a desire to **explore whether a scheduler with dependency injection could work for particle simulations**.  This dependency injection framework now live in [grass](https://github.com/elizabeth-suehr/grass), which MDDEM consumes as path dependencies.
 
 
 ## Design Notes
