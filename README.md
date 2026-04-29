@@ -11,7 +11,7 @@
 
 MDDEM is a particle simulation engine written in Rust, supporting both **Discrete Element Method (DEM)** for granular materials and potentially **Molecular Dynamics (MD)** (still learning this side).
 
-The framework is built around **composability**. A dependency-injection scheduler inspired by [Bevy](https://github.com/bevyengine/bevy) and a plugin system let you assemble simulations from independent, reusable pieces. Physics models, integrators, neighbor lists, and output formats are all plugins. Systems declare their resource dependencies as function arguments; the scheduler injects them automatically and resolves execution order.
+The framework is built around **composability**. A dependency-injection scheduler inspired by [Bevy](https://github.com/bevyengine/bevy) and a plugin system let you assemble simulations from independent, reusable pieces — that App / Plugin / Scheduler / IO substrate now lives in a sibling workspace, [grass](https://github.com/elizabeth-suehr/grass), which MDDEM consumes as path dependencies and shares with other downstream physics codebases. Physics models, integrators, neighbor lists, and output formats are all plugins. Systems declare their resource dependencies as function arguments; the scheduler injects them automatically and resolves execution order.
 
 Configuration follows a **two-tier** approach:
 
