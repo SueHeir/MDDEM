@@ -13,7 +13,6 @@ pub mod group;
 pub mod input;
 pub mod pair_coeff;
 pub mod region;
-pub mod run;
 pub mod schedule;
 pub mod neighbor;
 pub mod virial;
@@ -38,7 +37,17 @@ pub use group::{group_includes, Group, GroupDef, GroupPlugin, GroupRegistry};
 pub use input::{load_toml, print_banner, Config, Input, InputPlugin};
 pub use pair_coeff::{MixingRule, PairCoeffTable};
 pub use region::{Axis, Region, SurfaceResult};
-pub use run::*;
+
+// Multi-stage run machinery now lives in grass_io. Re-exported so
+// existing MDDEM downstream code keeps writing `mddem_core::RunPlugin`
+// / `Res<RunConfig>` etc. unchanged.
+pub use grass_io::{
+    set_stage_name, run_read_input, update_cycle, validate_stages, FirstStageOnlyConfigs,
+    RunConfig, RunPlugin, RunSchedule, RunState, StageConfig, StageOverrides, RUN_NAMESPACE,
+};
+// `deep_merge` is also re-exported in case downstream code uses it.
+pub use grass_io::deep_merge;
+
 pub use schedule::*;
 pub use neighbor::*;
 pub use virial::*;

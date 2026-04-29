@@ -11,7 +11,7 @@ use rand_distr::{Distribution, Normal};
 use serde::Deserialize;
 
 use mddem_core::{
-    Atom, AtomDataRegistry, CommResource, CommState, Config, Domain, Region, RunConfig, RunState,
+    Atom, AtomDataRegistry, CommResource, CommState, Domain, Region, RunConfig, RunState,
     ParticleSimScheduleSet, ScheduleSetupSet, StageOverrides,
 };
 use grass_scheduler::prelude::CurrentState;
@@ -434,7 +434,7 @@ pub fn dem_insert_atoms(
         && run_config.current_stage(index).overrides.contains_key("particles");
 
     let particles_config: ParticlesConfig = if has_stage_particles || index == 0 {
-        Config::load_stage_aware(&stage_overrides, "particles")
+        stage_overrides.section("particles")
     } else {
         ParticlesConfig::default()
     };

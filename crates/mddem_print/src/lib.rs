@@ -552,7 +552,11 @@ pub fn setup_thermo(
     if index >= config.num_stages() {
         return;
     }
-    thermo.interval = config.current_stage(index).thermo;
+    thermo.interval = config.current_stage(index)
+        .overrides.get("thermo")
+        .and_then(|v| v.as_integer())
+        .map(|i| i as usize)
+        .unwrap_or(100);
     if let Some(ref mut v) = virial {
         v.set_interval(thermo.interval);
     }
@@ -770,7 +774,10 @@ pub fn print_vtp(
     let count = run_state.total_cycle;
     let rank = comm.rank();
     let stage = run_config.current_stage(scheduler_manager.index);
-    let interval = stage.vtp_interval.unwrap_or(vtp_config.interval);
+    let interval = stage.overrides.get("vtp_interval")
+        .and_then(|v| v.as_integer())
+        .map(|i| i as usize)
+        .unwrap_or(vtp_config.interval);
     if interval == 0 || !count.is_multiple_of(interval) {
         return;
     }
@@ -875,7 +882,10 @@ pub fn dump_atoms(
     dump_registry: Res<DumpRegistry>,
 ) {
     let stage = run_config.current_stage(scheduler_manager.index);
-    let interval = stage.dump_interval.unwrap_or(dump_config.interval);
+    let interval = stage.overrides.get("dump_interval")
+        .and_then(|v| v.as_integer())
+        .map(|i| i as usize)
+        .unwrap_or(dump_config.interval);
     if interval == 0 {
         return;
     }
@@ -1014,7 +1024,10 @@ pub fn write_restart(
     scheduler_manager: Res<SchedulerManager>,
 ) {
     let stage = run_config.current_stage(scheduler_manager.index);
-    let interval = stage.restart_interval.unwrap_or(restart_config.interval);
+    let interval = stage.overrides.get("restart_interval")
+        .and_then(|v| v.as_integer())
+        .map(|i| i as usize)
+        .unwrap_or(restart_config.interval);
     if interval == 0 {
         return;
     }

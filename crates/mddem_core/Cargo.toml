@@ -18,6 +18,7 @@ grass_scheduler = { path = "../../../grass/crates/grass_scheduler" }
 grass_app = { path = "../../../grass/crates/grass_app" }
 grass_mpi = { path = "../../../grass/crates/grass_mpi", default-features = false }
 grass_derive = { path = "../../../grass/crates/grass_derive" }
+grass_io = { path = "../../../grass/crates/grass_io" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 rand = "0.9"

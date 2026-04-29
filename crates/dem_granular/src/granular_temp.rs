@@ -50,7 +50,11 @@ pub fn print_granular_temperature(
     input: Res<Input>,
 ) {
     let index = scheduler_manager.index;
-    let thermo_interval = run_config.current_stage(index).thermo;
+    let thermo_interval = run_config.current_stage(index)
+        .overrides.get("thermo")
+        .and_then(|v| v.as_integer())
+        .map(|i| i as usize)
+        .unwrap_or(100);
     if !run_state.total_cycle.is_multiple_of(thermo_interval) {
         return;
     }

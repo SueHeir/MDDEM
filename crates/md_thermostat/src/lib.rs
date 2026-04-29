@@ -199,7 +199,7 @@ pub fn setup_nose_hoover(
     mut nh: ResMut<NoseHooverState>,
     stage_overrides: Res<StageOverrides>,
 ) {
-    let config: ThermostatConfig = Config::load_stage_aware(&stage_overrides, "thermostat");
+    let config: ThermostatConfig = stage_overrides.section("thermostat");
 
     if let Some(ref gname) = config.group {
         groups.validate_name(gname, "Nose-Hoover thermostat");
@@ -484,7 +484,7 @@ pub fn setup_langevin(
     mut state: ResMut<LangevinState>,
     stage_overrides: Res<StageOverrides>,
 ) {
-    let config: LangevinConfig = Config::load_stage_aware(&stage_overrides, "langevin");
+    let config: LangevinConfig = stage_overrides.section("langevin");
 
     if let Some(ref gname) = config.group {
         groups.validate_name(gname, "Langevin thermostat");

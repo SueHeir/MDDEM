@@ -273,7 +273,7 @@ fn setup_deform(
     stage_overrides: Res<StageOverrides>,
 ) {
     // Re-read config from the merged (global + current stage) config table.
-    let config: DeformConfig = Config::load_stage_aware(&stage_overrides, "deform");
+    let config: DeformConfig = stage_overrides.section("deform");
 
     // Parse axis definitions fresh from this stage's config.
     state.axes = [

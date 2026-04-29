@@ -51,18 +51,10 @@ pub enum ParticleSimScheduleSet {
     PostFinalIntegration,
 }
 
-/// Execution phase during one-time setup (before the run loop begins).
-///
-/// Setup systems run once per stage in order: `PreSetup` → `Setup` → `PostSetup`.
-#[derive(Debug, Clone, Copy, grass_derive::ScheduleSet)]
-pub enum ScheduleSetupSet {
-    /// Runs before the main setup phase (e.g., early resource initialization).
-    PreSetup,
-    /// Main setup phase (e.g., creating neighbor lists, reading restart files).
-    Setup,
-    /// Runs after setup (e.g., initial force computation, diagnostics).
-    PostSetup,
-}
+// `ScheduleSetupSet` lives in `grass_app` since it's a generic 3-phase
+// setup ordering enum. Re-exported from `mddem_core::lib` so existing
+// consumers keep working unchanged.
+pub use grass_app::ScheduleSetupSet;
 
 /// Returns Verlet-specific schedule warnings for the given phase names.
 ///
