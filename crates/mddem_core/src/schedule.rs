@@ -2,7 +2,7 @@
 //!
 //! These enums define the execution order for a velocity-Verlet integration loop.
 //! Other domains (e.g. CFD) can define their own schedule phases by implementing
-//! [`ScheduleSet`](sim_scheduler::ScheduleSet) on a custom enum (or using
+//! [`ScheduleSet`](grass_scheduler::ScheduleSet) on a custom enum (or using
 //! `#[derive(ScheduleSet)]`).
 
 /// Execution phase within each timestep (the run loop).
@@ -19,7 +19,7 @@
 /// | 6–7   | `Pre/Neighbor`           | Neighbor-list rebuild                |
 /// | 8–10  | `Pre/Force/PostForce`    | Force computation                    |
 /// | 11–13 | `Pre/Final/PostFinalIntegration` | Second half-step velocity update |
-#[derive(Debug, Clone, Copy, mddem_derive::ScheduleSet)]
+#[derive(Debug, Clone, Copy, grass_derive::ScheduleSet)]
 pub enum ParticleSimScheduleSet {
     /// Per-step bookkeeping (e.g., incrementing timestep counters).
     Setup,
@@ -54,7 +54,7 @@ pub enum ParticleSimScheduleSet {
 /// Execution phase during one-time setup (before the run loop begins).
 ///
 /// Setup systems run once per stage in order: `PreSetup` → `Setup` → `PostSetup`.
-#[derive(Debug, Clone, Copy, mddem_derive::ScheduleSet)]
+#[derive(Debug, Clone, Copy, grass_derive::ScheduleSet)]
 pub enum ScheduleSetupSet {
     /// Runs before the main setup phase (e.g., early resource initialization).
     PreSetup,

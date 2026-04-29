@@ -117,13 +117,13 @@ checksum = "ef8ae57c4978a2acd8b869ce6b9ca1dfe817bff704c220209fdef2c0b75a01b9"
 name = "dem_atom"
 version = "0.1.3"
 dependencies = [
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "mddem_derive",
  "rand",
  "rand_distr",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
@@ -131,12 +131,12 @@ name = "dem_bond"
 version = "0.1.3"
 dependencies = [
  "dem_atom",
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "mddem_print",
  "mddem_test_utils",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
@@ -144,13 +144,13 @@ name = "dem_clump"
 version = "0.1.3"
 dependencies = [
  "dem_atom",
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "mddem_derive",
  "mddem_test_utils",
  "rand",
  "serde",
- "sim_app",
- "sim_scheduler",
  "toml",
 ]
 
@@ -159,13 +159,13 @@ name = "dem_contact_analysis"
 version = "0.1.3"
 dependencies = [
  "dem_atom",
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "mddem_derive",
  "mddem_print",
  "mddem_test_utils",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
@@ -173,22 +173,22 @@ name = "dem_granular"
 version = "0.1.3"
 dependencies = [
  "dem_atom",
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "mddem_test_utils",
  "mddem_verlet",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
 name = "dem_measure_plane"
 version = "0.1.3"
 dependencies = [
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "mddem_print",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
@@ -197,12 +197,12 @@ version = "0.1.3"
 dependencies = [
  "dem_atom",
  "dem_wall",
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "mddem_derive",
  "mddem_test_utils",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
@@ -210,11 +210,11 @@ name = "dem_wall"
 version = "0.1.3"
 dependencies = [
  "dem_atom",
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "mddem_test_utils",
  "serde",
- "sim_app",
- "sim_scheduler",
  "toml",
 ]
 
@@ -259,6 +259,38 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
+name = "grass_app"
+version = "0.1.0"
+dependencies = [
+ "downcast-rs",
+ "grass_scheduler",
+]
+
+[[package]]
+name = "grass_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "grass_mpi"
+version = "0.1.0"
+dependencies = [
+ "libffi-sys",
+ "mpi",
+]
+
+[[package]]
+name = "grass_scheduler"
+version = "0.1.0"
+dependencies = [
+ "grass_derive",
+]
 
 [[package]]
 name = "hashbrown"
@@ -348,67 +380,67 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 name = "md_lattice"
 version = "0.1.3"
 dependencies = [
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "rand",
  "rand_distr",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
 name = "md_lj"
 version = "0.1.3"
 dependencies = [
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
 name = "md_measure"
 version = "0.1.3"
 dependencies = [
+ "grass_app",
+ "grass_scheduler",
  "md_lj",
  "mddem_core",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
 name = "md_msd"
 version = "0.1.3"
 dependencies = [
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
 name = "md_thermostat"
 version = "0.1.3"
 dependencies = [
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "mddem_test_utils",
  "mddem_verlet",
  "rand",
  "rand_chacha",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
 name = "md_type_rdf"
 version = "0.1.3"
 dependencies = [
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
@@ -423,6 +455,9 @@ dependencies = [
  "dem_measure_plane",
  "dem_thermal",
  "dem_wall",
+ "grass_app",
+ "grass_derive",
+ "grass_scheduler",
  "md_lattice",
  "md_lj",
  "md_measure",
@@ -436,8 +471,6 @@ dependencies = [
  "mddem_print",
  "mddem_velocity_distribution",
  "mddem_verlet",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
@@ -446,6 +479,7 @@ version = "0.1.3"
 dependencies = [
  "dem_clump",
  "dem_measure_plane",
+ "grass_scheduler",
  "libffi-sys",
  "md_msd",
  "md_type_rdf",
@@ -454,19 +488,18 @@ dependencies = [
  "mddem_derive",
  "mddem_fire",
  "mddem_velocity_distribution",
- "sim_scheduler",
 ]
 
 [[package]]
 name = "mddem_core"
 version = "0.1.3"
 dependencies = [
- "mddem_derive",
+ "grass_app",
+ "grass_derive",
+ "grass_mpi",
+ "grass_scheduler",
  "rand",
  "serde",
- "sim_app",
- "sim_mpi",
- "sim_scheduler",
  "toml",
 ]
 
@@ -474,11 +507,11 @@ dependencies = [
 name = "mddem_deform"
 version = "0.1.3"
 dependencies = [
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "mddem_test_utils",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
@@ -494,10 +527,10 @@ dependencies = [
 name = "mddem_fire"
 version = "0.1.3"
 dependencies = [
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "serde",
- "sim_app",
- "sim_scheduler",
  "toml",
 ]
 
@@ -505,12 +538,13 @@ dependencies = [
 name = "mddem_fixes"
 version = "0.1.3"
 dependencies = [
+ "dem_atom",
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "mddem_print",
  "mddem_test_utils",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
@@ -518,11 +552,11 @@ name = "mddem_print"
 version = "0.1.3"
 dependencies = [
  "bincode",
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "serde",
  "serde_json",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
@@ -537,19 +571,19 @@ dependencies = [
 name = "mddem_velocity_distribution"
 version = "0.1.3"
 dependencies = [
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
  "serde",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
 name = "mddem_verlet"
 version = "0.1.3"
 dependencies = [
+ "grass_app",
+ "grass_scheduler",
  "mddem_core",
- "sim_app",
- "sim_scheduler",
 ]
 
 [[package]]
@@ -814,26 +848,6 @@ name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
-
-[[package]]
-name = "sim_app"
-version = "0.1.3"
-dependencies = [
- "downcast-rs",
- "sim_scheduler",
-]
-
-[[package]]
-name = "sim_mpi"
-version = "0.1.3"
-dependencies = [
- "libffi-sys",
- "mpi",
-]
-
-[[package]]
-name = "sim_scheduler"
-version = "0.1.3"
 
 [[package]]
 name = "smallvec"

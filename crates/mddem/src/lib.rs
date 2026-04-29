@@ -41,7 +41,7 @@
 //!
 //! # Architecture
 //!
-//! Every feature is implemented as a [`Plugin`](sim_app::Plugin) that
+//! Every feature is implemented as a [`Plugin`](grass_app::Plugin) that
 //! registers systems into a schedule. Plugins are grouped into **plugin groups**
 //! for convenience:
 //!
@@ -59,13 +59,13 @@
 //!
 //! | Crate | Description |
 //! |---|---|
-//! | [`sim_app`] | Application framework: [`App`](sim_app::App), [`Plugin`](sim_app::Plugin) trait, ECS-style resources |
+//! | [`grass_app`] | Application framework: [`App`](grass_app::App), [`Plugin`](grass_app::Plugin) trait, ECS-style resources |
 //! | [`mddem_core`] | Core simulation types: [`Atom`](mddem_core::Atom), [`Config`](mddem_core::Config), domain, communication, regions |
-//! | [`sim_scheduler`] | System scheduler with [`ScheduleSet`](sim_scheduler::ScheduleSet) ordering |
+//! | [`grass_scheduler`] | System scheduler with [`ScheduleSet`](grass_scheduler::ScheduleSet) ordering |
 //! | `neighbor` (in `mddem_core`) | Bin-based neighbor list construction |
 //! | [`mddem_verlet`] | Velocity Verlet time integration |
 //! | [`mddem_print`] | Thermo output, dump files (CSV/binary/VTP), restart files |
-//! | [`mddem_derive`] | Derive macros: `#[derive(AtomData)]`, `#[derive(StageEnum)]` |
+//! | [`mddem_derive`] | Derive macros: `#[derive(AtomData)]` (StageEnum/ScheduleSet now live in `grass_derive`) |
 //! | [`mddem_deform`] | Box deformation: engineering strain rate, velocity, target size |
 //! | [`mddem_fixes`] | General-purpose fixes: gravity, addforce, setforce, freeze, movelinear, viscous |
 //! | [`mddem_velocity_distribution`] | Initial velocity distributions (Gaussian, uniform) |
@@ -174,7 +174,7 @@ pub use mddem_verlet;
 /// Initial velocity distributions (Gaussian, uniform) for particle initialization.
 pub use mddem_velocity_distribution;
 
-use sim_app::prelude::*;
+use grass_app::prelude::*;
 
 /// Core simulation infrastructure plugin group.
 ///
@@ -196,7 +196,7 @@ use sim_app::prelude::*;
 /// includes Velocity Verlet automatically.
 ///
 /// MPI finalization is registered as a cleanup callback and runs automatically
-/// at the end of [`App::start()`](sim_app::App::start).
+/// at the end of [`App::start()`](grass_app::App::start).
 ///
 /// # Usage
 /// ```rust,ignore
@@ -300,12 +300,12 @@ impl PluginGroup for LJDefaultPlugins {
 /// - [`StageEnum`] — derive macro for multi-stage runs
 ///
 /// ## Core framework (via glob re-exports)
-/// - [`App`](sim_app::App), [`Plugin`](sim_app::Plugin),
-///   [`PluginGroup`](sim_app::PluginGroup) — application framework
+/// - [`App`](grass_app::App), [`Plugin`](grass_app::Plugin),
+///   [`PluginGroup`](grass_app::PluginGroup) — application framework
 /// - [`Atom`](mddem_core::Atom), [`Config`](mddem_core::Config),
 ///   [`RunState`](mddem_core::RunState) — core simulation types
-/// - [`Res`](sim_scheduler::Res), [`ResMut`](sim_scheduler::ResMut) — resource accessors
-/// - [`ScheduleSet`](sim_scheduler::ScheduleSet) — system ordering
+/// - [`Res`](grass_scheduler::Res), [`ResMut`](grass_scheduler::ResMut) — resource accessors
+/// - [`ScheduleSet`](grass_scheduler::ScheduleSet) — system ordering
 pub mod prelude {
     // Plugin groups defined in this crate
     pub use crate::{CorePlugins, LJDefaultPlugins};
@@ -335,15 +335,16 @@ pub mod prelude {
     pub use mddem_velocity_distribution::VelocityDistributionPlugin;
 
     // Derive macros
-    pub use mddem_derive::{ScheduleSet, StageEnum};
+    pub use grass_derive::{ScheduleSet, StageEnum};
+    pub use mddem_derive::AtomData;
 
     // Core framework re-exports (glob)
-    pub use sim_app::prelude::*;
+    pub use grass_app::prelude::*;
     pub use mddem_core::*;
     pub use mddem_print::*;
     // Re-export the ParticleSimScheduleSet enum explicitly so downstream users
-    // can access it without ambiguity with the ScheduleSet trait from sim_scheduler.
+    // can access it without ambiguity with the ScheduleSet trait from grass_scheduler.
     pub use mddem_core::ParticleSimScheduleSet;
-    pub use sim_scheduler::prelude::*;
+    pub use grass_scheduler::prelude::*;
     pub use mddem_verlet::*;
 }

@@ -5,8 +5,8 @@ use std::f64::consts::PI;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use rand_distr::{Distribution, Normal};
 use serde::Deserialize;
 
@@ -14,7 +14,7 @@ use mddem_core::{
     Atom, AtomDataRegistry, CommResource, CommState, Config, Domain, Region, RunConfig, RunState,
     ParticleSimScheduleSet, ScheduleSetupSet, StageOverrides,
 };
-use sim_scheduler::prelude::CurrentState;
+use grass_scheduler::prelude::CurrentState;
 
 use crate::{DemAtom, MaterialTable, RadiusSpec};
 

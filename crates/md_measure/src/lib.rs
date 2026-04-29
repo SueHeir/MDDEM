@@ -54,8 +54,8 @@ use std::f64::consts::PI;
 use std::fs;
 use std::io::Write;
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::Deserialize;
 
 use md_lj::LJTailCorrections;

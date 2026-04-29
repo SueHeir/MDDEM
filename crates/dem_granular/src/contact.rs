@@ -33,8 +33,8 @@
 //!
 //! See the [crate-level documentation](crate) for the full material parameter list.
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 
 use dem_atom::{self, DemAtom, MaterialTable};
 use mddem_core::{register_atom_data, Atom, AtomDataRegistry, BondStore, ParticleSimScheduleSet, VirialStress, VirialStressPlugin};
@@ -51,7 +51,7 @@ pub struct HertzMindlinContactPlugin;
 
 impl Plugin for HertzMindlinContactPlugin {
     fn dependencies(&self) -> Vec<std::any::TypeId> {
-        sim_app::type_ids![dem_atom::DemAtomPlugin]
+        grass_app::type_ids![dem_atom::DemAtomPlugin]
     }
 
     fn provides(&self) -> Vec<&str> {

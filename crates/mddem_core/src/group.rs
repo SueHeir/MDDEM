@@ -1,7 +1,7 @@
 //! Atom groups: named subsets selected by type and/or spatial region.
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::Deserialize;
 
 use crate::{Atom, Config, Region, ParticleSimScheduleSet, ScheduleSetupSet, StageOverrides};

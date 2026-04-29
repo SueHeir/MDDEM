@@ -51,8 +51,8 @@
 //! app.add_plugins(LatticePlugin);
 //! ```
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use rand_distr::{Distribution, Normal};
 use serde::Deserialize;
 

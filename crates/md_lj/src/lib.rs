@@ -61,8 +61,8 @@
 
 use std::f64::consts::PI;
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::Deserialize;
 
 use mddem_core::{Atom, CommResource, Config, Domain, MixingRule, PairCoeffTable, ParticleSimScheduleSet, ScheduleSetupSet, VirialStressPlugin};
@@ -291,7 +291,7 @@ pub struct LJForcePlugin;
 
 impl Plugin for LJForcePlugin {
     fn dependencies(&self) -> Vec<std::any::TypeId> {
-        sim_app::type_ids![mddem_core::NeighborPlugin]
+        grass_app::type_ids![mddem_core::NeighborPlugin]
     }
 
     fn default_config(&self) -> Option<&str> {

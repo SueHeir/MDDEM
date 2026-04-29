@@ -48,7 +48,7 @@ For each plane named `<name>`:
 
 ```rust
 use dem_measure_plane::MeasurePlanePlugin;
-use sim_app::prelude::*;
+use grass_app::prelude::*;
 
 let mut app = App::new();
 app.add_plugin(MeasurePlanePlugin);

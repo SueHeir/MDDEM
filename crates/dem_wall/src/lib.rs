@@ -103,8 +103,8 @@
 //! | [`wall_zero_force_accumulators`] | `PreForce` | Zeros per-wall force accumulators |
 //! | [`wall_contact_force`] | `Force` | Computes Hertz contact + damping + adhesion |
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::Deserialize;
 
 use dem_atom::{DemAtom, MaterialTable, SQRT_5_3};
@@ -521,7 +521,7 @@ pub struct WallPlugin;
 
 impl Plugin for WallPlugin {
     fn dependencies(&self) -> Vec<std::any::TypeId> {
-        sim_app::type_ids![dem_atom::DemAtomPlugin]
+        grass_app::type_ids![dem_atom::DemAtomPlugin]
     }
 
     fn default_config(&self) -> Option<&str> {

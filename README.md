@@ -156,20 +156,21 @@ mpiexec -n 4 ./target/release/my_simulation config.toml
 cargo run --release -- config.toml --schedule
 ```
 
-`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, groups, and output. `GranularDefaultPlugins` adds DEM contact physics, rotational dynamics, particle insertion, and Velocity Verlet integration. `LJDefaultPlugins` adds FCC lattice, LJ forces, Nosé-Hoover thermostat with fused Verlet integration, and measurements. Individual plugins can be added separately for custom configurations. Please read sim_schduler and sim_app readme for more information.
+`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, groups, and output. `GranularDefaultPlugins` adds DEM contact physics, rotational dynamics, particle insertion, and Velocity Verlet integration. `LJDefaultPlugins` adds FCC lattice, LJ forces, Nosé-Hoover thermostat with fused Verlet integration, and measurements. Individual plugins can be added separately for custom configurations. The App / Plugin / Scheduler substrate now lives in the [grass](https://github.com/elizabeth-suehr/grass) workspace — see its `grass_scheduler` and `grass_app` READMEs for details.
 
 ## Architecture
+
+The framework layer (App, Plugin, Scheduler, MPI abstraction, derive macros) lives in a sibling workspace, [grass](https://github.com/elizabeth-suehr/grass):
+`grass_app`, `grass_scheduler`, `grass_mpi`, `grass_derive`. MDDEM consumes them as path dependencies.
 
 | Crate | Description |
 |---|---|
 | [`mddem`](crates/mddem/) | Umbrella crate: `CorePlugins`, `LJDefaultPlugins`, `GranularDefaultPlugins`, prelude |
-| [`sim_scheduler`](crates/sim_scheduler/) | Dependency-injection scheduler with resources, schedule sets, ordering, and run conditions |
-| [`sim_app`](crates/sim_app/) | App, SubApp, Plugin, PluginGroup, StatesPlugin |
 | [`mddem_core`](crates/mddem_core/) | Config, domain decomposition, communication, atom data, regions, groups |
 | [`mddem_neighbor`](crates/mddem_neighbor/) | Neighbor lists: brute force, sweep-and-prune, bin-based |
 | [`mddem_verlet`](crates/mddem_verlet/) | Velocity Verlet translational integration |
 | [`mddem_print`](crates/mddem_print/) | Thermo, dump files (CSV/binary), VTP visualization, restart files |
-| [`mddem_derive`](crates/mddem_derive/) | `#[derive(AtomData)]` and `#[derive(StageEnum)]` proc macros |
+| [`mddem_derive`](crates/mddem_derive/) | `#[derive(AtomData)]` proc macro (`StageEnum`/`ScheduleSet` come from `grass_derive`) |
 | [`mddem_fixes`](crates/mddem_fixes/) | AddForce, SetForce, Freeze, MoveLinear, Viscous, NveLimit; Gravity |
 | [`mddem_fire`](crates/mddem_fire/) | FIRE energy minimization |
 | [`mddem_deform`](crates/mddem_deform/) | Box deformation (engineering strain rate, velocity, target size) |

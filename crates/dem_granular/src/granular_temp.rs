@@ -20,8 +20,8 @@ use std::{
     io::Write,
 };
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 
 use mddem_core::{Atom, CommResource, Input, RunConfig, RunState, ParticleSimScheduleSet};
 

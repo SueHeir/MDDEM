@@ -37,10 +37,10 @@
 
 use std::collections::HashMap;
 
-use sim_app::prelude::*;
+use grass_app::prelude::*;
 use mddem_core::{Atom, CommResource, Config, RunState, ParticleSimScheduleSet};
 use mddem_print::Thermo;
-use sim_scheduler::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::Deserialize;
 
 // ── Configuration ───────────────────────────────────────────────────────────

@@ -16,14 +16,14 @@
 
 use std::process::exit;
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
-// Re-export comm abstractions from sim_mpi so downstream users see no change.
-pub use sim_mpi::{CommBackend, CommResource, SingleProcessComm, finalize_mpi};
+// Re-export comm abstractions from grass_mpi so downstream users see no change.
+pub use grass_mpi::{CommBackend, CommResource, SingleProcessComm, finalize_mpi};
 #[cfg(feature = "mpi_backend")]
-pub use sim_mpi::{MpiCommBackend, get_mpi_world};
+pub use grass_mpi::{MpiCommBackend, get_mpi_world};
 
 use crate::{Atom, AtomDataRegistry, CommState, Config, Domain, Neighbor, ParticleSimScheduleSet, ScheduleSetupSet};
 

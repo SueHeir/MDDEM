@@ -32,10 +32,10 @@
 //! The deform system runs at [`ParticleSimScheduleSet::PreInitialIntegration`], updating
 //! domain bounds and remapping atoms before the Verlet position update.
 
-use sim_app::prelude::*;
+use grass_app::prelude::*;
 use mddem_core::{Atom, CommResource, Config, Domain, ParticleSimScheduleSet, ScheduleSetupSet, StageOverrides};
 use mddem_core::Neighbor;
-use sim_scheduler::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::Deserialize;
 
 // ── TOML config structs ─────────────────────────────────────────────────────

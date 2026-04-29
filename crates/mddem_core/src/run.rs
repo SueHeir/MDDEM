@@ -4,12 +4,12 @@
 //! Each stage has its own step count, thermo interval, and optional config
 //! overrides (e.g. change thermostat temperature between stages).
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{CommResource, Config, ParticleSimScheduleSet, ScheduleSetupSet};
-use sim_app::StageNames;
+use grass_app::StageNames;
 
 fn default_steps() -> u32 {
     1000

@@ -55,9 +55,9 @@
 //! [`ThermalPlugin`] requires `DemAtomPlugin` (for particle radii) and
 //! `NeighborPlugin` (for contact pair iteration).
 
-use sim_app::prelude::*;
+use grass_app::prelude::*;
 use mddem_derive::AtomData;
-use sim_scheduler::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::Deserialize;
 
 use dem_atom::DemAtom;
@@ -174,7 +174,7 @@ pub struct ThermalPlugin;
 
 impl Plugin for ThermalPlugin {
     fn dependencies(&self) -> Vec<std::any::TypeId> {
-        sim_app::type_ids![dem_atom::DemAtomPlugin, mddem_core::NeighborPlugin]
+        grass_app::type_ids![dem_atom::DemAtomPlugin, mddem_core::NeighborPlugin]
     }
 
     fn default_config(&self) -> Option<&str> {

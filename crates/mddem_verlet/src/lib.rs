@@ -21,8 +21,8 @@
 //! second-order accurate in Δt. It exactly integrates constant-force motion
 //! and conserves energy to O(Δt²) per step for Hamiltonian systems.
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 
 use mddem_core::{Atom, ParticleSimScheduleSet};
 

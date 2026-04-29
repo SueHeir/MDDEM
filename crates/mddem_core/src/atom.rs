@@ -15,8 +15,8 @@ use std::{
     cell::{Ref, RefCell, RefMut},
 };
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use crate::{CommState, ParticleSimScheduleSet};
 
 /// Number of `f64`s packed/unpacked for one atom's base fields

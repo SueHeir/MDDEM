@@ -36,7 +36,7 @@ collapse_rate_window = 5   # samples for cooling-rate estimation
 
 ```rust
 use mddem_velocity_distribution::VelocityDistributionPlugin;
-use sim_app::prelude::*;
+use grass_app::prelude::*;
 
 fn main() {
     let mut app = App::new();

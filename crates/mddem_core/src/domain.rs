@@ -6,12 +6,12 @@
 //! - [`decompose_domain`]: uniform Cartesian grid decomposition across MPI ranks
 //! - [`DomainPlugin`]: registers setup, PBC wrapping, and shrink-wrap systems
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{Atom, AtomDataRegistry, CommBackend, CommResource, CommState, Config, ParticleSimScheduleSet, ScheduleSetupSet};
-use sim_scheduler::prelude::CurrentState;
+use grass_scheduler::prelude::CurrentState;
 
 fn default_one_f64() -> f64 {
     1.0

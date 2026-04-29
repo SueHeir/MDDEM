@@ -46,8 +46,8 @@
 //! # group = "mobile"   # Optional: only thermostat atoms in this group
 //! ```
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;

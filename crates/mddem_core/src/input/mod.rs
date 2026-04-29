@@ -8,7 +8,7 @@
 
 use std::env;
 
-use sim_app::prelude::*;
+use grass_app::prelude::*;
 
 mod toml_input;
 pub use toml_input::Config;

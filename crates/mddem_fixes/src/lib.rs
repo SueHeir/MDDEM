@@ -34,8 +34,8 @@
 
 use std::collections::HashMap;
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::Deserialize;
 
 use mddem_core::{Atom, AtomDataRegistry, CommResource, Config, GroupRegistry, ParticleSimScheduleSet, ScheduleSetupSet};

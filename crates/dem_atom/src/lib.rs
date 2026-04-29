@@ -50,9 +50,9 @@ pub use radius::*;
 
 use std::f64::consts::PI;
 
-use sim_app::prelude::*;
+use grass_app::prelude::*;
 use mddem_derive::AtomData;
-use sim_scheduler::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::Deserialize;
 
 use mddem_core::{register_atom_data, Atom, AtomData, AtomPlugin, Config, ScheduleSetupSet};

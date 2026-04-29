@@ -22,8 +22,8 @@
 //!
 //! Configure via the `[neighbor]` TOML section (see [`NeighborConfig`]).
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{Atom, AtomDataRegistry, CommResource, CommState, Config, Domain, ParticleSimScheduleSet, ScheduleSetupSet};

@@ -15,8 +15,8 @@
 //! This mirrors the standard velocity Verlet for translational motion,
 //! applied to the rotational degrees of freedom with quaternion orientation tracking.
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 
 use dem_atom::DemAtom;
 use mddem_core::{Atom, AtomDataRegistry, ParticleSimScheduleSet};

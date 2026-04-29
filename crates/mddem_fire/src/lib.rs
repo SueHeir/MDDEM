@@ -34,8 +34,8 @@
 //! dt_max_factor = 10.0 # maximum dt = dt_max_factor × base dt
 //! ```
 
-use sim_app::prelude::*;
-use sim_scheduler::prelude::*;
+use grass_app::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::Deserialize;
 
 use mddem_core::{Atom, Config, ParticleSimScheduleSet};

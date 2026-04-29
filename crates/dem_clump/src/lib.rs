@@ -39,9 +39,9 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use sim_app::prelude::*;
+use grass_app::prelude::*;
 use mddem_derive::AtomData;
-use sim_scheduler::prelude::*;
+use grass_scheduler::prelude::*;
 use serde::Deserialize;
 use rand::Rng;
 
@@ -229,7 +229,7 @@ pub struct ClumpPlugin;
 
 impl Plugin for ClumpPlugin {
     fn dependencies(&self) -> Vec<std::any::TypeId> {
-        sim_app::type_ids![dem_atom::DemAtomPlugin]
+        grass_app::type_ids![dem_atom::DemAtomPlugin]
     }
 
     fn build(&self, app: &mut App) {

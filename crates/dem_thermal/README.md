@@ -42,7 +42,7 @@ Omit the `[thermal]` section to register the plugin without running heat transfe
 ## Usage Example
 
 ```rust
-use sim_app::prelude::*;
+use grass_app::prelude::*;
 use dem_thermal::ThermalPlugin;
 
 let mut app = App::new();
