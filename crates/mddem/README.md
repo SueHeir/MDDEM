@@ -6,7 +6,7 @@ The main umbrella crate for **MDDEM** — a plugin-based simulation framework fo
 
 This crate is the entry point to MDDEM. It re-exports all plugin crates and provides convenient plugin groups so you can set up a complete simulation in just a few lines.
 
-The App / Plugin / Scheduler / TOML / multi-stage run substrate lives in the [grass](https://github.com/elizabeth-suehr/grass) workspace (`grass_app`, `grass_scheduler`, `grass_io`, `grass_mpi`, `grass_derive`); MDDEM consumes it as path dependencies and adds the DEM/MD physics on top.
+The App / Plugin / Scheduler / TOML / multi-stage run substrate lives in the [grass](https://github.com/SueHeir/grass) workspace (`grass_app`, `grass_scheduler`, `grass_io`, `grass_mpi`, `grass_derive`); MDDEM consumes it as path dependencies and adds the DEM/MD physics on top.
 
 ## Plugin Groups
 
@@ -35,7 +35,7 @@ Use `mddem::prelude::*` to import the most common types: plugin groups, simulati
 
 ## Crate Organization
 
-**Framework** ([`grass_*`](https://github.com/elizabeth-suehr/grass)): App / Plugin / Scheduler, TOML loading, multi-stage run loop, MPI abstraction, derive macros
+**Framework** ([`grass_*`](https://github.com/SueHeir/grass)): App / Plugin / Scheduler, TOML loading, multi-stage run loop, MPI abstraction, derive macros
 
 **Infrastructure** (`mddem_*`): core simulation types, neighbor lists, output, box deformation, fixes
 

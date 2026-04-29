@@ -1,6 +1,6 @@
 # mddem_core
 
-Core simulation infrastructure for MDDEM: particle storage, MPI domain decomposition, and spatial regions. TOML loading, the multi-stage run loop, the App/Plugin framework, and the MPI abstraction live in the [grass](https://github.com/elizabeth-suehr/grass) workspace; this crate re-exports them so existing `use mddem_core::{Config, RunPlugin, ...}` keeps working.
+Core simulation infrastructure for MDDEM: particle storage, MPI domain decomposition, and spatial regions. TOML loading, the multi-stage run loop, the App/Plugin framework, and the MPI abstraction live in the [grass](https://github.com/SueHeir/grass) workspace; this crate re-exports them so existing `use mddem_core::{Config, RunPlugin, ...}` keeps working.
 
 ## What It Does
 

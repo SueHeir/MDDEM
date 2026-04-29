@@ -11,7 +11,7 @@
 
 MDDEM is a particle simulation engine written in Rust, supporting both **Discrete Element Method (DEM)** for granular materials and potentially **Molecular Dynamics (MD)** (still learning this side).
 
-The framework is built around **composability**. A dependency-injection scheduler inspired by [Bevy](https://github.com/bevyengine/bevy) and a plugin system let you assemble simulations from independent, reusable pieces — that App / Plugin / Scheduler / IO substrate now lives in a sibling workspace, [grass](https://github.com/elizabeth-suehr/grass), which MDDEM consumes as path dependencies and shares with other downstream physics codebases. Physics models, integrators, neighbor lists, and output formats are all plugins. Systems declare their resource dependencies as function arguments; the scheduler injects them automatically and resolves execution order.
+The framework is built around **composability**. A dependency-injection scheduler inspired by [Bevy](https://github.com/bevyengine/bevy) and a plugin system let you assemble simulations from independent, reusable pieces — that App / Plugin / Scheduler / IO substrate now lives in a sibling workspace, [grass](https://github.com/SueHeir/grass), which MDDEM consumes as path dependencies and shares with other downstream physics codebases. Physics models, integrators, neighbor lists, and output formats are all plugins. Systems declare their resource dependencies as function arguments; the scheduler injects them automatically and resolves execution order.
 
 Configuration follows a **two-tier** approach:
 
@@ -22,7 +22,7 @@ Both tiers can be mixed freely. The [hopper](examples/hopper/) example uses TOML
 
 ## Motivation
 
-MDDEM began as a Rust reimplementation of LAMMPS communication patterns, motivated by a desire to **explore whether a scheduler with dependency injection could work for particle simulations**.  This dependency injection framework now live in [grass](https://github.com/elizabeth-suehr/grass), which MDDEM consumes as path dependencies.
+MDDEM began as a Rust reimplementation of LAMMPS communication patterns, motivated by a desire to **explore whether a scheduler with dependency injection could work for particle simulations**.  This dependency injection framework now live in [grass](https://github.com/SueHeir/grass), which MDDEM consumes as path dependencies.
 
 
 ## Design Notes
@@ -156,19 +156,19 @@ mpiexec -n 4 ./target/release/my_simulation config.toml
 cargo run --release -- config.toml --schedule
 ```
 
-`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, groups, and output. `GranularDefaultPlugins` adds DEM contact physics, rotational dynamics, particle insertion, and Velocity Verlet integration. `LJDefaultPlugins` adds FCC lattice, LJ forces, Nosé-Hoover thermostat with fused Verlet integration, and measurements. Individual plugins can be added separately for custom configurations. The App / Plugin / Scheduler / TOML / multi-stage run substrate lives in the [grass](https://github.com/elizabeth-suehr/grass) workspace — see its READMEs for details.
+`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, groups, and output. `GranularDefaultPlugins` adds DEM contact physics, rotational dynamics, particle insertion, and Velocity Verlet integration. `LJDefaultPlugins` adds FCC lattice, LJ forces, Nosé-Hoover thermostat with fused Verlet integration, and measurements. Individual plugins can be added separately for custom configurations. The App / Plugin / Scheduler / TOML / multi-stage run substrate lives in the [grass](https://github.com/SueHeir/grass) workspace — see its READMEs for details.
 
 ## Architecture
 
-The framework layer lives in a sibling workspace, [grass](https://github.com/elizabeth-suehr/grass), which MDDEM consumes as path dependencies:
+The framework layer lives in a sibling workspace, [grass](https://github.com/SueHeir/grass), which MDDEM consumes as path dependencies:
 
 | grass crate | Provides |
 |---|---|
-| [`grass_app`](https://github.com/elizabeth-suehr/grass/tree/main/crates/grass_app) | `App`, `Plugin`, `PluginGroup`, `SubApp`, `StatesPlugin`, `StageAdvancePlugin`, `ScheduleSetupSet` |
-| [`grass_scheduler`](https://github.com/elizabeth-suehr/grass/tree/main/crates/grass_scheduler) | Dependency-injection scheduler with `ScheduleSet`, run conditions, hierarchical `Schedule` |
-| [`grass_mpi`](https://github.com/elizabeth-suehr/grass/tree/main/crates/grass_mpi) | MPI abstraction (`CommBackend`, `MpiCommBackend`, `SingleProcessComm`) + MPMD bootstrap |
-| [`grass_derive`](https://github.com/elizabeth-suehr/grass/tree/main/crates/grass_derive) | `#[derive(ScheduleSet)]`, `#[derive(StageEnum)]`, `#[derive(Namespace)]` |
-| [`grass_io`](https://github.com/elizabeth-suehr/grass/tree/main/crates/grass_io) | TOML loading (`Config`, `InputPlugin`), multi-stage run loop (`RunPlugin`, `RunConfig`, `StageConfig`, `StageOverrides`), `SimClockPlugin`, `TermOutPlugin`, `DumpPlugin` |
+| [`grass_app`](https://github.com/SueHeir/grass/tree/main/crates/grass_app) | `App`, `Plugin`, `PluginGroup`, `SubApp`, `StatesPlugin`, `StageAdvancePlugin`, `ScheduleSetupSet` |
+| [`grass_scheduler`](https://github.com/SueHeir/grass/tree/main/crates/grass_scheduler) | Dependency-injection scheduler with `ScheduleSet`, run conditions, hierarchical `Schedule` |
+| [`grass_mpi`](https://github.com/SueHeir/grass/tree/main/crates/grass_mpi) | MPI abstraction (`CommBackend`, `MpiCommBackend`, `SingleProcessComm`) + MPMD bootstrap |
+| [`grass_derive`](https://github.com/SueHeir/grass/tree/main/crates/grass_derive) | `#[derive(ScheduleSet)]`, `#[derive(StageEnum)]`, `#[derive(Namespace)]` |
+| [`grass_io`](https://github.com/SueHeir/grass/tree/main/crates/grass_io) | TOML loading (`Config`, `InputPlugin`), multi-stage run loop (`RunPlugin`, `RunConfig`, `StageConfig`, `StageOverrides`), `SimClockPlugin`, `TermOutPlugin`, `DumpPlugin` |
 
 | MDDEM crate | Description |
 |---|---|

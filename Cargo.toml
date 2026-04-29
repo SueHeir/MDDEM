@@ -82,7 +82,7 @@ mddem_derive = { path = "./crates/mddem_derive" }
 mddem_fire = { path = "./crates/mddem_fire" }
 mddem_velocity_distribution = { path = "./crates/mddem_velocity_distribution" }
 mddem_deform = { path = "./crates/mddem_deform" }
-grass_scheduler = { path = "../grass/crates/grass_scheduler" }
+grass_scheduler = { git = "https://github.com/SueHeir/grass.git", rev = "ea21ea3629de990a717cc1421747901e5d64a66b" }
 # Force libffi-sys to use system libffi (via pkg-config) instead of building
 # from source. libffi-sys 2.3.0 has a broken aarch64 macOS assembler; Homebrew
 # libffi is set in .cargo/config.toml via PKG_CONFIG_PATH.

@@ -11,7 +11,7 @@ categories = ["simulation", "science"]
 
 [dependencies]
 mddem_core = { path = "../mddem_core", version = "0.1.3", default-features = false }
-grass_app = { path = "../../../grass/crates/grass_app" }
-grass_scheduler = { path = "../../../grass/crates/grass_scheduler" }
+grass_app = { git = "https://github.com/SueHeir/grass.git", rev = "ea21ea3629de990a717cc1421747901e5d64a66b" }
+grass_scheduler = { git = "https://github.com/SueHeir/grass.git", rev = "ea21ea3629de990a717cc1421747901e5d64a66b" }
 
 [dev-dependencies]
