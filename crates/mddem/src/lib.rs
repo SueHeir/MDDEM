@@ -59,13 +59,16 @@
 //!
 //! | Crate | Description |
 //! |---|---|
-//! | [`grass_app`] | Application framework: [`App`](grass_app::App), [`Plugin`](grass_app::Plugin) trait, ECS-style resources |
-//! | [`mddem_core`] | Core simulation types: [`Atom`](mddem_core::Atom), [`Config`](mddem_core::Config), domain, communication, regions |
-//! | [`grass_scheduler`] | System scheduler with [`ScheduleSet`](grass_scheduler::ScheduleSet) ordering |
+//! | [`grass_app`] | Application framework: [`App`](grass_app::App), [`Plugin`](grass_app::Plugin) trait, ECS-style resources, [`ScheduleSetupSet`](grass_app::ScheduleSetupSet) |
+//! | [`grass_scheduler`] | System scheduler with [`ScheduleSet`](grass_scheduler::ScheduleSet) ordering, hierarchical schedules |
+//! | [`grass_io`] | TOML config loading, multi-stage [`RunPlugin`](grass_io::RunPlugin), `SimClock` / `TermOut` / `Dump` plugins |
+//! | [`grass_mpi`] | MPI abstraction (`CommBackend`, `SingleProcessComm`, `MpiCommBackend`) |
+//! | [`grass_derive`] | Derive macros: `#[derive(ScheduleSet)]`, `#[derive(StageEnum)]`, `#[derive(Namespace)]` |
+//! | [`mddem_core`] | Domain decomposition, atom data, regions, groups; re-exports `Config` / `InputPlugin` / `RunPlugin` from `grass_io` |
 //! | `neighbor` (in `mddem_core`) | Bin-based neighbor list construction |
 //! | [`mddem_verlet`] | Velocity Verlet time integration |
 //! | [`mddem_print`] | Thermo output, dump files (CSV/binary/VTP), restart files |
-//! | [`mddem_derive`] | Derive macros: `#[derive(AtomData)]` (StageEnum/ScheduleSet now live in `grass_derive`) |
+//! | [`mddem_derive`] | `#[derive(AtomData)]` proc macro |
 //! | [`mddem_deform`] | Box deformation: engineering strain rate, velocity, target size |
 //! | [`mddem_fixes`] | General-purpose fixes: gravity, addforce, setforce, freeze, movelinear, viscous |
 //! | [`mddem_velocity_distribution`] | Initial velocity distributions (Gaussian, uniform) |

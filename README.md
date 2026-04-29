@@ -156,17 +156,24 @@ mpiexec -n 4 ./target/release/my_simulation config.toml
 cargo run --release -- config.toml --schedule
 ```
 
-`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, groups, and output. `GranularDefaultPlugins` adds DEM contact physics, rotational dynamics, particle insertion, and Velocity Verlet integration. `LJDefaultPlugins` adds FCC lattice, LJ forces, Nosé-Hoover thermostat with fused Verlet integration, and measurements. Individual plugins can be added separately for custom configurations. The App / Plugin / Scheduler substrate now lives in the [grass](https://github.com/elizabeth-suehr/grass) workspace — see its `grass_scheduler` and `grass_app` READMEs for details.
+`CorePlugins` bundles config loading, communication, domain decomposition, neighbor lists, groups, and output. `GranularDefaultPlugins` adds DEM contact physics, rotational dynamics, particle insertion, and Velocity Verlet integration. `LJDefaultPlugins` adds FCC lattice, LJ forces, Nosé-Hoover thermostat with fused Verlet integration, and measurements. Individual plugins can be added separately for custom configurations. The App / Plugin / Scheduler / TOML / multi-stage run substrate lives in the [grass](https://github.com/elizabeth-suehr/grass) workspace — see its READMEs for details.
 
 ## Architecture
 
-The framework layer (App, Plugin, Scheduler, MPI abstraction, derive macros) lives in a sibling workspace, [grass](https://github.com/elizabeth-suehr/grass):
-`grass_app`, `grass_scheduler`, `grass_mpi`, `grass_derive`. MDDEM consumes them as path dependencies.
+The framework layer lives in a sibling workspace, [grass](https://github.com/elizabeth-suehr/grass), which MDDEM consumes as path dependencies:
 
-| Crate | Description |
+| grass crate | Provides |
+|---|---|
+| [`grass_app`](https://github.com/elizabeth-suehr/grass/tree/main/crates/grass_app) | `App`, `Plugin`, `PluginGroup`, `SubApp`, `StatesPlugin`, `StageAdvancePlugin`, `ScheduleSetupSet` |
+| [`grass_scheduler`](https://github.com/elizabeth-suehr/grass/tree/main/crates/grass_scheduler) | Dependency-injection scheduler with `ScheduleSet`, run conditions, hierarchical `Schedule` |
+| [`grass_mpi`](https://github.com/elizabeth-suehr/grass/tree/main/crates/grass_mpi) | MPI abstraction (`CommBackend`, `MpiCommBackend`, `SingleProcessComm`) + MPMD bootstrap |
+| [`grass_derive`](https://github.com/elizabeth-suehr/grass/tree/main/crates/grass_derive) | `#[derive(ScheduleSet)]`, `#[derive(StageEnum)]`, `#[derive(Namespace)]` |
+| [`grass_io`](https://github.com/elizabeth-suehr/grass/tree/main/crates/grass_io) | TOML loading (`Config`, `InputPlugin`), multi-stage run loop (`RunPlugin`, `RunConfig`, `StageConfig`, `StageOverrides`), `SimClockPlugin`, `TermOutPlugin`, `DumpPlugin` |
+
+| MDDEM crate | Description |
 |---|---|
 | [`mddem`](crates/mddem/) | Umbrella crate: `CorePlugins`, `LJDefaultPlugins`, `GranularDefaultPlugins`, prelude |
-| [`mddem_core`](crates/mddem_core/) | Config, domain decomposition, communication, atom data, regions, groups |
+| [`mddem_core`](crates/mddem_core/) | Domain decomposition, communication, atom data, regions, groups; re-exports `Config`/`InputPlugin`/`RunPlugin`/etc. from `grass_io` |
 | [`mddem_neighbor`](crates/mddem_neighbor/) | Neighbor lists: brute force, sweep-and-prune, bin-based |
 | [`mddem_verlet`](crates/mddem_verlet/) | Velocity Verlet translational integration |
 | [`mddem_print`](crates/mddem_print/) | Thermo, dump files (CSV/binary), VTP visualization, restart files |

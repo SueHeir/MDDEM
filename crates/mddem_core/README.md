@@ -1,6 +1,6 @@
 # mddem_core
 
-Core simulation infrastructure for MDDEM: particle storage, MPI domain decomposition, TOML config, and run control.
+Core simulation infrastructure for MDDEM: particle storage, MPI domain decomposition, and spatial regions. TOML loading, the multi-stage run loop, the App/Plugin framework, and the MPI abstraction live in the [grass](https://github.com/elizabeth-suehr/grass) workspace; this crate re-exports them so existing `use mddem_core::{Config, RunPlugin, ...}` keeps working.
 
 ## What It Does
 
@@ -8,22 +8,22 @@ Provides foundational systems for particle-based simulations:
 
 - **Per-atom storage** (`Atom`, `AtomData` trait): struct-of-arrays with extensible fields (DEM radius, angular velocity, etc.)
 - **Domain decomposition & boundaries**: box geometry, MPI splitting, periodic/fixed/shrink-wrap conditions
-- **Communication**: MPI ghost/exchange and single-process fallback
-- **Configuration**: TOML parsing with multi-stage runs and per-stage overrides
+- **Communication wiring**: MPI ghost/exchange systems on top of `grass_mpi::CommBackend` (single-process fallback included)
 - **Spatial regions**: Box, Sphere, Cylinder, Plane, Union, Intersect with point/sample tests
+- **Re-exports from grass:** `Config`, `InputPlugin`, `RunPlugin`, `RunConfig`, `StageConfig`, `StageOverrides`, `ScheduleSetupSet`, etc.
 
 ## Key Types
 
-| Type | Purpose |
-|------|---------|
-| `Atom` | Core per-atom fields in struct-of-arrays layout |
-| `AtomData` | Trait to register plugin-specific data (e.g., `DemAtom`) |
-| `AtomDataRegistry` | Manages extensions with MPI pack/unpack |
-| `Domain` | Box geometry, bounds, periodicity |
-| `CommBackend` | Abstraction over MPI or serial communication |
-| `Config` | TOML table with typed deserialization |
-| `Region` | Spatial primitives for groups and insertion |
-| `StageConfig` | Per-stage settings and config overrides |
+| Type | Purpose | Defined in |
+|------|---------|-----------|
+| `Atom` | Core per-atom fields in struct-of-arrays layout | `mddem_core` |
+| `AtomData` | Trait to register plugin-specific data (e.g., `DemAtom`) | `mddem_core` |
+| `AtomDataRegistry` | Manages extensions with MPI pack/unpack | `mddem_core` |
+| `Domain` | Box geometry, bounds, periodicity | `mddem_core` |
+| `Region` | Spatial primitives for groups and insertion | `mddem_core` |
+| `CommBackend` | Abstraction over MPI or serial communication | `grass_mpi` (re-exported) |
+| `Config` | TOML table with typed deserialization | `grass_io` (re-exported) |
+| `RunConfig` / `StageConfig` | Multi-stage run + per-stage overrides | `grass_io` (re-exported) |
 
 ## Quick Start
 
