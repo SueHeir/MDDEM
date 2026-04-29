@@ -334,7 +334,7 @@ pub mod prelude {
 
     // Shared infrastructure plugins
     pub use mddem_deform::{DeformConfig, DeformPlugin, DeformState};
-    pub use mddem_fixes::{AddForceDef, FixesPlugin, FixesRegistry, FreezeDef, GravityConfig, GravityPlugin, MoveLinearDef, SetForceDef, ViscousDef};
+    pub use mddem_fixes::{AddForceDef, FixesPlugin, FixesRegistry, FreezeDef, GravityConfig, GravityPlugin, MoveLinearDef, PinDef, PinState, SetForceDef, ViscousDef};
     pub use mddem_velocity_distribution::VelocityDistributionPlugin;
 
     // Derive macros
